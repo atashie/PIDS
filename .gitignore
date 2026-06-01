@@ -1,0 +1,55 @@
+# --- Secrets / credentials ---
+.env
+.env.*
+*.key
+*.pem
+secrets/
+credentials*.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Conda ---
+.conda/
+
+# --- Large data: raw geospatial / LIDAR / model I/O (track pointers + provenance, not blobs) ---
+*.las
+*.laz
+*.tif
+*.tiff
+*.nc
+*.h5
+*.hdf
+*.hdf5
+*.vtk
+*.pfb
+data/raw/
+data/large/
+**/outputs/
+**/_runs/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Editors / IDE ---
+.vscode/
+.idea/
+*.swp
+*~
+
+# Note: source PDFs in Patents/ ARE tracked (small, provenance-critical).
+# Large datasets are intentionally excluded; record pointers/provenance in evidence/sources/.
