@@ -21,9 +21,29 @@ from petsc4py import PETSc
 
 
 class RichardsProblem:
-    """A mixed-form Richards initial-boundary-value problem on a given mesh."""
+    """A mixed-form Richards initial-boundary-value problem on a given mesh.
 
-    def __init__(self, mesh, soil, *, degree: int = 1, source=None):
+    Admissibility note (unconfined, no specific storage): in a region that is
+    *fully* saturated the capacity ``C = dtheta/dh`` is zero, so storage drops out
+    and the operator is purely elliptic there. The pressure field is then unique
+    only if the problem retains a head datum (a Dirichlet condition) or an
+    unsaturated region; an all-saturated, pure-Neumann state is determined only up
+    to a hydrostatic constant. Provide a datum for saturated scenarios.
+    """
+
+    # Default PETSc solver options: direct LU is robust for the small verification
+    # meshes; override (e.g. gmres + hypre/gamg) for large 2-D/3-D production runs.
+    _DEFAULT_PETSC_OPTIONS = {
+        "snes_type": "newtonls",
+        "snes_linesearch_type": "bt",
+        "snes_rtol": 1e-10,
+        "snes_atol": 1e-12,
+        "snes_max_it": 50,
+        "ksp_type": "preonly",
+        "pc_type": "lu",
+    }
+
+    def __init__(self, mesh, soil, *, degree: int = 1, source=None, petsc_options=None):
         self.mesh = mesh
         self.soil = soil
         self.V = fem.functionspace(mesh, ("Lagrange", degree))
@@ -49,6 +69,7 @@ class RichardsProblem:
             self.F = self.F - source * v * ufl.dx
 
         self._bcs: list = []
+        self._petsc_options = dict(petsc_options or self._DEFAULT_PETSC_OPTIONS)
         self._problem: NonlinearProblem | None = None
 
     # -- problem setup --------------------------------------------------------
@@ -69,15 +90,7 @@ class RichardsProblem:
                 self.psi,
                 bcs=self._bcs,
                 petsc_options_prefix="richards_",
-                petsc_options={
-                    "snes_type": "newtonls",
-                    "snes_linesearch_type": "bt",
-                    "snes_rtol": 1e-10,
-                    "snes_atol": 1e-12,
-                    "snes_max_it": 50,
-                    "ksp_type": "preonly",
-                    "pc_type": "lu",
-                },
+                petsc_options=self._petsc_options,
             )
 
     # -- time stepping --------------------------------------------------------
@@ -98,17 +111,22 @@ class RichardsProblem:
         iters = int(snes.getIterationNumber())
         if converged:
             self.psi_n.x.array[:] = self.psi.x.array  # accept the step
+            self.psi_n.x.scatter_forward()  # keep ghost DOFs consistent (MPI-safe)
         else:
             self.psi.x.array[:] = self.psi_n.x.array  # restore last accepted state (retry-safe)
+            self.psi.x.scatter_forward()
         return converged, iters
 
     def advance(self, t_end, dt, *, dt_min=1e-6, dt_max=None, grow=1.5, cut=0.5,
-                max_steps=100000):
+                target_low=3, target_high=8, shrink=0.7, max_steps=100000):
         """March to ``t_end`` with adaptive backward-Euler steps.
 
-        Cut ``dt`` and retry on a non-converged solve (stiff fronts / storm peaks);
-        grow it again when Newton converges easily. Returns the number of accepted
-        steps. Raises if ``dt`` must drop below ``dt_min`` to converge.
+        Cut ``dt`` and retry on a non-converged solve (stiff fronts / storm peaks).
+        On accepted steps, grow ``dt`` when Newton converges easily
+        (``iters <= target_low``) and shrink it on an expensive-but-accepted step
+        (``iters >= target_high``), so the controller reacts to costly steps, not
+        only to outright failures. Returns the number of accepted steps. Raises if
+        ``dt`` must drop below ``dt_min`` to converge.
         """
         t = 0.0
         nsteps = 0
@@ -120,8 +138,12 @@ class RichardsProblem:
             if converged:
                 t += h
                 nsteps += 1
-                if iters <= 3:
-                    dt = dt * grow if dt_max is None else min(dt * grow, dt_max)
+                if iters <= target_low:
+                    dt = dt * grow
+                elif iters >= target_high:
+                    dt = dt * shrink
+                if dt_max is not None:
+                    dt = min(dt, dt_max)
             else:
                 dt = h * cut
                 if dt < dt_min:
