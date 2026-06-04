@@ -4,8 +4,8 @@
 A high-resolution 3D infiltration-runoff model that **represents PIDS directly** and **solves for the optimal PIDS configuration** at a site, given its topography (from aerial mapping) and sediment characteristics (grain size and sorting). Rather than build from scratch, we extend a **pre-existing, validated** hydrologic model and add PIDS features (channels, tunnels, barriers) plus an optimization layer. This is the "Solve" stage that turns sensed data into a build specification.
 
 ## 2. Status
-- Maturity: concept (forward model not yet selected — see [`DECISION-model-selection.md`](DECISION-model-selection.md))
-- Last reviewed: 2026-06-01
+- Maturity: in-development (forward-model engine **decided** 2026-06-04 — build on DOLFINx/FEniCSx; see [`DECISION-model-selection.md`](DECISION-model-selection.md))
+- Last reviewed: 2026-06-04
 
 ## 3. Scientific basis
 - Variably-saturated subsurface flow (Richards equation) coupled to overland/surface routing.
@@ -34,6 +34,7 @@ The model is the primary instrument for *verifying* the patent's quantitative cl
 | Date | Change | Integration review (components checked, outcomes) |
 |------|--------|---------------------------------------------------|
 | 2026-06-01 | Created; pillar defined. | New component; dependencies on aerial-mapping & pids-physical-system noted; matrix pending (Chunk C). |
+| 2026-06-04 | Forward-model engine **decided** (build modular FEM on DOLFINx/FEniCSx; revises "extend a pre-existing model"). See [`DECISION-model-selection.md`](DECISION-model-selection.md), [`forward-model/`](forward-model/), decision memo [2026-06-03](../../docs/plans/2026-06-03-pids-forward-model-engine-evaluation.md). | Sub-component `forward-model` moved to in-development; `parameterization`, `pids-representation`, `validation` reviewed (no interface break — they feed/consume the FEM build as before). Major decision logged. |
 
 ---
 

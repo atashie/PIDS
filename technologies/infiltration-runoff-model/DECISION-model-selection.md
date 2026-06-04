@@ -1,6 +1,6 @@
 # Decision Record: Forward Model Selection
 
-- **Status:** OPEN (no model chosen yet)
+- **Status:** **DECIDED 2026-06-04** — BUILD a modular PETSc-FEM forward model on DOLFINx/FEniCSx (Option B), conditional on a DOLFINx + variational-inequality install spike. See the [decision memo](../../docs/plans/2026-06-03-pids-forward-model-engine-evaluation.md).
 - **Owner:** TBD
 - **Opened:** 2026-06-01
 - **Decision type:** Major (requires confirmation + a `governance/decision-log.md` entry on resolution)
@@ -32,4 +32,15 @@ Pillar 2 extends a **pre-existing** 3D hydrologic model rather than building fro
 4. Record the decision here + in `governance/decision-log.md`; update `technologies/` status and the tooling stack in `docs/plans/`.
 
 ## Decision
-*(pending)*
+**DECIDED 2026-06-04 — Option B: BUILD a modular forward model on an open PETSc-FEM framework (DOLFINx / FEniCSx, Python), rather than extend an off-the-shelf engine.**
+
+This **revises** the original framing (Pillar 2 "extends a pre-existing, validated model"). The full evaluation + de-risk — see the [decision memo](../../docs/plans/2026-06-03-pids-forward-model-engine-evaluation.md) — found that **no single existing engine** simultaneously meets R1 (coupled 3-D Richards + overland), R2 (local sub-meter refinement without a global fine mesh), and R9 (engineered internal BCs, dominated by the **reverse one-way catch-valve** — the *inverse* of a tile drain). A standalone numerical probe proved the catch-valve is tractable **only as an implicit in-solver hook** (operator-split coupling blows up), which an FEM weak form realizes natively (interior-facet residual term + PETSc variational-inequality solver).
+
+- **Engine/stack:** DOLFINx (FEniCSx) over PETSc; Python; runtime on WSL2 + conda. Reverse catch-valve as an implicit VI / interior-facet residual term.
+- **Validation benchmark:** HydroGeoSphere (cross-check only — not the production engine).
+- **Discrete-feature pattern:** mixed-dimensional 1D-in-3D embedding for PIDS channels/tunnels (decouples sub-meter conduit geometry from a coarse 3-D matrix).
+- **Eliminated as production engine:** ParFlow (symmetric flow barriers / operator-split only); MODFLOW 6 (no released 3-D Richards + coupled overland); closed/commercial (HGS, HYDRUS); copyleft/research-license (DuMuX, GEOtop, CATHY, InHM).
+- **Conditional gate:** a DOLFINx install + variational-inequality smoke spike on the target machine before the architecture is committed (cautious-building guardrail).
+- **Development methodology:** strictly modular, bottom-up, with the three-tier sanity-check routine ([`../../governance/claude-sanity-check-routine.md`](../../governance/claude-sanity-check-routine.md)) and standardized HTML visualization ([`../../governance/visualize-sanity-check-routine.md`](../../governance/visualize-sanity-check-routine.md)).
+
+Recorded in [`../../governance/decision-log.md`](../../governance/decision-log.md) (2026-06-04). Benchmark `PIDS-MIN-1` (one channel + tunnel + barrier on a synthetic Piedmont slope, checking claims C-001/C-004) remains the production-commitment validation, per the [decision memo](../../docs/plans/2026-06-03-pids-forward-model-engine-evaluation.md).

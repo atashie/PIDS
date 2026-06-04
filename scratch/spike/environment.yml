@@ -1,0 +1,21 @@
+# Conda/mamba environment for the DOLFINx forward-model build (run inside WSL2/Linux).
+# Create with:  conda env create -f environment.yml   (or: mamba env create -f environment.yml)
+# Then:         conda activate pids-fem && python smoke_test.py
+name: pids-fem
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - fenics-dolfinx>=0.8     # FEM engine (pulls PETSc + MPI from conda-forge)
+  - petsc4py
+  - mpi4py
+  - numpy
+  - scipy
+  - matplotlib
+  - plotly                  # self-contained interactive HTML (viz routine)
+  - xarray                  # standardized sanity-run result format
+  - netcdf4
+  - h5py
+  - pyvista                 # optional 3-D field inspection
+  - pytest                  # Tier-1 sanity tests
+  - pip
