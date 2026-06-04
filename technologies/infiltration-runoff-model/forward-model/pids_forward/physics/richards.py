@@ -96,8 +96,37 @@ class RichardsProblem:
         snes = self._problem.solver
         converged = snes.getConvergedReason() > 0
         iters = int(snes.getIterationNumber())
-        self.psi_n.x.array[:] = self.psi.x.array
+        if converged:
+            self.psi_n.x.array[:] = self.psi.x.array  # accept the step
+        else:
+            self.psi.x.array[:] = self.psi_n.x.array  # restore last accepted state (retry-safe)
         return converged, iters
+
+    def advance(self, t_end, dt, *, dt_min=1e-6, dt_max=None, grow=1.5, cut=0.5,
+                max_steps=100000):
+        """March to ``t_end`` with adaptive backward-Euler steps.
+
+        Cut ``dt`` and retry on a non-converged solve (stiff fronts / storm peaks);
+        grow it again when Newton converges easily. Returns the number of accepted
+        steps. Raises if ``dt`` must drop below ``dt_min`` to converge.
+        """
+        t = 0.0
+        nsteps = 0
+        while t < t_end - 1e-12:
+            if nsteps >= max_steps:
+                raise RuntimeError(f"advance exceeded max_steps={max_steps} at t={t:.4g}")
+            h = min(dt, t_end - t)
+            converged, iters = self.step(h)
+            if converged:
+                t += h
+                nsteps += 1
+                if iters <= 3:
+                    dt = dt * grow if dt_max is None else min(dt * grow, dt_max)
+            else:
+                dt = h * cut
+                if dt < dt_min:
+                    raise RuntimeError(f"advance: dt {dt:.2e} < dt_min at t={t:.4g} (not converging)")
+        return nsteps
 
     # -- diagnostics ----------------------------------------------------------
     def max_abs_error(self, exact) -> float:

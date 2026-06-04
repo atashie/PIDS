@@ -166,3 +166,32 @@ def test_solver_is_deterministic_1d():
     psi_b, w_b = run()
     assert np.array_equal(psi_a, psi_b)
     assert w_a == w_b
+
+
+def test_infiltration_to_saturation_converges():
+    """Wetting a column into saturation/ponding now converges.
+
+    Before the Vogel air-entry fix, the Mualem-K Jacobian singularity at Se->1
+    produced 0*inf=NaN whenever a node reached saturation and stalled Newton. A
+    ponded (psi>0) top drives a wetting front down to full saturation; the solve
+    must converge and stay physically plausible.
+    """
+    msh = dmesh.create_unit_interval(MPI.COMM_WORLD, 30)
+    soil = VanGenuchten(**LOAM)
+    prob = RichardsProblem(msh, soil)
+    prob.set_initial_condition(lambda x: -1.0 + 0.0 * x[0])  # uniformly unsaturated
+    # Ponded top (x=1, psi>0 => saturated) drives infiltration; a fixed unsaturated
+    # head at the bottom anchors the column.
+    prob.add_dirichlet(lambda x: np.isclose(x[0], 1.0), 0.05)
+    prob.add_dirichlet(lambda x: np.isclose(x[0], 0.0), -1.0)
+    # Adaptive stepping auto-cuts the stiff initial step (fixed dt=0.05 diverges here).
+    nsteps = prob.advance(t_end=0.4, dt=0.05)
+    assert nsteps > 0
+
+    th = prob.theta_array()
+    assert np.all(np.isfinite(th))
+    assert th.min() >= LOAM["theta_r"] - 1e-12
+    assert th.max() <= LOAM["theta_s"] + 1e-12
+    # the ponded top is fully saturated, and infiltration wetted the column overall.
+    assert th.max() == pytest.approx(LOAM["theta_s"], rel=1e-6)
+    assert th.mean() > 0.25  # wetter than the initial uniform theta(-1) ~ 0.243

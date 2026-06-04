@@ -20,35 +20,57 @@ class VanGenuchten:
     n: float  # pore-size distribution index (> 1)
     Ks: float  # saturated hydraulic conductivity (m/day)
     L: float = 0.5  # Mualem pore-connectivity / tortuosity exponent
+    h_s: float = -0.02  # air-entry head (m, <= 0); Vogel/Ippisch saturation cutoff
 
     @property
     def m(self) -> float:
         return 1.0 - 1.0 / self.n
 
-    def effective_saturation(self, psi):
-        """Effective saturation Se in [0, 1] (van Genuchten, 1980). Scalar or array.
+    @property
+    def Sc(self) -> float:
+        """van Genuchten saturation at the air-entry head h_s (Ippisch 2006 cutoff).
 
-        ``max(-psi, 0)`` selects the saturated branch (Se=1 at psi>=0) smoothly.
+        Sc == 1 when h_s == 0 (recovers the unmodified van Genuchten-Mualem model).
+        With h_s < 0 the curves are renormalized so the soil saturates at h_s rather
+        than at h = 0, which keeps K and dK/dh finite *through* saturation.
+        """
+        u_s = self.alpha * (-self.h_s)
+        return (1.0 + u_s**self.n) ** (-self.m)
+
+    def effective_saturation(self, psi):
+        """Air-entry-modified effective saturation Se in [0, 1]. Scalar or array.
+
+        van Genuchten (1980) with the Vogel/Ippisch air-entry cutoff: Se reaches 1 at
+        psi = h_s (not psi = 0), so the soil is saturated for psi >= h_s.
         """
         u = self.alpha * np.maximum(-psi, 0.0)
-        return (1.0 + u**self.n) ** (-self.m)
+        se_vg = (1.0 + u**self.n) ** (-self.m)
+        return np.minimum(se_vg / self.Sc, 1.0)
 
     def theta(self, psi: float) -> float:
         """Volumetric water content."""
         return self.theta_r + self.effective_saturation(psi) * (self.theta_s - self.theta_r)
 
-    def K(self, psi: float) -> float:
-        """Mualem (1976) hydraulic conductivity (m/day); K(psi >= 0) == Ks."""
+    def K(self, psi):
+        """Air-entry-modified Mualem (1976) conductivity (m/day); K(psi >= h_s) == Ks.
+
+        Ippisch et al. (2006) form: the pore-size integral is cut off at the air-entry
+        saturation Sc, so dK/dpsi stays finite through saturation (no Se->1 singularity).
+        """
         se = self.effective_saturation(psi)
-        return self.Ks * se**self.L * (1.0 - (1.0 - se ** (1.0 / self.m)) ** self.m) ** 2
+        sc = self.Sc
+        num = 1.0 - (1.0 - (se * sc) ** (1.0 / self.m)) ** self.m
+        den = 1.0 - (1.0 - sc ** (1.0 / self.m)) ** self.m
+        return self.Ks * se**self.L * (num / den) ** 2
 
     def capacity(self, psi):
-        """Specific moisture capacity C = dtheta/dpsi (1/m); 0 in the saturated zone.
+        """Specific moisture capacity C = dtheta/dpsi (1/m). Scalar or array.
 
-        Scalar or array. At psi >= 0, u = 0 so u**(n-1) = 0 and C = 0 naturally.
+        Air-entry-modified: C = C_vanGenuchten / Sc for psi < h_s, and 0 for the
+        saturated zone psi >= h_s (theta is constant there).
         """
         u = self.alpha * np.maximum(-psi, 0.0)
-        return (
+        c_vg = (
             (self.theta_s - self.theta_r)
             * self.alpha
             * self.m
@@ -56,6 +78,7 @@ class VanGenuchten:
             * u ** (self.n - 1.0)
             * (1.0 + u**self.n) ** (-self.m - 1.0)
         )
+        return np.where(psi < self.h_s, c_vg / self.Sc, 0.0)
 
     # --- UFL-symbolic forms (for the Richards residual + auto-diff Jacobian) ---
     # These mirror the float closures above but accept a UFL expression ``psi``.
@@ -67,11 +90,15 @@ class VanGenuchten:
         import ufl
 
         u = self.alpha * ufl.max_value(-psi, 0.0)
-        return (1.0 + u**self.n) ** (-self.m)
+        se_vg = (1.0 + u**self.n) ** (-self.m)
+        return ufl.min_value(se_vg / self.Sc, 1.0)
 
     def theta_ufl(self, psi):
         return self.theta_r + self.se_ufl(psi) * (self.theta_s - self.theta_r)
 
     def K_ufl(self, psi):
         se = self.se_ufl(psi)
-        return self.Ks * se**self.L * (1.0 - (1.0 - se ** (1.0 / self.m)) ** self.m) ** 2
+        sc = self.Sc
+        num = 1.0 - (1.0 - (se * sc) ** (1.0 / self.m)) ** self.m
+        den = 1.0 - (1.0 - sc ** (1.0 / self.m)) ** self.m
+        return self.Ks * se**self.L * (num / den) ** 2
