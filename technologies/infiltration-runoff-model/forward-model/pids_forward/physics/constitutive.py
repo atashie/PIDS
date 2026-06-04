@@ -102,3 +102,18 @@ class VanGenuchten:
         num = 1.0 - (1.0 - (se * sc) ** (1.0 / self.m)) ** self.m
         den = 1.0 - (1.0 - sc ** (1.0 / self.m)) ** self.m
         return self.Ks * se**self.L * (num / den) ** 2
+
+    def capacity_ufl(self, psi):
+        """UFL specific moisture capacity C = dtheta/dpsi (1/m); 0 for psi >= h_s."""
+        import ufl
+
+        u = self.alpha * ufl.max_value(-psi, 0.0)
+        c_vg = (
+            (self.theta_s - self.theta_r)
+            * self.alpha
+            * self.m
+            * self.n
+            * u ** (self.n - 1.0)
+            * (1.0 + u**self.n) ** (-self.m - 1.0)
+        )
+        return ufl.conditional(ufl.lt(psi, self.h_s), c_vg / self.Sc, 0.0)

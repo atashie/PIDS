@@ -9,6 +9,7 @@ psi* as O(h^2) under mesh refinement.
 import numpy as np
 import ufl
 from mpi4py import MPI
+from dolfinx import fem
 from dolfinx import mesh as dmesh
 
 from pids_forward.physics.constitutive import VanGenuchten
@@ -51,3 +52,48 @@ def test_mms_spatial_convergence_order_1d():
     # P1 Lagrange => asymptotic L2 order ~2 (allow mild pre-asymptotic slack).
     assert orders[-1] > 1.85, f"finest order={orders[-1]:.3f}; orders={orders}; errors={errors}"
     assert min(orders) > 1.6, f"orders={orders}; errors={errors}"
+
+
+def test_mms_temporal_convergence_order_1d():
+    """Backward-Euler => ~1st-order convergence in dt (time MMS, fixed fine mesh).
+
+    psi*(x,t) = -1 - 0.5 sin(pi x) exp(-t): smooth, unsaturated, psi* = -1 on the ends
+    for all t. The transient source f* = dtheta(psi*)/dt - div(K(psi*)(grad psi* + e_g))
+    makes psi* exact; refining dt at fixed (fine) h gives temporal order ~1.
+    """
+    soil = VanGenuchten(**LOAM)
+    T = 0.5
+    msh = dmesh.create_unit_interval(MPI.COMM_WORLD, 120)
+    x = ufl.SpatialCoordinate(msh)
+    time = fem.Constant(msh, 0.0)
+    psi_star = -1.0 - 0.5 * ufl.sin(ufl.pi * x[0]) * ufl.exp(-time)
+    dpsi_dt = 0.5 * ufl.sin(ufl.pi * x[0]) * ufl.exp(-time)  # analytic d(psi*)/dt
+    e_g = ufl.as_vector([1.0])
+    f_star = soil.capacity_ufl(psi_star) * dpsi_dt - ufl.div(
+        soil.K_ufl(psi_star) * (ufl.grad(psi_star) + e_g)
+    )
+
+    def run(dt):
+        time.value = 0.0
+        prob = RichardsProblem(msh, soil, source=f_star, lumped=False)
+        prob.set_initial_condition(lambda X: -1.0 - 0.5 * np.sin(np.pi * X[0]))
+        on_ends = lambda X: np.isclose(X[0], 0.0) | np.isclose(X[0], 1.0)
+        prob.add_dirichlet(on_ends, -1.0)
+        t = 0.0
+        while t < T - 1e-12:
+            t = min(t + dt, T)
+            time.value = t  # backward-Euler: source at the new time level
+            converged, _ = prob.step(dt)
+            assert converged
+        time.value = T
+        return prob.l2_error(psi_star)
+
+    dts = [T / 5, T / 10, T / 20, T / 40]
+    errs = [run(dt) for dt in dts]
+    orders = [
+        np.log(errs[i] / errs[i + 1]) / np.log(dts[i] / dts[i + 1])
+        for i in range(len(errs) - 1)
+    ]
+    # Backward-Euler => order ~1.
+    assert orders[-1] > 0.9, f"finest temporal order={orders[-1]:.3f}; orders={orders}; errs={errs}"
+    assert min(orders) > 0.75, f"orders={orders}; errs={errs}"
