@@ -82,20 +82,22 @@ class RichardsProblem:
 
     # -- time stepping --------------------------------------------------------
     def step(self, dt: float):
-        """Advance one backward-Euler step. Returns (converged: bool, iters: int)."""
+        """Advance one backward-Euler step. Returns (converged: bool, iters: int).
+
+        Convergence is read directly from the PETSc SNES (converged reason > 0).
+        DOLFINx 0.10 ``NonlinearProblem.solve()`` returns the solution Function, not
+        a status tuple, so we must NOT infer success from its return value -- an
+        unconverged solve returns ``converged=False`` so callers fail loudly rather
+        than silently marching a diverged state.
+        """
         self.dt.value = dt
         self._ensure_problem()
-        result = self._problem.solve()  # solves in place on self.psi
-        converged, iters = self._convergence(result)
+        self._problem.solve()  # updates self.psi in place
+        snes = self._problem.solver
+        converged = snes.getConvergedReason() > 0
+        iters = int(snes.getIterationNumber())
         self.psi_n.x.array[:] = self.psi.x.array
         return converged, iters
-
-    @staticmethod
-    def _convergence(result):
-        # DOLFINx 0.10 NonlinearProblem.solve() -> (u, converged_reason, n_iters).
-        if isinstance(result, tuple) and len(result) >= 3:
-            return int(result[1]) > 0, int(result[2])
-        return True, -1
 
     # -- diagnostics ----------------------------------------------------------
     def max_abs_error(self, exact) -> float:

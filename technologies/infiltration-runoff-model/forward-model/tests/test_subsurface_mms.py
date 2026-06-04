@@ -14,7 +14,7 @@ from dolfinx import mesh as dmesh
 from pids_forward.physics.constitutive import VanGenuchten
 from pids_forward.physics.richards import RichardsProblem
 
-LOAM = dict(theta_r=0.078, theta_s=0.43, alpha=3.6, n=1.56, Ks=0.0104)
+LOAM = dict(theta_r=0.078, theta_s=0.43, alpha=3.6, n=1.56, Ks=0.2496)  # m/day
 
 
 def _manufactured_1d(msh, soil):

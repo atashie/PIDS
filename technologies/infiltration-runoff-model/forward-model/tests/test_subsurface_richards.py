@@ -15,7 +15,7 @@ from dolfinx import mesh as dmesh
 from pids_forward.physics.constitutive import VanGenuchten
 from pids_forward.physics.richards import RichardsProblem
 
-LOAM = dict(theta_r=0.078, theta_s=0.43, alpha=3.6, n=1.56, Ks=0.0104)
+LOAM = dict(theta_r=0.078, theta_s=0.43, alpha=3.6, n=1.56, Ks=0.2496)  # m/day
 
 
 def test_hydrostatic_equilibrium_is_held_1d():
@@ -37,6 +37,7 @@ def test_hydrostatic_equilibrium_is_held_1d():
     for _ in range(5):
         converged, iters = prob.step(dt=0.1)
         assert converged
+        assert 0 <= iters <= 50  # real SNES iteration count (no -1 sentinel)
 
     assert prob.max_abs_error(hydrostatic) < 1e-9
 
@@ -104,3 +105,64 @@ def test_closed_box_conserves_total_water_2d_3d(dim):
     assert np.all(np.isfinite(th))
     assert th.min() >= LOAM["theta_r"] - 1e-12
     assert th.max() <= LOAM["theta_s"] + 1e-12
+
+
+@pytest.mark.parametrize("dim", [2, 3])
+def test_gravity_acts_along_last_coordinate(dim):
+    """Pins e_g to the LAST axis: psi=-x[last] holds equilibrium, while the same
+    linear profile along a NON-gravity axis (x[0]) drives flow.
+
+    Closed-box conservation alone passes for ANY e_g (the constant test function
+    annihilates the stiffness term), so this is the only check that actually pins
+    the gravity direction in 2-D / 3-D.
+    """
+    make = dmesh.create_unit_square if dim == 2 else dmesh.create_unit_cube
+    args = (12, 12) if dim == 2 else (6, 6, 6)
+    soil = VanGenuchten(**LOAM)
+    last = dim - 1
+
+    # (a) hydrostatic along gravity (last axis) is held to ~machine precision.
+    msh = make(MPI.COMM_WORLD, *args)
+    along_g = lambda x: -x[last]
+    prob = RichardsProblem(msh, soil)
+    prob.set_initial_condition(along_g)
+    prob.add_dirichlet(lambda x: np.isclose(x[last], 0.0), 0.0)
+    for _ in range(3):
+        conv, _ = prob.step(dt=0.1)
+        assert conv
+    assert prob.max_abs_error(along_g) < 1e-9
+
+    # (b) an UNSATURATED profile varying along x[0] (NOT the gravity axis): total
+    # head -0.3-x[0]+x[last] varies, so flow IS driven. If gravity wrongly pointed
+    # along x[0], H = psi + x[0] = -0.3 would be constant => no flow, failing this.
+    # Kept strictly unsaturated to isolate the gravity-direction check from the
+    # saturated-zone regularization (A1/Ss), which is tracked and built separately.
+    msh2 = make(MPI.COMM_WORLD, *args)
+    prob2 = RichardsProblem(msh2, soil)
+    prob2.set_initial_condition(lambda x: -0.3 - x[0])
+    prob2.add_dirichlet(lambda x: np.isclose(x[0], 0.0), -0.3)
+    before = prob2.psi.x.array.copy()
+    for _ in range(3):
+        conv, _ = prob2.step(dt=0.5)
+        assert conv
+    assert np.max(np.abs(prob2.psi.x.array - before)) > 1e-4
+
+
+def test_solver_is_deterministic_1d():
+    """Fixed inputs => bit-identical output (serial LU/preonly is deterministic)."""
+    soil = VanGenuchten(**LOAM)
+
+    def run():
+        msh = dmesh.create_unit_interval(MPI.COMM_WORLD, 30)
+        p = RichardsProblem(msh, soil)
+        p.set_initial_condition(lambda x: -2.0 + 1.8 * x[0])
+        p.add_dirichlet(lambda x: np.isclose(x[0], 0.0), 0.0)
+        for _ in range(5):
+            conv, _ = p.step(dt=0.05)
+            assert conv
+        return p.psi.x.array.copy(), p.total_water()
+
+    psi_a, w_a = run()
+    psi_b, w_b = run()
+    assert np.array_equal(psi_a, psi_b)
+    assert w_a == w_b

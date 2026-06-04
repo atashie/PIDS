@@ -10,7 +10,9 @@ import pytest
 
 from pids_forward.physics.constitutive import VanGenuchten
 
-LOAM = dict(theta_r=0.078, theta_s=0.43, alpha=3.6, n=1.56, Ks=0.0104)
+# Carsel & Parrish (1988) loam, SI (length m, TIME = DAYS). Ks = 0.2496 m/day
+# (= 1.04 cm/hr); an earlier 0.0104 was m/hr mislabelled as m/day (a 24x error).
+LOAM = dict(theta_r=0.078, theta_s=0.43, alpha=3.6, n=1.56, Ks=0.2496)
 
 
 def test_saturated_at_nonnegative_pressure_head():
@@ -48,8 +50,8 @@ def test_mualem_conductivity():
     assert soil.K(0.0) == LOAM["Ks"]
     assert soil.K(0.1) == LOAM["Ks"]
     # Hand reference at psi = -1.0 m (Se = 0.46626, m = 0.358974, L = 0.5):
-    #   K = 0.0104 * 0.46626^0.5 * (1 - (1 - 0.46626^(1/m))^m)^2 = 1.4126e-5 m/day
-    assert soil.K(-1.0) == pytest.approx(1.413e-5, rel=1e-2)
+    #   K = 0.2496 * 0.46626^0.5 * (1 - (1 - 0.46626^(1/m))^m)^2 = 3.390e-4 m/day
+    assert soil.K(-1.0) == pytest.approx(3.39e-4, rel=1e-2)
     # Drier => lower K; strictly within (0, Ks].
     ks = [soil.K(p) for p in (-100.0, -10.0, -1.0, -0.1, -0.01)]
     assert all(a < b for a, b in zip(ks, ks[1:]))
