@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pids-forward"
+version = "0.0.0"
+description = "PIDS Pillar-2 forward hydrologic model (modular DOLFINx/FEniCSx FEM)"
+requires-python = ">=3.12"
+
+[tool.setuptools.packages.find]
+include = ["pids_forward*"]
+
+[tool.pytest.ini_options]
+# Make the package importable without an editable install, and discover tests/.
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"
