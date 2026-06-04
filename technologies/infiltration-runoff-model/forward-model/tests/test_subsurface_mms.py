@@ -33,7 +33,9 @@ def test_mms_spatial_convergence_order_1d():
     for ncells in (10, 20, 40, 80):
         msh = dmesh.create_unit_interval(MPI.COMM_WORLD, ncells)
         psi_star, f_star = _manufactured_1d(msh, soil)
-        prob = RichardsProblem(msh, soil, source=f_star)
+        # Consistent mass (not lumped) so the spatial L2 order is the clean ~2
+        # (mass-lumping degrades the order; it is the production / front-stability path).
+        prob = RichardsProblem(msh, soil, source=f_star, lumped=False)
         prob.set_initial_condition(lambda X: -1.0 - 0.5 * np.sin(np.pi * X[0]))
         on_ends = lambda X: np.isclose(X[0], 0.0) | np.isclose(X[0], 1.0)
         prob.add_dirichlet(on_ends, -1.0)

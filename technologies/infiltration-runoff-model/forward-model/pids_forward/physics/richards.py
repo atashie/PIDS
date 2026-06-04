@@ -43,7 +43,8 @@ class RichardsProblem:
         "pc_type": "lu",
     }
 
-    def __init__(self, mesh, soil, *, degree: int = 1, source=None, petsc_options=None):
+    def __init__(self, mesh, soil, *, degree: int = 1, source=None, petsc_options=None,
+                 lumped: bool = True):
         self.mesh = mesh
         self.soil = soil
         self.V = fem.functionspace(mesh, ("Lagrange", degree))
@@ -56,12 +57,19 @@ class RichardsProblem:
         self.e_g = fem.Constant(mesh, e_g)
         self.dt = fem.Constant(mesh, PETSc.ScalarType(1.0))
 
+        # Mass-lumped storage (vertex quadrature) suppresses wetting-front
+        # oscillation (design B.4); pass lumped=False for clean MMS L2 order.
+        self._dx_storage = (
+            ufl.dx(metadata={"quadrature_rule": "vertex", "quadrature_degree": 1})
+            if lumped
+            else ufl.dx
+        )
         v = ufl.TestFunction(self.V)
         theta = soil.theta_ufl(self.psi)
         theta_n = soil.theta_ufl(self.psi_n)
         K = soil.K_ufl(self.psi)
         # Mixed-form backward-Euler residual; Darcy flux q = -K (grad psi + e_g).
-        self.F = ((theta - theta_n) / self.dt) * v * ufl.dx + K * ufl.dot(
+        self.F = ((theta - theta_n) / self.dt) * v * self._dx_storage + K * ufl.dot(
             ufl.grad(self.psi) + self.e_g, ufl.grad(v)
         ) * ufl.dx
         # Optional volumetric source/sink (e.g. an MMS forcing term or root uptake).
@@ -158,8 +166,12 @@ class RichardsProblem:
         return self.mesh.comm.allreduce(float(diff.max()), op=MPI.MAX)
 
     def total_water(self) -> float:
-        """Total stored water, integral of theta(psi) over the domain."""
-        form = fem.form(self.soil.theta_ufl(self.psi) * ufl.dx)
+        """Total stored water = integral of theta(psi), using the storage quadrature.
+
+        Uses the same (lumped) measure as the storage term, so the closed-system
+        conserved quantity matches what the time integrator actually conserves.
+        """
+        form = fem.form(self.soil.theta_ufl(self.psi) * self._dx_storage)
         local = fem.assemble_scalar(form)
         return self.mesh.comm.allreduce(local, op=MPI.SUM)
 
