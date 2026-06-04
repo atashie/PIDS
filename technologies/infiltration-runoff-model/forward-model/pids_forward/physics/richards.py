@@ -23,7 +23,7 @@ from petsc4py import PETSc
 class RichardsProblem:
     """A mixed-form Richards initial-boundary-value problem on a given mesh."""
 
-    def __init__(self, mesh, soil, *, degree: int = 1):
+    def __init__(self, mesh, soil, *, degree: int = 1, source=None):
         self.mesh = mesh
         self.soil = soil
         self.V = fem.functionspace(mesh, ("Lagrange", degree))
@@ -44,6 +44,9 @@ class RichardsProblem:
         self.F = ((theta - theta_n) / self.dt) * v * ufl.dx + K * ufl.dot(
             ufl.grad(self.psi) + self.e_g, ufl.grad(v)
         ) * ufl.dx
+        # Optional volumetric source/sink (e.g. an MMS forcing term or root uptake).
+        if source is not None:
+            self.F = self.F - source * v * ufl.dx
 
         self._bcs: list = []
         self._problem: NonlinearProblem | None = None
@@ -110,3 +113,9 @@ class RichardsProblem:
     def theta_array(self) -> np.ndarray:
         """Nodal water content theta(psi) at the (P1) degrees of freedom."""
         return self.soil.theta(self.psi.x.array)
+
+    def l2_error(self, exact_ufl) -> float:
+        """L2 norm ||psi - exact||, with exact a UFL expression on this mesh."""
+        form = fem.form((self.psi - exact_ufl) ** 2 * ufl.dx(metadata={"quadrature_degree": 6}))
+        local = fem.assemble_scalar(form)
+        return float(np.sqrt(self.mesh.comm.allreduce(local, op=MPI.SUM)))
