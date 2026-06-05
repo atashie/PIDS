@@ -33,7 +33,8 @@ Four scenarios spanning antecedent wetness × event size, all in `validation/san
 | `intense-wet` | extreme storm (2.0 m/day) · wet (ψ=−0.3) | **saturation-excess → ponds most** | 0.190 m | 3.8e-15 |
 | `small-mesic` | small event (0.02 m/day) · mesic (ψ=−1) | shallow wetting | 0 | 6.0e-12 |
 
-- **What to look for:** drag the time slider — for the small/typical events the column wets without ponding; for the intense events the top reaches **θ_s = 0.43** then **`ψ` climbs above 0 (ponding head)** as the surface store fills (most on wet soil). The mass-balance error (now soil + pond) stays at machine precision throughout.
+- Each run is a **storm followed by an equal-length rainless recession** (rain off in the second half). In the recession the wetting relaxes toward hydrostatic equilibrium (and the intense-dry pond drains into the still-unsaturated lower soil).
+- **What to look for:** drag the time slider — for the small/typical events the column wets without ponding; for the intense events the top reaches **θ_s = 0.43** then **`ψ` climbs above 0 (ponding head)** as the surface store fills (most on wet soil), then recedes. With the impermeable (no-flux) base, the intense-wet column also saturates **from the bottom up** (water-table mounding) — see the Module-1 notes. The mass-balance error (soil + pond) stays at machine precision throughout.
 - **Surface ponding** is a vertical-accumulation store only (raising the pressure head); lateral routing/runoff is the overland module.
 - **Human sign-off:** _______________ (name / date / verdict — Arik)
 

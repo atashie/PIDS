@@ -48,17 +48,18 @@ SCENARIOS = {
 
 
 def run_scenario(key: str, cfg: dict, out_dir: str) -> str:
-    psi0, q, T = cfg["psi0"], cfg["q"], cfg["T"]
+    psi0, q, T_storm = cfg["psi0"], cfg["q"], cfg["T"]
+    T_total = 2.0 * T_storm  # storm + an equal-length rainless recession period
     msh = dmesh.create_unit_interval(MPI.COMM_WORLD, 60)
     soil = VanGenuchten(**LOAM)
     prob = RichardsProblem(msh, soil)
     prob.set_initial_condition(lambda x: psi0 + 0.0 * x[0])
-    prob.add_ponding_bc(lambda x: np.isclose(x[0], 1.0), q)  # rain + ponding at the top
+    rain = prob.add_ponding_bc(lambda x: np.isclose(x[0], 1.0), q)  # toggled on/off below
 
     z = prob.V.tabulate_dof_coordinates()[:, 0]
     order = np.argsort(z)
     z = z[order]
-    times = np.round(np.linspace(0.0, T, 21), 6)
+    times = np.round(np.linspace(0.0, T_total, 21), 6)
     s0 = prob.total_water() + prob.ponded_depth()
 
     psi_rec = [prob.psi.x.array[order].copy()]
@@ -67,14 +68,16 @@ def run_scenario(key: str, cfg: dict, out_dir: str) -> str:
     mb_rec = [0.0]
     prev = 0.0
     for tk in times[1:]:
+        rain.value = q if tk <= T_storm + 1e-9 else 0.0  # rain only in the first half
         prob.advance(t_end=float(tk - prev), dt=0.005)
         prev = tk
         psi_rec.append(prob.psi.x.array[order].copy())
         theta_rec.append(prob.theta_array()[order].copy())
         pond = prob.ponded_depth()
         pond_rec.append(pond)
+        cum_in = q * min(tk, T_storm)  # cumulative rain (constant through the recession)
         dS = (prob.total_water() + pond) - s0
-        mb_rec.append(abs(dS - q * tk) / (q * tk))
+        mb_rec.append(abs(dS - cum_in) / cum_in if cum_in > 0 else 0.0)
 
     ds = xr.Dataset(
         data_vars=dict(
@@ -93,12 +96,13 @@ def run_scenario(key: str, cfg: dict, out_dir: str) -> str:
         ),
         attrs=dict(
             module="subsurface (mixed-form Richards)",
-            scenario=f"{cfg['event']} on {cfg['antecedent']} soil",
+            scenario=f"{cfg['event']} on {cfg['antecedent']} soil (+ equal rainless recession)",
             date=DATE,
             soil="Carsel & Parrish (1988) loam",
             theta_r=LOAM["theta_r"], theta_s=LOAM["theta_s"], Ks_m_per_day=LOAM["Ks"],
             rain_flux_m_per_day=q,
-            cumulative_input_m=float(q * T),
+            storm_duration_day=float(T_storm),
+            cumulative_input_m=float(q * T_storm),
             ponded_depth_max_m=float(np.max(pond_rec)),
             mass_balance_error_max=float(np.max(mb_rec)),
         ),
