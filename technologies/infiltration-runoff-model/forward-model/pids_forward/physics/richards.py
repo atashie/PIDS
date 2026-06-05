@@ -15,6 +15,7 @@ from __future__ import annotations
 import numpy as np
 import ufl
 from dolfinx import fem
+from dolfinx import mesh as dmesh
 from dolfinx.fem.petsc import NonlinearProblem
 from mpi4py import MPI
 from petsc4py import PETSc
@@ -76,7 +77,9 @@ class RichardsProblem:
         if source is not None:
             self.F = self.F - source * v * ufl.dx
 
+        self._v = v
         self._bcs: list = []
+        self._flux_tags: list = []
         self._petsc_options = dict(petsc_options or self._DEFAULT_PETSC_OPTIONS)
         self._problem: NonlinearProblem | None = None
 
@@ -90,6 +93,32 @@ class RichardsProblem:
         bc = fem.dirichletbc(PETSc.ScalarType(value), dofs, self.V)
         self._bcs.append(bc)
         self._problem = None  # force rebuild with the new BC set
+
+    def add_flux_bc(self, locator, flux):
+        """Prescribe a normal INFLUX (m/day, positive INTO the domain) on a boundary.
+
+        ``flux`` may be a float or a ``fem.Constant``; for time-dependent forcing
+        (rainfall / evaporation) pass a Constant and update its ``.value`` each step.
+        Returns the Constant so the caller can drive it. Enters the weak form as the
+        natural Neumann term ``-flux * v * ds`` (zero-flux is the default if unset).
+        """
+        fdim = self.mesh.topology.dim - 1
+        self.mesh.topology.create_connectivity(fdim, self.mesh.topology.dim)
+        facets = np.sort(dmesh.locate_entities_boundary(self.mesh, fdim, locator))
+        tag = len(self._flux_tags) + 1
+        self._flux_tags.append(tag)
+        ft = dmesh.meshtags(
+            self.mesh, fdim, facets, np.full(facets.shape, tag, dtype=np.int32)
+        )
+        ds = ufl.Measure("ds", domain=self.mesh, subdomain_data=ft)
+        q = (
+            flux
+            if isinstance(flux, fem.Constant)
+            else fem.Constant(self.mesh, PETSc.ScalarType(float(flux)))
+        )
+        self.F = self.F - q * self._v * ds(tag)
+        self._problem = None  # force rebuild with the new flux term
+        return q
 
     def _ensure_problem(self) -> None:
         if self._problem is None:
