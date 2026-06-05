@@ -5,7 +5,7 @@ The 3-D variably-saturated hydrologic engine that simulates infiltration, runoff
 
 ## 2. Status
 - Maturity: **in-development**. Engine selected, install spike **PASSED**, architecture design drafted (all 2026-06-04 — [design](../../../docs/plans/2026-06-04-pids-forward-model-architecture-design.md)).
-- **Module 1 (subsurface) BUILT + three-tier sanity-checked 2026-06-04** (`pids_forward/`): dimension-agnostic mixed-form Richards (Celia 1990), van Genuchten–Mualem with **Vogel/Ippisch air-entry**, **mass-lumped** storage, adaptive backward-Euler (cut-and-retry), PETSc SNES Newton; boundary conditions = Dirichlet head, Neumann flux (rainfall/evaporation), and a **surface ponding store** (excess raises the head; vertical accumulation only). **20 automated tests** (Tier-1 + Tier-2) green; report at [`../validation/sanity/subsurface__2026-06-04.md`](../validation/sanity/subsurface__2026-06-04.md), Tier-3 viz under `../validation/sanity/viz/`. **Next: Module 2 (overland).**
+- **Module 1 (subsurface) COMPLETE 2026-06-04** — three-tier sanity-checked + **Tier-3 signed off** (Arik) (`pids_forward/`): dimension-agnostic mixed-form Richards (Celia 1990), van Genuchten–Mualem with **Vogel/Ippisch air-entry**, **mass-lumped** storage, adaptive backward-Euler (cut-and-retry), PETSc SNES Newton; boundary conditions = Dirichlet head, Neumann flux (rainfall/evaporation), and a **surface ponding store** (excess raises the head; vertical accumulation only). **20 automated tests** (Tier-1 + Tier-2) green; report at [`../validation/sanity/subsurface__2026-06-04.md`](../validation/sanity/subsurface__2026-06-04.md), Tier-3 viz under `../validation/sanity/viz/`. **Next: Module 2 (overland).**
 - Last reviewed: 2026-06-04
 
 ## 3. Scientific basis

@@ -36,7 +36,7 @@ Four scenarios spanning antecedent wetness × event size, all in `validation/san
 - Each run is a **storm followed by an equal-length rainless recession** (rain off in the second half). In the recession the wetting relaxes toward hydrostatic equilibrium (and the intense-dry pond drains into the still-unsaturated lower soil).
 - **What to look for:** drag the time slider — for the small/typical events the column wets without ponding; for the intense events the top reaches **θ_s = 0.43** then **`ψ` climbs above 0 (ponding head)** as the surface store fills (most on wet soil), then recedes. With the impermeable (no-flux) base, the intense-wet column also saturates **from the bottom up** (water-table mounding) — see the Module-1 notes. The mass-balance error (soil + pond) stays at machine precision throughout.
 - **Surface ponding** is a vertical-accumulation store only (raising the pressure head); lateral routing/runoff is the overland module.
-- **Human sign-off:** _______________ (name / date / verdict — Arik)
+- **Human sign-off:** **Arik Tashie — 2026-06-04 — PASS** ("this looks very reasonable"). Tier-3 visual gate cleared across all four scenarios (typical/small on mesic; intense on dry/wet), with soil-layer + field-capacity/saturation reference overlays and the storm-plus-recession timing.
 
 ## Residual concerns / waivers
 1. **Saturation/ponding under realistic (rainfall) forcing now converges** via the surface ponding store (excess raises the pressure head, mass-conserving). The only remaining edge is an *instantaneous, prescribed-head* (Dirichlet ψ>0) jump onto bone-dry soil — a numerically violent idealization that lumped-mass + no-`Ss` cannot take in one step; it does not arise under flux/rainfall forcing. *Documented in the saturation test.*
@@ -44,4 +44,4 @@ Four scenarios spanning antecedent wetness × event size, all in `validation/san
 3. **Cross-code validation (HydroGeoSphere / the `PIDS-MIN-1` benchmark)** is optional/deferred per the 2026-06-04 decision; this report establishes internal three-tier consistency, not external validation of headline numbers.
 4. **MPI > 1 not yet exercised** — a ghost `scatter_forward` was added for parallel safety, but a 2-rank conservation/retry regression is still TODO.
 
-## Verdict: **PASS** (Tier-1 + Tier-2 automated; pending the Tier-3 human sign-off above)
+## Verdict: **PASS** — all three tiers cleared (Tier-1 + Tier-2 automated; **Tier-3 human sign-off recorded 2026-06-04, Arik Tashie**). Module 1 (subsurface) is **DONE**; next per the build order is Module 2 (overland).
