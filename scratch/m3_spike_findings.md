@@ -86,7 +86,19 @@ surface (but the coupling math is trivial/diagonal, and adversarial TDD covers t
 Net: the A/B choice is a real simplicity-vs-efficiency tradeoff; the 2× is genuine, so B's
 efficiency motive is legitimate for 3-D-at-scale + optimization loops.
 
-## Recommendation (post-Codex): realization **S** (design-intended submesh)
+## SUPERSEDED 2026-06-05: realization S is FFCX-blocked → build on A for now
+
+> The realization-S recommendation below is **superseded**. Building S (the submesh blocked Newton)
+> hit a robust upstream **FFCX 0.10 codegen bug** (a mixed-dim codim-0 `entity_type=="cell"` integral
+> — the overland self-Jacobian on the submesh — falls through a missing `else` in
+> `build_optimized_tables` → `t` unbound). It is not avoidable by per-block compilation / ordering /
+> cache-clear. **Decision (Arik, 2026-06-05): build 2-D/3-D on realization A (co-located, the working
+> 1-D realization, stock FFCX, correct/publishable); file the bug upstream; migrate to S when the fix
+> releases.** Full record: `docs/plans/2026-06-05-module3-realization-ffcx-bug.md`; decision-log
+> 2026-06-05. The cost framing below is also corrected there (A ≈ ~2–3× DOFs / ~2× solve, O(N) — NOT
+> "free after optimization").
+
+## Recommendation (post-Codex, 2026-06-05 — now SUPERSEDED, see above): realization **S** (design-intended submesh)
 
 Adopt **S** for 2-D/3-D: `d` on the top-facet submesh, coupling on parent `ds_top`, low-level
 blocked assembly + blocked Newton, exact Galerkin Robin, `EntityMap` from `create_submesh`. It

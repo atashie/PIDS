@@ -104,6 +104,8 @@ One **blocked** function space carries all unknowns for a single Newton solve:
 
 > **Block-1 mesh realization is gated on Q7** (top boundary facets vs explicit 2-D submesh). The whole design is built on the **working default = top boundary facets** (used firmly in §C/§D), but the `TermModule`/`State` contract is written to tolerate **either** realization (a facet-restricted field or a co-dim-1 submesh) so the M0 contract freeze does not pre-bind it.
 
+> **RESOLUTION 2026-06-05 (Q7 / R1).** The surface fields are realized **facet-restricted / co-located on the host (realization A)** for now: 1-D is built this way (suite 45/45) and 2-D/3-D continues on it. The DOF-efficient **co-dim-1 submesh (realization S)** is the design-intended target but is currently **blocked by an upstream FFCX 0.10 mixed-dimensional codegen bug** (a codim-0 `entity_type=="cell"` integral falls through `build_optimized_tables`); deferred until the upstream fix releases, then a realization-agnostic migration. Full record + the fix: `docs/plans/2026-06-05-module3-realization-ffcx-bug.md`; decision-log 2026-06-05.
+
 > **R1 conditionality (read before freezing any contract).** The blocked-nest layout here, the §F submesh embedding, and the §H three-field fieldsplit **all assume** cross-mesh `ufl.derivative` works in DOLFINx 0.10 — the dominant build risk (R1). The M0 **cross-mesh `ufl.derivative` spike is a STANDALONE blocking gate** that precedes the rest of M0's contract-freezing: **no contract is frozen until the spike passes or selects a fallback** — (a) host-mesh co-dim line restriction, or (b) immersed line-source-for-all. If the fallback is *immersed-for-all*, the conforming-submesh path in §F and the tunnel "prefer conforming" preference are dropped.
 
 ```python
