@@ -137,16 +137,16 @@ def build_overland_html(nc_path: str, html_path: str) -> str:
         specs=[
             [{"type": "xy", "colspan": 2}, None],
             [{"type": "xy", "colspan": 2, "secondary_y": True}, None],
-            [{"type": "xy", "secondary_y": True}, {"type": "xy"}],
+            [{"type": "xy"}, {"type": "xy", "secondary_y": True}],
         ],
         row_heights=[0.36, 0.34, 0.30],
         vertical_spacing=0.11,
-        horizontal_spacing=0.10,
+        horizontal_spacing=0.16,
         subplot_titles=(
             "Overland sheet depth  d(x)  along the hillslope  [mm]",
             "Outlet hydrograph (line) + hyetograph (inverted bars)",
-            "Diagnostics: mass-balance error (log) &amp; Newton iterations",
-            "Diagnostics: max velocity",
+            "Diagnostics: mass-balance error (log)",
+            "Diagnostics: max velocity &amp; Newton iterations",
         ),
     )
 
@@ -215,7 +215,7 @@ def build_overland_html(nc_path: str, html_path: str) -> str:
         row=2, col=1, secondary_y=False,
     )
 
-    # =============================================================== row3 left: MBE + iters
+    # =============================================================== row3 left: MBE (single axis)
     mbe_plot = np.where(np.abs(mbe) <= 0, np.nan, np.abs(mbe))  # guard zeros for log axis
     fig.add_trace(
         go.Scatter(
@@ -225,20 +225,12 @@ def build_overland_html(nc_path: str, html_path: str) -> str:
             name="|mass-balance error|",
             hovertemplate="t=%{x:.4f} day<br>err=%{y:.3e}<extra></extra>",
         ),
-        row=3, col=1, secondary_y=False,
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=time, y=niter, mode="lines+markers",
-            line=dict(color=ITER_COLOR, width=1.6, dash="dot"),
-            marker=dict(size=4, color=ITER_COLOR),
-            name="Newton iters",
-            hovertemplate="t=%{x:.4f} day<br>iters=%{y:.0f}<extra></extra>",
-        ),
-        row=3, col=1, secondary_y=True,
+        row=3, col=1,
     )
 
-    # =============================================================== row3 right: max velocity
+    # ====================================== row3 right: max velocity (left) + Newton iters (right)
+    # Newton iters share the velocity panel on its FAR-right secondary axis, so its label sits at
+    # the figure edge (clear of col-1) rather than colliding with the velocity axis in the gap.
     fig.add_trace(
         go.Scatter(
             x=time, y=vmax, mode="lines+markers",
@@ -248,6 +240,16 @@ def build_overland_html(nc_path: str, html_path: str) -> str:
             hovertemplate="t=%{x:.4f} day<br>v_max=%{y:.4f} " + v_units + "<extra></extra>",
         ),
         row=3, col=2, secondary_y=False,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=time, y=niter, mode="lines+markers",
+            line=dict(color=ITER_COLOR, width=1.6, dash="dot"),
+            marker=dict(size=4, color=ITER_COLOR),
+            name="Newton iters",
+            hovertemplate="t=%{x:.4f} day<br>iters=%{y:.0f}<extra></extra>",
+        ),
+        row=3, col=2, secondary_y=True,
     )
 
     # =============================================================== animation frames
@@ -318,15 +320,16 @@ def build_overland_html(nc_path: str, html_path: str) -> str:
     fig.update_yaxes(title_text=f"rainfall r  [{r_units}]", range=[r_range[1], r_range[0]],
                      row=2, col=1, secondary_y=True, showgrid=False)
 
-    # row3 left: MBE (log) + iters
+    # row3 left: MBE (log), single axis
     fig.update_xaxes(title_text=f"time  [{t_units}]", row=3, col=1)
     fig.update_yaxes(title_text="|mass-balance err|", type="log",
-                     exponentformat="power", row=3, col=1, secondary_y=False)
-    fig.update_yaxes(title_text="Newton iters", row=3, col=1, secondary_y=True,
-                     showgrid=False, rangemode="tozero")
-    # row3 right: max velocity
+                     exponentformat="power", row=3, col=1)
+    # row3 right: max velocity (left) + Newton iters (far-right secondary)
     fig.update_xaxes(title_text=f"time  [{t_units}]", row=3, col=2)
-    fig.update_yaxes(title_text=f"v_max  [{v_units}]", row=3, col=2, rangemode="tozero")
+    fig.update_yaxes(title_text=f"v_max  [{v_units}]", row=3, col=2, secondary_y=False,
+                     rangemode="tozero")
+    fig.update_yaxes(title_text="Newton iters", row=3, col=2, secondary_y=True,
+                     showgrid=False, rangemode="tozero")
 
     # =============================================================== metrics panel
     metrics_lines = [
@@ -353,7 +356,7 @@ def build_overland_html(nc_path: str, html_path: str) -> str:
         bgcolor="rgba(245,245,245,0.95)",
     )
 
-    title = f"{module} &middot; storm hydrograph &middot; {date}"
+    title = f"{module} &middot; {scenario} &middot; {date}"
     fig.update_layout(
         title=dict(text="<b>PIDS Pillar-2 sanity (Tier-3)</b><br>"
                         f"<span style='font-size:13px'>{title}</span>",
