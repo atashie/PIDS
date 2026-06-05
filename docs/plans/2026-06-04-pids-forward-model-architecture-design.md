@@ -256,13 +256,14 @@ The **only** dimension-aware quantity is gravity: `e_g = as_vector([0]*(gdim-1) 
 
 - **Dirichlet head** (`h=h_D`; water-table/fixed-head bottom, probe `H_bot=0`): `fem.dirichletbc`.
 - **Neumann flux** (`q·n=q_N`; recharge / no-flow `q_N=0`): natural via `ds`.
-- **Atmospheric** (infiltration/evaporation-limited): **flux-with-head-cap switch** — apply `q=−p(t)` while `h∈[h_min,0]`; on ponding (`h>0`) or over-drying switch to Dirichlet (`h=0` or `h=h_min`). Smooth `conditional` cap by default; the one place Module 1 *may* later borrow VI machinery. **Switching ownership is shared with §D coupling** (rain↔ponding↔seepage).
-- **Seepage face** (complementary `h≤0, q·n≥0`): default smooth penalty, VI-exact optional.
+- **Rainfall + surface ponding (IMPLEMENTED 2026-06-04, `add_ponding_bc`):** rainfall enters as a Neumann influx; the excess the soil cannot infiltrate accumulates as a **surface ponding store** of depth `d = max(h, 0)` that raises the surface head — `rain = infiltration + d(pond)/dt`, mass-conserving, **vertical accumulation only** (lateral routing is the §C/§D overland module). The pond store also gives a saturated surface node a nonzero storage diagonal, so **saturation-excess storms (intense rain on wet soil) converge** with no `Ss` term. *Deferred:* the **supply-limited evaporation** head-cap (a fixed evaporative flux exceeding the soil's delivery capacity diverges as the surface dries below what `K(ψ)` can supply) needs an atmospheric/Robin switch, owned with the forcing/vegetation module.
+- **Seepage face** (complementary `h≤0, q·n≥0`): default smooth penalty, VI-exact optional (deferred).
+- **Lower boundary (geologic setting):** the default **no-flux** base (impermeable bedrock / aquitard) makes the column fill from the **bottom up** under sustained recharge — *water-table mounding* against the base, meeting the top-down infiltration front in the middle last (an expected, verified behaviour). A **free-drainage / deep-water-table** lower BC (unit-gradient outflow `q = K(h)`) instead yields the classic top-down front; it is the alternative for soil over a deep water table (a small future addition).
 - **Initial conditions:** hydrostatic `h=z_wt − z` (probe `psi=−z`, `H=0`, the exact zero-flux steady state = host sanity gate), or prescribed antecedent profiles (saturated / field-capacity / bone-dry) for Tier-2.
 
 ### B.7 Interface to pids-features (reference only)
 
-Module 1 **exposes** soil-side state at any embedded location: `h(x), θ(x), K(h(x))`, and the per-cell `Q_exchange` slot. Because exchange `q = σ·(H_f − H_soil)` (hydraulic heads, `H_soil = ψ_soil + z`) is **series-limited by soil `K(ψ)` and matric potential `ψ = h`**, soil-limited behavior (dry clay imbibing fast via high suction despite low `K`) is captured natively. Module 1 guarantees `h, K(h)` are evaluable/**differentiable** at the embedding manifold (with the `Se`-floor keeping `dK/dψ` finite on dry soil, B.2) so §E/§D assemble a smooth monolithic exchange Jacobian. Module 1 does **not** define `σ`, faces, or geometry.
+Module 1 **exposes** soil-side state at any embedded location: `h(x), θ(x), K(h(x))`, and the per-cell `Q_exchange` slot. Because exchange `q = σ·(H_f − H_soil)` (hydraulic heads, `H_soil = ψ_soil + z`) is **series-limited by soil `K(ψ)` and matric potential `ψ = h`**, soil-limited behavior (dry clay imbibing fast via high suction despite low `K`) is captured natively. Module 1 guarantees `h, K(h)` are evaluable/**differentiable** at the embedding manifold (with the **Vogel air-entry** keeping `dK/dψ` finite *through saturation*, B.2) so §E/§D assemble a smooth monolithic exchange Jacobian. Module 1 does **not** define `σ`, faces, or geometry.
 
 ### B.8 Three-tier sanity plan
 
@@ -283,7 +284,7 @@ Run **1-D first** (reuse probe host), then *same UFL* on 2-D/3-D for conservatio
 
 **Tier 2 (1-D column → 2-D/3-D):** typical storm; 100-yr **sub-hourly** Atlas-14 storm; 100-yr drought (monotone drying); **saturated** & **bone-dry** antecedents. Expect ponding/runoff onset when supply>capacity; monotone inter-event redistribution; no mass leak across `dt` sub-hourly→daily.
 
-**Tier 3 (viz subagent):** `h`/`θ`-vs-depth profile with **time slider**; wetting-front transect **heatmap**; **mass-balance + Newton-iter** diagnostics panel. NetCDF (dims `z,t`; vars `head,saturation`; scalars `mass_balance_residual,newton_iters`; `metrics` attr); viz agent never imports the solver.
+**Tier 3 (viz subagent):** `h`/`θ`-vs-depth profile with **time slider**; **mass-balance vs time** diagnostic; metrics panel. NetCDF (dims `z,t`; vars `head, water_content, ponded_depth, mass_balance_error`; `metrics`/soil attrs); viz agent never imports the solver. *Implemented 2026-06-04:* `forward-model/viz/make_sanity_html.py` (self-contained offline Plotly HTML) over four scenarios (typical/small on mesic; intense on dry/wet), each a storm + equal rainless recession.
 
 **Artifacts:** `forward-model/tests/test_subsurface_*.py` (+ `tests/analytical/`); `validation/sanity/subsurface__<YYYY-MM-DD>.md`; `validation/sanity/viz/subsurface__<check>__<YYYY-MM-DD>.html`. **Seed:** port `scratch/catchvalve_probe.py`'s mixed-form residual, VG/Mualem closures, hydrostatic gate, and Newton loop into dimension-agnostic UFL; **drop the retired catch-valve term**.
 

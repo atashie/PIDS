@@ -79,6 +79,14 @@ def run_scenario(key: str, cfg: dict, out_dir: str) -> str:
         dS = (prob.total_water() + pond) - s0
         mb_rec.append(abs(dS - cum_in) / cum_in if cum_in > 0 else 0.0)
 
+    # Per-elevation soil reference moisture (constant now -- uniform loam; will VARY with z
+    # once soils are heterogeneous): field capacity at psi = -3.37 m (~ -33 kPa) and saturation.
+    psi_fc = -3.37
+    theta_fc = np.full(z.shape, float(soil.theta(psi_fc)))
+    theta_sat = np.full(z.shape, float(soil.theta_s))
+    # Soil-layer interfaces (all the same loam now; demo for the layered visualization).
+    layer_z = np.array([0.25, 0.50, 0.75])
+
     ds = xr.Dataset(
         data_vars=dict(
             head=(("time", "z"), np.array(psi_rec),
@@ -89,10 +97,17 @@ def run_scenario(key: str, cfg: dict, out_dir: str) -> str:
                           {"units": "m", "long_name": "surface ponded depth max(psi,0)"}),
             mass_balance_error=(("time",), np.array(mb_rec),
                                 {"units": "-", "long_name": "relative mass-balance error (soil + pond)"}),
+            field_capacity=(("z",), theta_fc,
+                            {"units": "m3/m3", "long_name": "field capacity theta_fc (psi=-3.37 m)"}),
+            saturation_content=(("z",), theta_sat,
+                                {"units": "m3/m3", "long_name": "saturated water content theta_s"}),
+            layer_interface=(("layer",), layer_z,
+                             {"units": "m", "long_name": "soil-layer interface elevation"}),
         ),
         coords=dict(
             time=("time", times, {"units": "day"}),
             z=("z", z, {"units": "m", "long_name": "elevation (0 = bottom, 1 = top)"}),
+            layer=("layer", np.arange(layer_z.size)),
         ),
         attrs=dict(
             module="subsurface (mixed-form Richards)",

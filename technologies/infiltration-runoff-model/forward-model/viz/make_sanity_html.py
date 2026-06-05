@@ -77,6 +77,15 @@ def build_profile_html(nc_path: str, html_path: str) -> str:
     theta = np.asarray(ds["water_content"].values, dtype=float)  # (time, z) water content
     mbe = np.asarray(ds["mass_balance_error"].values, dtype=float)  # (time,)
 
+    # optional per-elevation soil references + layer interfaces (vary with z when
+    # soils are heterogeneous; constant for a uniform column)
+    fc = np.asarray(ds["field_capacity"].values, dtype=float) if "field_capacity" in ds else None
+    sat_z = np.asarray(ds["saturation_content"].values, dtype=float) if "saturation_content" in ds else None
+    layer_z = (
+        np.atleast_1d(np.asarray(ds["layer_interface"].values, dtype=float))
+        if "layer_interface" in ds else np.array([])
+    )
+
     z_units = _units(ds["z"], "m")
     t_units = _units(ds["time"], "day")
     head_units = _units(ds["head"], "m")
@@ -132,28 +141,42 @@ def build_profile_html(nc_path: str, html_path: str) -> str:
         ),
     )
 
-    # ---- static reference lines on the theta panel (theta_r, theta_s) ----
-    if theta_r is not None:
-        fig.add_vline(
-            x=float(theta_r), line=dict(color="#c0392b", width=1, dash="dot"),
+    # ---- soil-layer interfaces: fine grey horizontal lines, behind the profiles ----
+    # exclude_empty_subplots=False: these are added before any traces exist on the panels.
+    for zl in layer_z:
+        for _c in (1, 2):
+            fig.add_hline(
+                y=float(zl), line=dict(color="rgba(110,110,110,0.45)", width=1),
+                row=1, col=_c, layer="below", exclude_empty_subplots=False,
+            )
+
+    # ---- soil reference lines (field capacity, saturation): added FIRST so the colored
+    #      profiles overwrite them; per-elevation, so they bend with layered soils ----
+    if fc is not None:
+        fig.add_trace(
+            go.Scatter(
+                x=fc, y=z, mode="lines",
+                line=dict(color="#8d6e63", width=1.4, dash="dash"),
+                name="field capacity",
+                hovertemplate="theta_fc=%{x:.3f}<br>z=%{y:.3f} m<extra></extra>",
+            ),
             row=1, col=1,
-            annotation_text=f"theta_r={_fmt(theta_r)}",
-            annotation_position="bottom right",
-            annotation_font=dict(size=10, color="#c0392b"),
         )
-    if theta_s is not None:
-        fig.add_vline(
-            x=float(theta_s), line=dict(color="#1f6f3d", width=1, dash="dot"),
+    if sat_z is not None:
+        fig.add_trace(
+            go.Scatter(
+                x=sat_z, y=z, mode="lines",
+                line=dict(color="#2e7d32", width=1.4, dash="dash"),
+                name="saturation",
+                hovertemplate="theta_s=%{x:.3f}<br>z=%{y:.3f} m<extra></extra>",
+            ),
             row=1, col=1,
-            annotation_text=f"theta_s={_fmt(theta_s)} (saturation)",
-            annotation_position="top left",
-            annotation_font=dict(size=10, color="#1f6f3d"),
         )
 
-    # ---- initial (t=0) profile traces ----
+    # ---- animated profiles (indices computed dynamically so frames track them) ----
     THETA_COLOR = "#1565c0"
     HEAD_COLOR = "#6a1b9a"
-
+    i_theta = len(fig.data)
     fig.add_trace(
         go.Scatter(
             x=theta[0], y=z, mode="lines+markers",
@@ -164,6 +187,7 @@ def build_profile_html(nc_path: str, html_path: str) -> str:
         ),
         row=1, col=1,
     )
+    i_head = len(fig.data)
     fig.add_trace(
         go.Scatter(
             x=head[0], y=z, mode="lines+markers",
@@ -175,9 +199,8 @@ def build_profile_html(nc_path: str, html_path: str) -> str:
         row=1, col=2,
     )
 
-    # ---- diagnostics: mass-balance error vs time (static, full series) ----
-    # guard against zeros for log axis
-    mbe_plot = np.where(np.abs(mbe) <= 0, np.nan, np.abs(mbe))
+    # ---- diagnostics: mass-balance error vs time ----
+    mbe_plot = np.where(np.abs(mbe) <= 0, np.nan, np.abs(mbe))  # guard zeros for log axis
     fig.add_trace(
         go.Scatter(
             x=time, y=mbe_plot, mode="lines+markers",
@@ -188,8 +211,8 @@ def build_profile_html(nc_path: str, html_path: str) -> str:
         ),
         row=2, col=1,
     )
-    # moving time-marker on the diagnostics panel (animates with the slider)
     t0_err = mbe_plot[0] if np.isfinite(mbe_plot[0]) else np.nanmin(mbe_plot)
+    i_marker = len(fig.data)
     fig.add_trace(
         go.Scatter(
             x=[time[0]], y=[t0_err], mode="markers",
@@ -201,9 +224,7 @@ def build_profile_html(nc_path: str, html_path: str) -> str:
         row=2, col=1,
     )
 
-    # indices of the animated traces (theta profile=0, psi profile=1, time-marker=3)
-    # trace order: 0 theta, 1 psi, 2 mbe series, 3 current-time marker
-    # ---- animation frames ----
+    # ---- animation frames (update only the animated traces) ----
     frames = []
     for k in range(ntime):
         cur_err = mbe_plot[k] if np.isfinite(mbe_plot[k]) else np.nanmin(mbe_plot)
@@ -211,11 +232,11 @@ def build_profile_html(nc_path: str, html_path: str) -> str:
             go.Frame(
                 name=str(k),
                 data=[
-                    go.Scatter(x=theta[k], y=z),     # -> trace 0
-                    go.Scatter(x=head[k], y=z),      # -> trace 1
-                    go.Scatter(x=[time[k]], y=[cur_err]),  # -> trace 3
+                    go.Scatter(x=theta[k], y=z),
+                    go.Scatter(x=head[k], y=z),
+                    go.Scatter(x=[time[k]], y=[cur_err]),
                 ],
-                traces=[0, 1, 3],
+                traces=[i_theta, i_head, i_marker],
             )
         )
     fig.frames = frames
