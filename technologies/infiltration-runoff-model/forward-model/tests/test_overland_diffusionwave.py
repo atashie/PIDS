@@ -75,3 +75,58 @@ def test_dry_plane_stays_dry_1d():
     assert prob.d.x.array.min() >= -1e-12  # never negative (VI bound)
     assert prob.d.x.array.max() <= 1e-12   # no spurious wetting
     assert prob.total_water() == pytest.approx(0.0, abs=1e-12)
+
+
+def test_closed_slump_conserves_water_1d():
+    """A water mound slumping downslope in a CLOSED domain conserves total water.
+
+    No-flux boundaries + no rain => integrating the weak form against the constant test
+    function v=1 gives d/dt (integral d dx) = 0, so the lumped storage integral is
+    invariant. Backward Euler + the mass-lumped storage close it to solver tolerance
+    while the mound visibly redistributes (spreads and shifts downhill), so this is a
+    non-trivial dynamic conservation check, not a static state. Depth stays >= 0.
+    """
+    msh = dmesh.create_interval(MPI.COMM_WORLD, 40, [0.0, 20.0])  # 20 m hillslope
+    prob = OverlandProblem(msh, n_man=N_MAN)
+    prob.set_topography(lambda x: 0.02 * (20.0 - x[0]))  # 2% slope down toward x = 20
+    prob.set_initial_condition(lambda x: 0.2 * np.exp(-((x[0] - 10.0) / 2.0) ** 2))  # mound
+    w0 = prob.total_water()
+    d_before = prob.d.x.array.copy()
+
+    nsteps = prob.advance(t_end=0.03, dt=1e-3, dt_max=5e-3)
+    assert nsteps > 0
+
+    # total water conserved in the closed system (no flux, no source) to the gate.
+    assert abs(prob.total_water() - w0) / w0 < 1e-6
+    # the mound genuinely redistributed (slumped), not a frozen state.
+    assert np.max(np.abs(prob.d.x.array - d_before)) > 1e-3
+    # plausibility: non-negative depth, finite everywhere.
+    assert prob.d.x.array.min() >= -1e-12
+    assert np.all(np.isfinite(prob.d.x.array))
+
+
+def test_positivity_limiter_conserves_while_clipping_1d():
+    """When the slump undershoots, the conservative limiter clips d>=0 AND keeps the budget.
+
+    On a steeper slump the smooth Newton solve drives d to small (~mm-cm) NEGATIVE depths
+    at the wet/dry front (a known degenerate-diffusion artifact). The post-step limiter
+    must remove those (final d >= 0) while preserving total water to machine precision --
+    the whole point of a *conservative* clip vs a naive clamp. We assert the limiter
+    actually engaged (max clip > 1e-4), so this is a real regression guard: deleting the
+    limiter makes ``d.min()`` go negative and fails the test.
+    """
+    msh = dmesh.create_interval(MPI.COMM_WORLD, 60, [0.0, 20.0])
+    prob = OverlandProblem(msh, n_man=N_MAN)
+    prob.set_topography(lambda x: 0.05 * (20.0 - x[0]))  # 5% slope -> stronger front
+    prob.set_initial_condition(lambda x: 0.25 * np.exp(-((x[0] - 7.0) / 1.5) ** 2))
+    w0 = prob.total_water()
+
+    prob.advance(t_end=0.03, dt=1e-4, dt_max=5e-3)
+
+    assert prob.max_clip_seen > 1e-4, (
+        f"limiter never engaged (max_clip={prob.max_clip_seen:.2e}); "
+        "scenario did not undershoot, so it does not guard the limiter"
+    )
+    assert prob.d.x.array.min() >= -1e-12  # final depth non-negative (clip worked)
+    assert abs(prob.total_water() - w0) / w0 < 1e-6  # budget preserved despite clipping
+    assert np.all(np.isfinite(prob.d.x.array))

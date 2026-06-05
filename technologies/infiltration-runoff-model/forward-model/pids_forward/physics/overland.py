@@ -7,26 +7,36 @@ parabolic nonlinear diffusion in the surface (ponding) depth ``d``:
     d(d)/dt + div(q) = sources,   q = -K_s(d) grad(H_s),   H_s = z_b + d
     K_s(d) = SECONDS_PER_DAY * d^{5/3} / ( n_man |grad H_s|^{1/2} + eps_S )   [m^2/day]
 
-Primary variable = ponding depth ``d`` >= 0, enforced *inside the solve* by the PETSc
-SNES variational-inequality solver (``vinewtonrsls``, proven in the install spike) --
-NOT by post-solve clamping, which would break mass conservation. Backward Euler in
-time. The same UFL residual serves 1-D / 2-D / 3-D-top meshes: the ONLY dimension-
-aware quantity is the bed slope ``grad z_b`` (a known field), so no gravity unit
-vector is needed -- unlike subsurface Richards (gravity carried as e_g), here gravity
-enters through the topography. The Jacobian is auto-differentiated from the residual.
+Backward Euler in time, primary variable = ponding depth ``d`` >= 0. The same UFL
+residual serves 1-D / 2-D / 3-D-top meshes: the ONLY dimension-aware quantity is the
+bed slope ``grad z_b`` (a known field), so -- unlike subsurface Richards (gravity as a
+unit vector e_g) -- gravity here enters through the topography. The Jacobian is
+auto-differentiated from the residual.
+
+Depth positivity (design §C.4, REVISED 2026-06-05 -- see governance/decision-log.md):
+the locked "SNES-VI (vinewtonrsls) for d>=0" mechanism was found by adversarial Tier-1
+testing to be UNUSABLE on this stiff, nonsymmetric diffusion-wave system (it walls within
+a handful of steps -- raw PETSc and via DOLFINx NonlinearProblem, all line searches,
+both vinewtonrsls and vinewtonssls -- and violates conservation when the bound binds; the
+install spike's VI success was on a *linear symmetric* system and does not transfer). The
+robust path is a smooth back-tracking Newton (``newtonls``), which converges and conserves
+mass to ~1e-15 but undershoots ``d`` by ~1-3 cm at wet/dry fronts. Those undershoots are
+removed by a post-step CONSERVATIVE positivity limiter (``_enforce_positivity``): clip
+negatives to 0, then rescale the remaining positive water so the lumped water budget is
+preserved to machine precision (Arik signed off this approach 2026-06-05). The limiter is
+a no-op when no negatives are present, so smooth scenarios (lake-at-rest, MMS) are exact.
 
 Units: length m, time day, slope dimensionless. ``n_man`` is the SI Manning roughness
-(s.m^{-1/3}); the ``SECONDS_PER_DAY`` factor converts the SI Manning conveyance to
-m^2/day so depths/timesteps stay consistent with subsurface Richards (m/day).
+(s.m^{-1/3}); the ``SECONDS_PER_DAY`` factor converts the SI Manning conveyance to m^2/day
+so depths/timesteps stay consistent with subsurface Richards (m/day).
 
-Regularization note (design C.3, C.4): the additive slope floor is applied INSIDE the
-root as ``|grad H_s|^{1/2} -> (|grad H_s|^2 + eps_S^2)^{1/4}``, which keeps BOTH the
-denominator non-zero AND the auto-differentiated Jacobian finite at exactly-zero bed
-slope (a perfectly flat lake), where the design's bare additive ``+ eps_S`` would still
-leave a singular d/dg of |grad H_s|^{1/2}. As |grad H_s| -> 0 this gives ordinary
-linear diffusion K_s -> SECONDS_PER_DAY d^{5/3}/(n_man sqrt(eps_S)) (the lake-at-rest /
-flat-terrain regime). The lake-at-rest Tier-1 test confirms spurious flux stays below
-the 1e-6 conservation gate at this magnitude.
+Regularization (design C.3, C.4): the slope floor is applied INSIDE the root as
+``|grad H_s|^{1/2} -> (|grad H_s|^2 + eps_S^2)^{1/4}``, keeping BOTH the denominator
+non-zero AND the auto-differentiated Jacobian finite at exactly-zero bed slope (a
+perfectly flat lake), where the design's bare additive ``+ eps_S`` would still leave a
+singular d/dg of |grad H_s|^{1/2}. As |grad H_s| -> 0 this gives ordinary linear diffusion
+(the lake-at-rest / flat-terrain regime). The lake-at-rest Tier-1 test confirms spurious
+flux stays below the 1e-6 conservation gate at this magnitude.
 
 Design: docs/plans/2026-06-04-pids-forward-model-architecture-design.md (Sec. C/H).
 """
@@ -48,13 +58,15 @@ class OverlandProblem:
 
     The mesh is the *surface* itself: a 1-D line for a hillslope cross-section, a 2-D
     mesh for a catchment (standalone module tests), or the top facets of a 3-D host
-    (coupling, Module 3). Depth positivity ``d >= 0`` is imposed by SNES-VI.
+    (coupling, Module 3). Depth positivity ``d >= 0`` is maintained by a smooth Newton
+    solve plus a conservative post-step positivity limiter (see module docstring).
     """
 
-    # Direct LU is robust + deterministic for the small verification meshes; override
-    # (gmres + fieldsplit) for large 2-D/3-D production runs (design H.3).
+    # Smooth back-tracking Newton; direct LU is robust + deterministic for the small
+    # verification meshes (override with gmres + fieldsplit for large 3-D, design H.3).
     _DEFAULT_PETSC_OPTIONS = {
-        "snes_type": "vinewtonrsls",  # variational inequality: enforces d >= 0
+        "snes_type": "newtonls",
+        "snes_linesearch_type": "bt",
         "snes_rtol": 1e-10,
         "snes_atol": 1e-12,
         "snes_max_it": 50,
@@ -103,7 +115,8 @@ class OverlandProblem:
         self._flux_tags: list = []
         self._petsc_options = dict(petsc_options or self._DEFAULT_PETSC_OPTIONS)
         self._problem: NonlinearProblem | None = None
-        self._bounds = None  # (lb, ub) PETSc vecs kept alive for the VI solver
+        self.last_clip = 0.0  # diagnostic: largest negative depth clipped on the last step
+        self.max_clip_seen = 0.0  # diagnostic: largest negative depth clipped over all steps
 
     # -- problem setup --------------------------------------------------------
     def set_topography(self, expr) -> None:
@@ -120,6 +133,23 @@ class OverlandProblem:
         self._bcs.append(bc)
         self._problem = None  # force rebuild with the new BC set
 
+    def add_rain(self, rate):
+        """Add a spatially-uniform rainfall (net) source r (m/day, positive = water IN).
+
+        Enters the residual as the volumetric source ``-r v dx``. ``rate`` may be a float
+        or a ``fem.Constant`` (drive ``.value`` for a time-varying hyetograph). Returns
+        the Constant. (Infiltration / feature exchange are owned by the coupling module,
+        Sec. D; standalone overland sees rainfall and boundary conditions only.)
+        """
+        r = (
+            rate
+            if isinstance(rate, fem.Constant)
+            else fem.Constant(self.mesh, PETSc.ScalarType(float(rate)))
+        )
+        self.F = self.F - r * self._v * ufl.dx
+        self._problem = None  # force rebuild with the new source term
+        return r
+
     def _ensure_problem(self) -> None:
         if self._problem is None:
             self._problem = NonlinearProblem(
@@ -129,35 +159,91 @@ class OverlandProblem:
                 petsc_options_prefix="overland_",
                 petsc_options=self._petsc_options,
             )
-            snes = self._problem.solver
-            snes.setType("vinewtonrsls")  # belt-and-suspenders with the petsc_option
-            lb = self.d.x.petsc_vec.duplicate()
-            lb.set(0.0)  # depth lower bound d >= 0 (wet/dry complementarity)
-            ub = self.d.x.petsc_vec.duplicate()
-            ub.set(PETSc.INFINITY)
-            snes.setVariableBounds(lb, ub)
-            self._bounds = (lb, ub)
+
+    # -- positivity limiter ---------------------------------------------------
+    def _enforce_positivity(self) -> float:
+        """Conservatively clip d to >= 0, preserving the lumped water budget.
+
+        The smooth Newton solve can undershoot to small (~cm) negative depths at wet/dry
+        fronts. We clip those to zero and rescale the remaining positive water by
+        ``oldtotal / posvol`` so total storage (the lumped integral of d) is unchanged to
+        machine precision. No-op when there are no negatives. Returns the largest negative
+        depth that was clipped (0.0 if none) for diagnostics. Mass-conserving by
+        construction (unlike a naive clamp): the rescale factor <= 1 only reduces already-
+        positive nodes, never creating new negatives.
+        """
+        local_min = float(self.d.x.array.min()) if self.d.x.array.size else 0.0
+        gmin = self.mesh.comm.allreduce(local_min, op=MPI.MIN)
+        if gmin >= 0.0:
+            return 0.0
+        oldtotal = self.total_water()  # the budget to preserve (includes the negatives)
+        np.maximum(self.d.x.array, 0.0, out=self.d.x.array)  # clip negatives -> 0
+        self.d.x.scatter_forward()
+        posvol = self.total_water()  # positive water after clipping (>= oldtotal)
+        if oldtotal > 0.0 and posvol > 0.0:
+            self.d.x.array[:] *= oldtotal / posvol  # rescale: total -> oldtotal, stays >= 0
+            self.d.x.scatter_forward()
+        # else: no positive water to rescale into (degenerate); leave clipped-to-zero.
+        return -gmin
 
     # -- time stepping --------------------------------------------------------
     def step(self, dt: float):
-        """Advance one backward-Euler SNES-VI step. Returns (converged: bool, iters).
+        """Advance one backward-Euler Newton step. Returns (converged: bool, iters).
 
-        Convergence is read from the PETSc SNES converged reason (>0); an unconverged
-        solve restores the last accepted state so callers can cut dt and retry.
+        After a converged solve the conservative positivity limiter runs before the step
+        is accepted, so ``d_n`` (and hence the next step's start) is non-negative and the
+        water budget is preserved. An unconverged solve restores the last accepted state
+        so callers can cut dt and retry.
         """
         self.dt.value = dt
         self._ensure_problem()
-        self._problem.solve()  # updates self.d in place (subject to d >= 0)
+        self._problem.solve()  # updates self.d in place
         snes = self._problem.solver
         converged = snes.getConvergedReason() > 0
         iters = int(snes.getIterationNumber())
         if converged:
-            self.d_n.x.array[:] = self.d.x.array  # accept the step
+            self.last_clip = self._enforce_positivity()
+            self.max_clip_seen = max(self.max_clip_seen, self.last_clip)
+            self.d_n.x.array[:] = self.d.x.array  # accept the (positivity-cleaned) step
             self.d_n.x.scatter_forward()
         else:
             self.d.x.array[:] = self.d_n.x.array  # restore last accepted state
             self.d.x.scatter_forward()
         return converged, iters
+
+    def advance(self, t_end, dt, *, dt_min=1e-9, dt_max=None, grow=1.5, cut=0.5,
+                target_low=3, target_high=8, shrink=0.7, max_steps=100000):
+        """March to ``t_end`` with adaptive backward-Euler steps.
+
+        Cut ``dt`` and retry on a non-converged solve (stiff wet/dry fronts / storm
+        peaks). On accepted steps, grow ``dt`` when Newton converges easily
+        (``iters <= target_low``) and shrink it on an expensive-but-accepted step
+        (``iters >= target_high``). Returns the number of accepted steps. Raises if
+        ``dt`` must drop below ``dt_min`` to converge. ``dt_min`` defaults small because
+        overland flow is fast (sub-second crossing times) -- the cold-start transient on a
+        steep thin film genuinely needs tiny steps before ``dt`` can climb.
+        """
+        t = 0.0
+        nsteps = 0
+        while t < t_end - 1e-12:
+            if nsteps >= max_steps:
+                raise RuntimeError(f"advance exceeded max_steps={max_steps} at t={t:.4g}")
+            h = min(dt, t_end - t)
+            converged, iters = self.step(h)
+            if converged:
+                t += h
+                nsteps += 1
+                if iters <= target_low:
+                    dt = dt * grow
+                elif iters >= target_high:
+                    dt = dt * shrink
+                if dt_max is not None:
+                    dt = min(dt, dt_max)
+            else:
+                dt = h * cut
+                if dt < dt_min:
+                    raise RuntimeError(f"advance: dt {dt:.2e} < dt_min at t={t:.4g} (not converging)")
+        return nsteps
 
     # -- diagnostics ----------------------------------------------------------
     def max_abs_error(self, exact) -> float:
