@@ -118,6 +118,7 @@ class OverlandProblem:
         self._problem: NonlinearProblem | None = None
         self.last_clip = 0.0  # diagnostic: largest negative depth clipped on the last step
         self.max_clip_seen = 0.0  # diagnostic: largest negative depth clipped over all steps
+        self.last_outflow = 0.0  # outflow discharge at the SOLVED state (pre-limiter), for accounting
 
     # -- problem setup --------------------------------------------------------
     def set_topography(self, expr) -> None:
@@ -238,6 +239,12 @@ class OverlandProblem:
         converged = snes.getConvergedReason() > 0
         iters = int(snes.getIterationNumber())
         if converged:
+            # Record the outflow at the SOLVED state (before the limiter rescales d): this is
+            # the residual-consistent discharge that balances the storage change exactly
+            # (W^{n+1}-W^n = dt*(r*L - last_outflow)). The limiter conserves total water but
+            # perturbs the boundary depth, so post-limiter outflow_rate() would not close the
+            # books to machine precision.
+            self.last_outflow = self.outflow_rate()
             self.last_clip = self._enforce_positivity()
             self.max_clip_seen = max(self.max_clip_seen, self.last_clip)
             self.d_n.x.array[:] = self.d.x.array  # accept the (positivity-cleaned) step
