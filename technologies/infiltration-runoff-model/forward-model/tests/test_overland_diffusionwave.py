@@ -175,3 +175,30 @@ def test_kinematic_wave_plane_hydrograph_1d():
     assert prob.total_water() < w_steady
     assert prob.outflow_rate() < q_steady
     assert prob.d.x.array.min() >= -1e-12
+
+
+def test_velocity_and_bed_shear_diagnostics_1d():
+    """Velocity and bed-shear diagnostics match analytic uniform-flow values (design C.5).
+
+    For a UNIFORM sheet of depth d0 on a constant slope S0, the Manning flow velocity is
+    |u| = (1/n) d0^{2/3} S0^{1/2} (SI m/s), directed downslope, and the bed shear is
+    tau = rho g d0 S0 (Pa). These are pure diagnostics of the current (d, z_b) state, so we
+    set that state directly (no solve needed) and check both formulas, plus flow direction.
+    These are the inputs Module 2 publishes for the §G erosion threshold (depth*slope ->
+    velocity/shear vs threshold).
+    """
+    L, S0, n, d0 = 50.0, 0.02, 0.05, 0.03
+    msh = dmesh.create_interval(MPI.COMM_WORLD, 50, [0.0, L])
+    prob = OverlandProblem(msh, n_man=n, eps_S=1e-6)  # tiny eps_S: clean formula check
+    prob.set_topography(lambda x: S0 * (L - x[0]))     # constant slope, down toward x=L
+    prob.set_initial_condition(lambda x: d0 + 0.0 * x[0])  # uniform depth d0
+
+    u = prob.velocity()  # SI m/s, cell-wise (DG0) vector
+    expected_umag = (1.0 / n) * d0 ** (2.0 / 3.0) * np.sqrt(S0)
+    assert np.allclose(np.abs(u.x.array), expected_umag, rtol=2e-3)
+    assert np.all(u.x.array > 0.0)  # flow is downslope (+x, toward the low outlet)
+
+    tau = prob.bed_shear()  # Pa
+    expected_tau = 1000.0 * 9.81 * d0 * S0
+    assert np.allclose(tau.x.array, expected_tau, rtol=2e-3)
+    assert np.all(np.isfinite(tau.x.array))

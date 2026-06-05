@@ -299,3 +299,38 @@ class OverlandProblem:
         form = fem.form((self.d - exact_ufl) ** 2 * ufl.dx(metadata={"quadrature_degree": 6}))
         local = fem.assemble_scalar(form)
         return float(np.sqrt(self.mesh.comm.allreduce(local, op=MPI.SUM)))
+
+    # -- erosion-threshold diagnostics (design C.5) ---------------------------
+    def velocity(self):
+        """Cell-wise (DG0) flow-velocity VECTOR u in SI m/s, for the §G erosion check.
+
+        Manning sheet-flow velocity ``u = -(1/n_man) d^{2/3} grad(H_s) / |grad H_s|^{1/2}``
+        (magnitude ``(1/n) d^{2/3} S_f^{1/2}``, directed downslope ``-grad H_s/|grad H_s|``).
+        SI m/s (NOT the model's m/day) because erosion thresholds are physical velocities;
+        the same slope floor as the residual keeps it finite at zero slope, and the
+        ``d^{2/3}`` factor makes it vanish (not blow up) at dry cells -- no d_min needed.
+        """
+        gdim = self.mesh.geometry.dim
+        Vv = fem.functionspace(self.mesh, ("DG", 0, (gdim,)))
+        g = ufl.grad(self.z_b + self.d)
+        slope_sqrt = (ufl.dot(g, g) + self.eps_S**2) ** 0.25
+        d_pos = ufl.max_value(self.d, 0.0)
+        u_expr = -(1.0 / self.n_man) * d_pos ** (2.0 / 3.0) * g / slope_sqrt
+        u = fem.Function(Vv, name="velocity")
+        u.interpolate(fem.Expression(u_expr, Vv.element.interpolation_points))
+        return u
+
+    def bed_shear(self, rho: float = 1000.0, g_accel: float = 9.81):
+        """Cell-wise (DG0) bed shear stress ``tau = rho g d S_f`` in Pa (``S_f=|grad H_s|``).
+
+        The scalar the erosion check differences against a threshold (alongside |u|). Pa is
+        time-unit-independent (S_f is dimensionless), so no day<->second conversion here.
+        """
+        Vs = fem.functionspace(self.mesh, ("DG", 0))
+        g = ufl.grad(self.z_b + self.d)
+        Sf = ufl.sqrt(ufl.dot(g, g))
+        d_pos = ufl.max_value(self.d, 0.0)
+        tau_expr = rho * g_accel * d_pos * Sf
+        tau = fem.Function(Vs, name="bed_shear")
+        tau.interpolate(fem.Expression(tau_expr, Vs.element.interpolation_points))
+        return tau
