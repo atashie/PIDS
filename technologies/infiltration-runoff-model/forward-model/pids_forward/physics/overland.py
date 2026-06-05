@@ -35,8 +35,13 @@ Regularization (design C.3, C.4): the slope floor is applied INSIDE the root as
 non-zero AND the auto-differentiated Jacobian finite at exactly-zero bed slope (a
 perfectly flat lake), where the design's bare additive ``+ eps_S`` would still leave a
 singular d/dg of |grad H_s|^{1/2}. As |grad H_s| -> 0 this gives ordinary linear diffusion
-(the lake-at-rest / flat-terrain regime). The lake-at-rest Tier-1 test confirms spurious
-flux stays below the 1e-6 conservation gate at this magnitude.
+(the flat-terrain regime). ``eps_S`` is DIMENSIONLESS (|grad H_s| is a slope, m/m), and the
+effective additive floor on the denominator at zero slope is ``sqrt(eps_S)`` (~0.032 for
+eps_S=1e-3) -- ~30x the design's nominal additive-outside-the-root eps_S, a deliberate,
+more-robust Jacobian-finiteness choice (so tune against ``sqrt(eps_S)``, not the design's
+'1e-3..1e-2 m^{1/2}'). NOTE: lake-at-rest (uniform surface) gives flux = 0 *structurally*
+regardless of eps_S; the eps_S-dependent spurious-flux-below-1e-6 claim is pinned instead by
+the near-flat NON-uniform Tier-1 test (test_near_flat_no_spurious_flux_1d).
 
 Design: docs/plans/2026-06-04-pids-forward-model-architecture-design.md (Sec. C/H).
 """
@@ -119,6 +124,9 @@ class OverlandProblem:
         self.last_clip = 0.0  # diagnostic: largest negative depth clipped on the last step
         self.max_clip_seen = 0.0  # diagnostic: largest negative depth clipped over all steps
         self.last_outflow = 0.0  # outflow discharge at the SOLVED state (pre-limiter), for accounting
+        self.clip_mass_adjust = 0.0  # cumulative UNAVOIDABLE mass change from the limiter
+        # (0 in the normal rescale branch; > 0 only when a degenerate non-positive-total state
+        # is dried -- should stay ~0 in well-behaved runs; a growing value signals trouble)
 
     # -- problem setup --------------------------------------------------------
     def set_topography(self, expr) -> None:
@@ -171,7 +179,16 @@ class OverlandProblem:
         standard kinematic/normal-depth outflow condition (vs the natural no-flux boundary,
         which would dam the outlet). Enters the residual as ``+q_out v ds`` (a boundary
         sink). ``outflow_rate()`` reports the integrated discharge across all such outlets.
+
+        ``slope`` must be strictly positive: ``slope = 0`` would silently turn the outlet into
+        a no-flux wall (damming the reach) and ``slope < 0`` injects ``sqrt(<0)`` = NaN into the
+        residual; both are caller errors, so we reject them up front.
         """
+        if slope <= 0.0:
+            raise ValueError(
+                f"add_outflow_bc requires slope > 0 (normal-depth friction slope); got {slope!r}. "
+                "slope=0 dams the outlet; slope<0 gives sqrt(<0)=NaN."
+            )
         ds_out = self._boundary_ds(locator)
         d_pos = ufl.max_value(self.d, 0.0)
         q_out = SECONDS_PER_DAY * (1.0 / self.n_man) * d_pos ** (5.0 / 3.0) * ufl.sqrt(slope)
@@ -213,14 +230,24 @@ class OverlandProblem:
         gmin = self.mesh.comm.allreduce(local_min, op=MPI.MIN)
         if gmin >= 0.0:
             return 0.0
-        oldtotal = self.total_water()  # the budget to preserve (includes the negatives)
+        oldtotal = self.total_water()  # lumped budget BEFORE clipping (includes the negatives)
         np.maximum(self.d.x.array, 0.0, out=self.d.x.array)  # clip negatives -> 0
         self.d.x.scatter_forward()
-        posvol = self.total_water()  # positive water after clipping (>= oldtotal)
-        if oldtotal > 0.0 and posvol > 0.0:
-            self.d.x.array[:] *= oldtotal / posvol  # rescale: total -> oldtotal, stays >= 0
+        posvol = self.total_water()  # positive water after clipping (always >= oldtotal)
+        # factor <= 1 rescales the clipped positives back to the pre-clip budget, conserving
+        # exactly when oldtotal > 0. DEGENERATE case oldtotal <= 0 (undershoot deficit outweighs
+        # ALL positive water -- a numerically pathological near-dry state): we cannot have d >= 0
+        # AND a non-positive total, so factor clamps to 0 (dry the domain). Without the clamp,
+        # oldtotal/posvol would be negative and FLIP every sign (re-introducing negatives); the
+        # earlier `oldtotal > 0` guard avoided that but silently CREATED water by leaving the
+        # clipped positives. We instead dry it and TRACK the unavoidable adjustment below.
+        factor = (oldtotal / posvol) if posvol > 0.0 else 0.0
+        if factor < 0.0:
+            factor = 0.0
+        if posvol > 0.0:
+            self.d.x.array[:] *= factor
             self.d.x.scatter_forward()
-        # else: no positive water to rescale into (degenerate); leave clipped-to-zero.
+        self.clip_mass_adjust += self.total_water() - oldtotal  # 0 normally; > 0 when drying
         return -gmin
 
     # -- time stepping --------------------------------------------------------
