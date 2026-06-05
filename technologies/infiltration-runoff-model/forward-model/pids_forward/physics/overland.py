@@ -113,6 +113,7 @@ class OverlandProblem:
         self._H_s = H_s
         self._bcs: list = []
         self._flux_tags: list = []
+        self._outflow_forms: list = []  # compiled q_out*ds forms for outflow_rate()
         self._petsc_options = dict(petsc_options or self._DEFAULT_PETSC_OPTIONS)
         self._problem: NonlinearProblem | None = None
         self.last_clip = 0.0  # diagnostic: largest negative depth clipped on the last step
@@ -149,6 +150,41 @@ class OverlandProblem:
         self.F = self.F - r * self._v * ufl.dx
         self._problem = None  # force rebuild with the new source term
         return r
+
+    def _boundary_ds(self, locator):
+        fdim = self.mesh.topology.dim - 1
+        self.mesh.topology.create_connectivity(fdim, self.mesh.topology.dim)
+        facets = np.sort(dmesh.locate_entities_boundary(self.mesh, fdim, locator))
+        tag = len(self._flux_tags) + 1
+        self._flux_tags.append(tag)
+        ft = dmesh.meshtags(
+            self.mesh, fdim, facets, np.full(facets.shape, tag, dtype=np.int32)
+        )
+        return ufl.Measure("ds", domain=self.mesh, subdomain_data=ft)(tag)
+
+    def add_outflow_bc(self, locator, slope: float):
+        """Free-drainage outlet: water leaves at the Manning NORMAL-DEPTH discharge.
+
+        ``q_out = SECONDS_PER_DAY * (1/n_man) * d^{5/3} * sqrt(slope)`` (m^2/day per unit
+        width), i.e. the friction slope at the outlet is taken as the bed ``slope`` -- the
+        standard kinematic/normal-depth outflow condition (vs the natural no-flux boundary,
+        which would dam the outlet). Enters the residual as ``+q_out v ds`` (a boundary
+        sink). ``outflow_rate()`` reports the integrated discharge across all such outlets.
+        """
+        ds_out = self._boundary_ds(locator)
+        d_pos = ufl.max_value(self.d, 0.0)
+        q_out = SECONDS_PER_DAY * (1.0 / self.n_man) * d_pos ** (5.0 / 3.0) * ufl.sqrt(slope)
+        self.F = self.F + q_out * self._v * ds_out
+        self._outflow_forms.append(fem.form(q_out * ds_out))
+        self._problem = None
+        return None
+
+    def outflow_rate(self) -> float:
+        """Total discharge leaving through all outflow boundaries (m^2/day per unit width)."""
+        total = 0.0
+        for form in self._outflow_forms:
+            total += self.mesh.comm.allreduce(fem.assemble_scalar(form), op=MPI.SUM)
+        return total
 
     def _ensure_problem(self) -> None:
         if self._problem is None:

@@ -130,3 +130,48 @@ def test_positivity_limiter_conserves_while_clipping_1d():
     assert prob.d.x.array.min() >= -1e-12  # final depth non-negative (clip worked)
     assert abs(prob.total_water() - w0) / w0 < 1e-6  # budget preserved despite clipping
     assert np.all(np.isfinite(prob.d.x.array))
+
+
+def test_kinematic_wave_plane_hydrograph_1d():
+    """Steady rain on a tilted plane -> rising hydrograph to KINEMATIC equilibrium.
+
+    Diffusion-wave reduces to kinematic wave on a long/steep plane. At steady state the
+    unit discharge collected from upslope is q(x)=r*x, so the outlet discharge equals the
+    total rainfall input q_out = r*L (mass balance) and the outlet depth matches the
+    Manning normal-depth value d_eq = (r*L*n/sqrt(S0))^{3/5} (SI units). This is the
+    decisive test of the conveyance law AND the day<->second unit conversion (a wrong
+    SECONDS_PER_DAY factor breaks d_eq by orders of magnitude). Then rain off -> recession.
+    """
+    L, S0, n, r = 100.0, 0.01, 0.10, 0.2  # m, slope[-], Manning[s/m^1/3], rain[m/day]
+    msh = dmesh.create_interval(MPI.COMM_WORLD, 50, [0.0, L])
+    prob = OverlandProblem(msh, n_man=n)
+    prob.set_topography(lambda x: S0 * (L - x[0]))   # slopes down toward the x=L outlet
+    prob.set_initial_condition(lambda x: 0.0 * x[0])  # dry start
+    rain = prob.add_rain(r)
+    prob.add_outflow_bc(lambda x: np.isclose(x[0], L), slope=S0)  # normal-depth free drain
+
+    prob.advance(t_end=0.25, dt=1e-4, dt_max=5e-3)  # ~5x time of concentration -> steady
+
+    # (1) mass balance at steady state: outflow per unit width ~ total rainfall r*L.
+    assert prob.outflow_rate() == pytest.approx(r * L, rel=0.05)
+
+    # (2) outlet depth ~ kinematic normal depth d_eq (validates conveyance + units).
+    r_si = r / 86400.0
+    d_eq = (r_si * L * n / np.sqrt(S0)) ** (3.0 / 5.0)
+    coords = prob.V.tabulate_dof_coordinates()[:, 0]
+    outlet = int(np.argmin(np.abs(coords - L)))
+    assert prob.d.x.array[outlet] == pytest.approx(d_eq, rel=0.15)
+
+    # (3) depth grows downslope (increasing contributing area); positive sheet flow.
+    order = np.argsort(coords)
+    d_sorted = prob.d.x.array[order]
+    assert d_sorted[-1] > d_sorted[len(d_sorted) // 2] > 1e-6
+
+    # (4) recession: with rain off, storage and outflow decline.
+    w_steady = prob.total_water()
+    q_steady = prob.outflow_rate()
+    rain.value = 0.0
+    prob.advance(t_end=0.05, dt=1e-4, dt_max=5e-3)  # 0.05 day rainless
+    assert prob.total_water() < w_steady
+    assert prob.outflow_rate() < q_steady
+    assert prob.d.x.array.min() >= -1e-12
