@@ -58,6 +58,48 @@ from petsc4py import PETSc
 SECONDS_PER_DAY = 86400.0
 
 
+def overland_conveyance(d, z_b, n_man, eps_S):
+    """Diffusion-wave surface head and Manning conductance (design C.3).
+
+    Returns ``(H_s, K_s)`` where ``H_s = z_b + d`` is the surface hydraulic head and
+
+        K_s = SECONDS_PER_DAY * max(d, 0)^{5/3} / ( n_man * (|grad H_s|^2 + eps_S^2)^{1/4} )
+
+    is the Manning conveyance [m^2/day] (slope floor inside the root -> finite Jacobian at zero
+    slope; ``max(d,0)`` guards the fractional power against tiny negative iterates). On a codim-1
+    submesh **manifold** (the coupled host top facets, realization S) ``ufl.grad`` is the
+    *tangential* gradient, so this exact expression serves both the standalone surface mesh and
+    the coupled surface without change.
+    """
+    H_s = z_b + d
+    g = ufl.grad(H_s)
+    slope_sqrt = (ufl.dot(g, g) + eps_S**2) ** 0.25
+    d_pos = ufl.max_value(d, 0.0)
+    K_s = SECONDS_PER_DAY * d_pos ** (5.0 / 3.0) / (n_man * slope_sqrt)
+    return H_s, K_s
+
+
+def overland_residual(d, d_n, v, z_b, n_man, dt, eps_S, *, dx=ufl.dx, dx_storage=None,
+                      source=None):
+    """Diffusion-wave BULK residual (storage + Manning diffusion), design C.3.
+
+    The composable core of Module 2, factored out so both ``OverlandProblem`` (standalone) and the
+    Module-3 coupling assembler build the *same* UFL:
+
+        ((d - d_n) / dt) * v * dx_storage + K_s * grad(H_s) . grad(v) * dx   [ - source * v * dx ]
+
+    ``dx_storage`` is the (vertex-lumped) storage measure (defaults to ``dx``). Rainfall/PET,
+    outflow, and the §D land-surface exchange are added by the caller on top of this bulk residual.
+    """
+    if dx_storage is None:
+        dx_storage = dx
+    H_s, K_s = overland_conveyance(d, z_b, n_man, eps_S)
+    F = ((d - d_n) / dt) * v * dx_storage + K_s * ufl.dot(ufl.grad(H_s), ufl.grad(v)) * dx
+    if source is not None:
+        F = F - source * v * dx
+    return F
+
+
 class OverlandProblem:
     """A diffusion-wave overland-flow initial-boundary-value problem on a mesh.
 
@@ -99,23 +141,16 @@ class OverlandProblem:
             else ufl.dx
         )
         v = ufl.TestFunction(self.V)
-        H_s = self.z_b + self.d  # surface (hydraulic) head
-        g = ufl.grad(H_s)
-        # |grad H_s|^{1/2} with the slope floor inside the root -> finite Jacobian at g=0.
-        slope_sqrt = (ufl.dot(g, g) + self.eps_S**2) ** 0.25
-        d_pos = ufl.max_value(self.d, 0.0)  # guard fractional power against tiny d<0 iterates
-        K_s = SECONDS_PER_DAY * d_pos ** (5.0 / 3.0) / (self.n_man * slope_sqrt)
-
-        # Backward-Euler diffusion-wave residual; flux q = -K_s grad(H_s) integrated by
-        # parts (natural no-flux boundary unless a Dirichlet/flux BC is added).
-        self.F = ((self.d - self.d_n) / self.dt) * v * self._dx_storage \
-            + K_s * ufl.dot(g, ufl.grad(v)) * ufl.dx
-        if source is not None:
-            self.F = self.F - source * v * ufl.dx
+        # Surface head + Manning conveyance (retained for velocity / bed-shear diagnostics), and
+        # the backward-Euler diffusion-wave bulk residual -- the composable builder shared with the
+        # Module-3 coupling assembler. Natural no-flux boundary unless a Dirichlet/flux BC is added.
+        self._H_s, self._K_s = overland_conveyance(self.d, self.z_b, self.n_man, self.eps_S)
+        self.F = overland_residual(
+            self.d, self.d_n, v, self.z_b, self.n_man, self.dt, self.eps_S,
+            dx_storage=self._dx_storage, source=source,
+        )
 
         self._v = v
-        self._K_s = K_s  # retained for velocity / bed-shear diagnostics
-        self._H_s = H_s
         self._bcs: list = []
         self._flux_tags: list = []
         self._outflow_forms: list = []  # compiled q_out*ds forms for outflow_rate()

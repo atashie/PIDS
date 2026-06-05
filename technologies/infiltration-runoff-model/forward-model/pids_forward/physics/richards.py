@@ -21,6 +21,34 @@ from mpi4py import MPI
 from petsc4py import PETSc
 
 
+def richards_bulk_residual(psi, psi_n, v, soil, dt, e_g, *, dx=ufl.dx, dx_storage=None,
+                           source=None):
+    """Mixed-form Richards BULK residual (storage + Darcy), design B.1/B.4.
+
+    The composable core of Module 1, factored out so both ``RichardsProblem`` (standalone) and the
+    Module-3 coupling assembler build the *same* UFL. Returns the weak residual
+
+        ((theta(psi) - theta(psi_n)) / dt) * v * dx_storage
+        + K(psi) * (grad(psi) + e_g) . grad(v) * dx            [ - source * v * dx ]
+
+    with ``theta``/``K`` the van Genuchten-Mualem closures (mass-conservative mixed form), gravity
+    unit vector ``e_g`` (last-axis), and the storage term on ``dx_storage`` (pass a vertex-lumped
+    measure for the production path; defaults to ``dx``). Boundary/exchange terms (Neumann flux,
+    ponding, the §D land-surface coupling) are added by the caller on top of this bulk residual.
+    """
+    if dx_storage is None:
+        dx_storage = dx
+    theta = soil.theta_ufl(psi)
+    theta_n = soil.theta_ufl(psi_n)
+    K = soil.K_ufl(psi)
+    F = ((theta - theta_n) / dt) * v * dx_storage + K * ufl.dot(
+        ufl.grad(psi) + e_g, ufl.grad(v)
+    ) * dx
+    if source is not None:
+        F = F - source * v * dx
+    return F
+
+
 class RichardsProblem:
     """A mixed-form Richards initial-boundary-value problem on a given mesh.
 
@@ -66,16 +94,12 @@ class RichardsProblem:
             else ufl.dx
         )
         v = ufl.TestFunction(self.V)
-        theta = soil.theta_ufl(self.psi)
-        theta_n = soil.theta_ufl(self.psi_n)
-        K = soil.K_ufl(self.psi)
-        # Mixed-form backward-Euler residual; Darcy flux q = -K (grad psi + e_g).
-        self.F = ((theta - theta_n) / self.dt) * v * self._dx_storage + K * ufl.dot(
-            ufl.grad(self.psi) + self.e_g, ufl.grad(v)
-        ) * ufl.dx
-        # Optional volumetric source/sink (e.g. an MMS forcing term or root uptake).
-        if source is not None:
-            self.F = self.F - source * v * ufl.dx
+        # Mixed-form backward-Euler bulk residual (storage + Darcy + optional source); the
+        # composable builder is shared with the Module-3 coupling assembler.
+        self.F = richards_bulk_residual(
+            self.psi, self.psi_n, v, soil, self.dt, self.e_g,
+            dx_storage=self._dx_storage, source=source,
+        )
 
         self._v = v
         self._bcs: list = []
