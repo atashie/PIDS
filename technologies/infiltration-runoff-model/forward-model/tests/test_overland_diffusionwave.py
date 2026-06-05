@@ -202,3 +202,47 @@ def test_velocity_and_bed_shear_diagnostics_1d():
     expected_tau = 1000.0 * 9.81 * d0 * S0
     assert np.allclose(tau.x.array, expected_tau, rtol=2e-3)
     assert np.all(np.isfinite(tau.x.array))
+
+
+def test_dam_break_diffusive_slump_1d():
+    """A released water column slumps as a SMOOTH diffusive front (Stoker dam-break, design C.8).
+
+    Diffusion-wave omits inertia, so it does NOT reproduce the sharp Stoker SWE shock -- it
+    gives a smeared, gradually-tapering front. We therefore check the robust physics (mass
+    conservation in the closed channel, non-negativity, the front advancing into the dry
+    region, a monotone non-increasing profile) and explicitly DOCUMENT the discrepancy: the
+    wetted front spans several cells (diffusive smearing), not a one-cell shock. Matching the
+    Stoker shock is out of scope for diffusion-wave by construction (hence local-inertial/SWE
+    is the reserved escape hatch).
+    """
+    L, x0, h0 = 200.0, 100.0, 0.5
+    msh = dmesh.create_interval(MPI.COMM_WORLD, 400, [0.0, L])  # flat bed (z_b = 0), closed
+    prob = OverlandProblem(msh, n_man=N_MAN)
+    # mildly-smoothed dam: 0.5 m column for x < x0, dry beyond (smoothing avoids a 1-element
+    # P1 discontinuity while keeping a steep front). Overland diffusion is fast, so we sample
+    # a short, PARTIAL slump (a longer run just equilibrates to a flat lake of depth h0*x0/L).
+    prob.set_initial_condition(lambda x: 0.5 * h0 * (1.0 - np.tanh((x[0] - x0) / 1.0)))
+    w0 = prob.total_water()
+
+    prob.advance(t_end=3e-4, dt=1e-6, dt_max=3e-5)
+
+    coords = prob.V.tabulate_dof_coordinates()[:, 0]
+    order = np.argsort(coords)
+    xs, ds = coords[order], prob.d.x.array[order]
+
+    # robust invariants: conservation (closed), positivity, finite.
+    assert abs(prob.total_water() - w0) / w0 < 1e-6
+    assert prob.d.x.array.min() >= -1e-12
+    assert np.all(np.isfinite(ds))
+    # a partial slump: water crossed into the initially-dry half ...
+    assert ds[xs > x0].max() > 0.05 * h0
+    # ... but a dry tail remains downstream (the front has NOT equilibrated to a flat lake).
+    assert ds[xs > x0].min() < 0.02 * h0
+    # the column is still elevated upstream (it has not fully drained).
+    assert ds[xs < 0.2 * x0].mean() > 0.3 * h0
+    # monotone non-increasing upslope->downslope (no spurious overshoot at the smeared front).
+    assert np.all(np.diff(ds) <= 1e-3)
+    # DOCUMENT the DW-vs-SWE discrepancy: the front is SMEARED over several cells (a diffusive
+    # taper), not a sharp 1-cell Stoker shock -- diffusion-wave omits the inertia that forms it.
+    front_band = (ds > 0.02 * h0) & (ds < 0.5 * h0)
+    assert np.count_nonzero(front_band) >= 4
