@@ -267,8 +267,10 @@ def build_profile_html(nc_path: str, html_path: str) -> str:
     fig.update_yaxes(title_text=f"elevation z  [{z_units}]",
                      range=[float(z.min()), float(z.max())], row=1, col=2)
     fig.update_xaxes(title_text=f"time  [{t_units}]", row=2, col=1)
-    fig.update_yaxes(title_text="|relative mass-balance error|  [-]",
-                     type="log", row=2, col=1)
+    # Power notation (10^-14) instead of Plotly's default SI prefixes (which render
+    # tiny values as e.g. "10f" femto -- confusing for an error magnitude).
+    fig.update_yaxes(title_text="|relative mass-balance error|  (dimensionless)",
+                     type="log", exponentformat="power", row=2, col=1)
 
     # ---- metrics panel (paper-space annotation block) ----
     metrics_lines = [
@@ -278,9 +280,9 @@ def build_profile_html(nc_path: str, html_path: str) -> str:
         f"<b>soil</b>: {soil}",
         (f"&nbsp;&nbsp;theta_r = {_fmt(theta_r)} &nbsp; theta_s = {_fmt(theta_s)} "
          f"&nbsp; Ks = {_fmt(Ks)} {head_units}/{t_units}"),
-        f"<b>rain flux</b>: {_fmt(rain)} m/{t_units}  (intense storm)",
+        f"<b>net top flux</b>: {_fmt(rain)} m/{t_units}",
         f"<b>cumulative input</b>: {_fmt(cum_in)} m  over {_fmt(float(time[-1]))} {t_units}",
-        f"<b>MAX mass-balance error</b>: {_fmt(float(mbe_max))}  (should be ~1e-14)",
+        f"<b>MAX mass-balance error</b>: {_fmt(float(mbe_max))}  (machine ~ 1e-14)",
     ]
     metrics_html = "<br>".join(metrics_lines)
     fig.add_annotation(
