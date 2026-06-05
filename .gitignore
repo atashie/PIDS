@@ -53,3 +53,9 @@ desktop.ini
 
 # Note: source PDFs in Patents/ ARE tracked (small, provenance-critical).
 # Large datasets are intentionally excluded; record pointers/provenance in evidence/sources/.
+
+# --- Reproducible sanity-check artifacts (regenerate via forward-model/viz/) ---
+# Metrics + "what to look for" live in the committed sanity report; the heavy
+# self-contained viz HTML (inlined Plotly) and the NetCDF results are regenerable.
+**/validation/sanity/viz/*.html
+**/validation/sanity/data/
