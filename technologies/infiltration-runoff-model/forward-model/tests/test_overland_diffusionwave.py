@@ -246,3 +246,47 @@ def test_dam_break_diffusive_slump_1d():
     # taper), not a sharp 1-cell Stoker shock -- diffusion-wave omits the inertia that forms it.
     front_band = (ds > 0.02 * h0) & (ds < 0.5 * h0)
     assert np.count_nonzero(front_band) >= 4
+
+
+def test_tilted_v_catchment_conserves_2d():
+    """The SAME UFL, unchanged, conserves + stays plausible on a 2-D tilted-V catchment.
+
+    Validates the dimension-agnostic decision (design C.3): the only dimension-aware term is
+    the bed slope grad(z_b), a known field, so the residual/code path is identical in 2-D. A
+    water blob on a V-shaped bed (cross-slope to a central channel that tilts to the outlet)
+    slumps in a CLOSED domain (no-flux, no rain), so total water is invariant; the blob
+    visibly redistributes while depth stays >= 0.
+    """
+    msh = dmesh.create_unit_square(MPI.COMM_WORLD, 16, 16)
+    prob = OverlandProblem(msh, n_man=N_MAN)
+    # tilted-V bed: V across y (channel at y=0.5) + gentle tilt along x toward x=1.
+    prob.set_topography(lambda x: 0.05 * np.abs(x[1] - 0.5) + 0.02 * (1.0 - x[0]))
+    prob.set_initial_condition(
+        lambda x: 0.1 * np.exp(-(((x[0] - 0.5) ** 2 + (x[1] - 0.5) ** 2) / 0.02))
+    )
+    w0 = prob.total_water()
+    d_before = prob.d.x.array.copy()
+
+    nsteps = prob.advance(t_end=0.02, dt=1e-3, dt_max=5e-3)
+    assert nsteps > 0
+
+    assert abs(prob.total_water() - w0) / w0 < 1e-6     # conserved (closed, no rain)
+    assert np.max(np.abs(prob.d.x.array - d_before)) > 1e-3  # genuine 2-D redistribution
+    assert prob.d.x.array.min() >= -1e-12               # positivity holds in 2-D
+    assert np.all(np.isfinite(prob.d.x.array))
+
+
+def test_solver_is_deterministic_1d():
+    """Fixed inputs => bit-identical output (serial LU/preonly + deterministic limiter)."""
+    def run():
+        msh = dmesh.create_interval(MPI.COMM_WORLD, 40, [0.0, 20.0])
+        prob = OverlandProblem(msh, n_man=N_MAN)
+        prob.set_topography(lambda x: 0.02 * (20.0 - x[0]))
+        prob.set_initial_condition(lambda x: 0.2 * np.exp(-((x[0] - 10.0) / 2.0) ** 2))
+        prob.advance(t_end=0.02, dt=1e-3, dt_max=5e-3)
+        return prob.d.x.array.copy(), prob.total_water()
+
+    d_a, w_a = run()
+    d_b, w_b = run()
+    assert np.array_equal(d_a, d_b)
+    assert w_a == w_b
