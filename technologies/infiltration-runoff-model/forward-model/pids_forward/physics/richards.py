@@ -120,6 +120,48 @@ class RichardsProblem:
         self._problem = None  # force rebuild with the new flux term
         return q
 
+    def _boundary_ds(self, locator):
+        fdim = self.mesh.topology.dim - 1
+        self.mesh.topology.create_connectivity(fdim, self.mesh.topology.dim)
+        facets = np.sort(dmesh.locate_entities_boundary(self.mesh, fdim, locator))
+        tag = len(self._flux_tags) + 1
+        self._flux_tags.append(tag)
+        ft = dmesh.meshtags(
+            self.mesh, fdim, facets, np.full(facets.shape, tag, dtype=np.int32)
+        )
+        return ufl.Measure("ds", domain=self.mesh, subdomain_data=ft)(tag)
+
+    def add_ponding_bc(self, locator, rain):
+        """Top boundary with a surface PONDING store (vertical accumulation only).
+
+        Rainfall ``rain`` (m/day) enters the top; whatever the soil cannot infiltrate
+        accumulates as a ponded depth ``d = max(psi, 0)`` that raises the surface
+        pressure head -- with NO lateral surface flow (that is the overland module).
+        Mass-conserving: ``rain = infiltration + d(pond)/dt``. The pond store also gives
+        a saturated surface node a nonzero storage diagonal, so over-saturating storms
+        (intense rain on wet soil -> rapid saturation) converge instead of stalling.
+        ``rain`` may be a float or a fem.Constant (time-dependent). Returns the Constant.
+        """
+        ds_t = self._boundary_ds(locator)
+        q = (
+            rain
+            if isinstance(rain, fem.Constant)
+            else fem.Constant(self.mesh, PETSc.ScalarType(float(rain)))
+        )
+        pond = ufl.max_value(self.psi, 0.0)
+        pond_n = ufl.max_value(self.psi_n, 0.0)
+        # + d(pond)/dt   (surface storage)   - rain   (influx)
+        self.F = self.F + ((pond - pond_n) / self.dt) * self._v * ds_t - q * self._v * ds_t
+        self._problem = None
+        return q
+
+    def ponded_depth(self) -> float:
+        """Ponded water depth max(psi, 0) at the top (highest-elevation) boundary node."""
+        zc = self.V.tabulate_dof_coordinates()[:, self.mesh.geometry.dim - 1]
+        top = np.isclose(zc, zc.max())
+        local = float(np.max(np.maximum(self.psi.x.array[top], 0.0))) if np.any(top) else 0.0
+        return self.mesh.comm.allreduce(local, op=MPI.MAX)
+
     def _ensure_problem(self) -> None:
         if self._problem is None:
             self._problem = NonlinearProblem(

@@ -97,3 +97,30 @@ def test_drought_dries_column_monotonically():
     assert np.all(np.isfinite(th))
     assert th.min() >= LOAM["theta_r"] - 1e-12
     assert th.mean() < mean0  # column lost water overall
+
+
+def test_intense_rain_on_wet_soil_ponds_and_conserves():
+    """Saturation-excess regime: extreme intense rain on already-wet soil saturates the
+    column; the excess PONDS (surface pressure head rises) rather than stalling the solve.
+    Vertical ponding store only (lateral routing is the overland module). Mass balance:
+    rainfall = soil-storage change + ponded-depth change."""
+    msh = dmesh.create_unit_interval(MPI.COMM_WORLD, 40)
+    soil = VanGenuchten(**LOAM)
+    prob = RichardsProblem(msh, soil)
+    prob.set_initial_condition(lambda x: -0.3 + 0.0 * x[0])  # wet antecedent
+    q = 2.0  # m/day, extreme intense (~8x Ks)
+    prob.add_ponding_bc(lambda x: np.isclose(x[0], 1.0), q)
+
+    s0 = prob.total_water() + prob.ponded_depth()  # soil + pond
+    T = 0.15
+    prob.advance(t_end=T, dt=0.005)
+
+    th = prob.theta_array()
+    pond = prob.ponded_depth()
+    assert np.all(np.isfinite(th))
+    assert th.min() >= LOAM["theta_r"] - 1e-12
+    assert th.max() <= LOAM["theta_s"] + 1e-12
+    assert th.max() == pytest.approx(LOAM["theta_s"], rel=1e-3)  # column saturated
+    assert pond > 0.0  # water is now ponding (surface head increased)
+    # mass conserved across soil + pond.
+    assert (prob.total_water() + pond - s0) == pytest.approx(q * T, rel=1e-3)

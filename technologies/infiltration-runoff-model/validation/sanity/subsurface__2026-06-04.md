@@ -2,7 +2,7 @@
 
 - **Module / version:** `forward-model/pids_forward/physics/{richards.py, constitutive.py}` — first complete build, `main` @ the Tier-3 commit of 2026-06-04.
 - **Couplings exercised:** **alone** (subsurface solver standalone). Couplings with overland / pids-features / coupling modules are not yet built, so "in concert" is N/A for this module at this stage and will be re-run per `integration-protocol.md` when those land.
-- **Run env:** WSL2 / Ubuntu 26.04, conda env `pids-fem` (DOLFINx 0.10.0, PETSc 3.25.1). 19 automated tests pass (`python -m pytest -q` → `...................`).
+- **Run env:** WSL2 / Ubuntu 26.04, conda env `pids-fem` (DOLFINx 0.10.0, PETSc 3.25.1). **20 automated tests pass** (`python -m pytest -q`).
 
 ## Tier 1 — automated tests (16)
 - **Analytical / MMS (with convergence order):**
@@ -15,21 +15,30 @@
 - **Plausibility invariants:** `θ ∈ [θr, θs]`, no NaN/Inf, bounded heads — across all tests. **Wetting-front monotonicity** (no spurious ringing) confirmed with mass-lumped storage; consistent mass was shown to ring (−4.5e-3) → mass-lumping adopted (design B.4).
 - **Solver / reproducibility:** convergence read from the PETSc SNES `getConvergedReason` (a prior false-green was found and fixed); **deterministic** (bit-identical re-run); adaptive backward-Euler cut-and-retry stepping; refinement orders confirmed above.
 
-## Tier 2 — synthetic forcing (3)
+## Tier 2 — synthetic forcing (4)
 - **Typical:** constant rainfall flux (0.05 m/day, below Ks) into a closed-bottom column — storage increase equals cumulative input to **rel < 1e-4**; PASS.
 - **Extremes:**
   - **100-yr-style intense storm** (flux 1 m/day ≈ 4×Ks, above infiltration capacity) — the top **saturates / ponds**, mass conserved (~1e-14), `θ ∈ [θr, θs]`; PASS.
+  - **Saturation-excess (intense rain on wet soil)** — the column saturates and the excess **ponds** (surface pressure head rises) via the vertical ponding store; converges; mass conserved across soil + pond to **rel < 1e-3**; PASS.
   - **Drought** (gentle sustainable evaporative outflux, no rain) — **monotone drying** + mass balance to rel < 1e-3; PASS.
-- **Expected qualitative behaviours observed:** downward wetting-front advance under rainfall; surface saturation/ponding when rain exceeds infiltration capacity; monotone drying under evaporation; water redistribution under gravity with a closed bottom.
+- **Expected qualitative behaviours observed:** downward wetting-front advance under rainfall; surface saturation and **ponding (rising pressure head)** when rain exceeds infiltration capacity; monotone drying under evaporation; water redistribution under gravity with a closed bottom.
 
 ## Tier 3 — visual inspection
-- **Result data:** `validation/sanity/data/subsurface__infiltration__2026-06-04.nc` (xarray/NetCDF; reproducible via `forward-model/viz/run_subsurface_sanity.py`).
-- **HTML artifact:** `validation/sanity/viz/subsurface__infiltration__2026-06-04.html` (self-contained, offline, 4.95 MB; built by the independent viz subagent via `forward-model/viz/make_sanity_html.py`). Animated `θ(z)` / `ψ(z)` profiles with a time slider + a mass-balance-vs-time diagnostic + a metrics panel.
-- **What to look for:** drag the time slider — the water-content profile rises to **θ_s = 0.43** at the top as the front advances over 0–0.2 day (ψ climbs toward ponding), the bottom stays near the dry initial state, and the mass-balance error stays **~1e-14** throughout.
+Four scenarios spanning antecedent wetness × event size, all in `validation/sanity/viz/` (self-contained, offline, ~4.9 MB; built by the independent viz subagent via `forward-model/viz/make_sanity_html.py`; data reproducible via `forward-model/viz/run_subsurface_sanity.py`). Each is animated `θ(z)`/`ψ(z)` profiles + a mass-balance diagnostic + a metrics panel.
+
+| HTML (`subsurface__…__2026-06-04.html`) | Forcing × antecedent | Behaviour | Max pond | Max MB err |
+|---|---|---|---|---|
+| `typical-mesic` | typical storm (0.10 m/day) · mesic (ψ=−1) | infiltrates, no ponding | 0 | 1.3e-12 |
+| `intense-dry` | extreme storm (2.0 m/day) · dry (ψ=−5) | sharp front, saturates, then ponds | 0.167 m | 1.5e-13 |
+| `intense-wet` | extreme storm (2.0 m/day) · wet (ψ=−0.3) | **saturation-excess → ponds most** | 0.190 m | 3.8e-15 |
+| `small-mesic` | small event (0.02 m/day) · mesic (ψ=−1) | shallow wetting | 0 | 6.0e-12 |
+
+- **What to look for:** drag the time slider — for the small/typical events the column wets without ponding; for the intense events the top reaches **θ_s = 0.43** then **`ψ` climbs above 0 (ponding head)** as the surface store fills (most on wet soil). The mass-balance error (now soil + pond) stays at machine precision throughout.
+- **Surface ponding** is a vertical-accumulation store only (raising the pressure head); lateral routing/runoff is the overland module.
 - **Human sign-off:** _______________ (name / date / verdict — Arik)
 
 ## Residual concerns / waivers
-1. **Instantaneous ponding of very dry soil** cannot be taken in one step by mass-lumped + no-`Ss` (a freshly-saturated node has a zero storage diagonal regardless of `dt`). Realistic gradual saturation works; fixes if ever needed: BC ramping, a tiny *numerical* `Ss`, or local consistent mass. *Documented in the saturation test.*
+1. **Saturation/ponding under realistic (rainfall) forcing now converges** via the surface ponding store (excess raises the pressure head, mass-conserving). The only remaining edge is an *instantaneous, prescribed-head* (Dirichlet ψ>0) jump onto bone-dry soil — a numerically violent idealization that lumped-mass + no-`Ss` cannot take in one step; it does not arise under flux/rainfall forcing. *Documented in the saturation test.*
 2. **Supply-limited evaporation** (a fixed evaporative flux exceeding the soil's delivery capacity) diverges as the surface dries — needs a supply-limited atmospheric / Robin BC, deferred to the forcing/vegetation module.
 3. **Cross-code validation (HydroGeoSphere / the `PIDS-MIN-1` benchmark)** is optional/deferred per the 2026-06-04 decision; this report establishes internal three-tier consistency, not external validation of headline numbers.
 4. **MPI > 1 not yet exercised** — a ghost `scatter_forward` was added for parallel safety, but a 2-rank conservation/retry regression is still TODO.
