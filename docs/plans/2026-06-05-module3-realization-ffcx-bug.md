@@ -104,3 +104,36 @@ full-volume fields (interior pinned to 0 = trivial Dirichlet identity rows).
 
 > Bottom line: **S isn't dead — it's pending an upstream FFCX fix; A carries Module 3 correctly and
 > publishably until then.**
+
+## 6. 2-D shore-up (Codex review, 2026-06-06) + residual concerns
+
+After the first 2-D pass, a Codex review flagged that the green suite was too weak to claim the 2-D
+operator validated. Shore-up done (commit `7a26179`):
+
+- **Operator equivalence (the key pin):** the co-located lateral overland (tangential gradient
+  `grad_T` on host `ds_top`) is **machine-precision identical (~8e-15)** to standalone Module-2
+  overland (`grad` on the surface mesh). `overland_conveyance` now takes a `grad=` arg so both paths
+  SHARE one Manning formula. Test: `test_2d_overland_operator_matches_module2`.
+- **Flat reduction:** a 2-D flat column matches the validated 1-D coupling quantitatively (`ψ_top`,
+  infiltration, `d`) within ~1% (2-D-triangle vs 1-D-interval discretization). Test:
+  `test_2d_flat_reduces_to_1d_column`.
+- **Limiter hardening:** track `max_clip_seen` + `clip_mass_adjust`; degenerate `oldtotal≤0` branch
+  records the unavoidable mass change (regression test); the lateral test asserts clips stay tiny
+  (`max_clip_seen < 0.05`).
+- **`ℓ_c`:** auto-detection now FAILS LOUDLY on degenerate z-levels (was a silent tiny `ℓ_c`).
+
+**Residual concerns (carried forward):**
+1. **Flat-top host only.** Top-facet detection (`z=ztop`), `ℓ_c` (z-level spacing), and the off-top
+   pin all assume a flat, layered top. Non-flat/warped/sloped-geometry tops need a **per-facet local
+   `ℓ_c`** and a different top detection — future work; guarded to fail loudly meanwhile.
+2. **Post-step limiter ⇒ `λ` staleness.** The accepted `(ψ,d,λ)` after clipping `d` has `λ` solved
+   against the un-clipped `d` (Codex). Bounded small (clips are mm/cm; `max_clip_seen` tracks it);
+   a rigorous fix (re-solve, or in-solve complementarity for `d≥0`) is deferred.
+3. **Surface storage is consistent (non-lumped)** in the coupling vs Module 2's lumped storage. The
+   FLUX operator matches M2 to machine precision; only the storage scheme differs. Works with the
+   limiter; lumping it (more oscillation suppression at wet/dry fronts) is a possible future change.
+4. **MPI untested for the coupling.** MPI overhead dominates on the ~250-DOF verification meshes
+   (slower than serial); serial covers correctness. A real MPI check belongs on a larger mesh.
+5. **Test-suite speed.** The lateral-routing test is ~51 s (overland stiffness ⇒ ~1500 tiny adaptive
+   steps; NOT a mesh-size issue — meshes are 50–200 cells). Use `pytest -k "not lateral"` for fast
+   iteration; full suite for milestones.
