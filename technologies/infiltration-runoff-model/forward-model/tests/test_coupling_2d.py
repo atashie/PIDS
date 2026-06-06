@@ -9,13 +9,67 @@ the only new behavior here is lateral conveyance of ponded water downslope.
 """
 import numpy as np
 import pytest
+import ufl
 from mpi4py import MPI
-from dolfinx import mesh as dmesh
+from dolfinx import mesh as dmesh, fem
+from dolfinx.fem.petsc import assemble_vector
 
 from pids_forward.physics.constitutive import VanGenuchten
 from pids_forward.physics.coupling import CoupledProblem
+from pids_forward.physics.overland import overland_conveyance
 
 SOIL = VanGenuchten(theta_r=0.078, theta_s=0.43, alpha=3.6, n=1.56, Ks=0.25)
+
+
+def test_2d_overland_operator_matches_module2():
+    """The co-located lateral overland operator (tangential gradient on the host ds_top) is the SAME
+    operator as standalone Module-2 overland (grad on the surface mesh) -- to machine precision.
+
+    Realization A puts d co-located on the host (pinned 0 below the top) and uses grad_T = grad −
+    (grad·n)n on ds_top. This pins down (adversarial-review concern) that grad_T recovers the true
+    SURFACE gradient and is NOT polluted by the artificial vertical structure of the pinned field:
+    we assemble the Manning FLUX residual K_s·grad_T(H_s)·grad_T(v) on the host top facets and the
+    Module-2 flux K_s·grad(H_s)·grad(v) on the matching 1-D surface mesh, for identical d(x), z_b(x),
+    and require them equal at the interior surface nodes. Both use the SAME overland_conveyance.
+    """
+    L, Hd, nx, nz, n_man, eps_S = 4.0, 1.0, 16, 6, 0.05, 1e-3
+    d_expr = lambda x: 0.06 + 0.02 * np.sin(np.pi * x[0] / L)   # smooth, strictly positive
+    zb_expr = lambda x: 0.05 * (L - x[0])                       # sloped bed -> grad H_s != 0
+
+    # (a) coupled: grad_T overland flux on the 2-D host top facets
+    host = dmesh.create_rectangle(MPI.COMM_WORLD, [[0.0, 0.0], [L, Hd]], [nx, nz])
+    fdim = host.topology.dim - 1
+    host.topology.create_connectivity(fdim, host.topology.dim)
+    top = np.sort(dmesh.locate_entities_boundary(host, fdim, lambda x: np.isclose(x[1], Hd)))
+    mt = dmesh.meshtags(host, fdim, top, np.ones(top.size, dtype=np.int32))
+    ds_top = ufl.Measure("ds", domain=host, subdomain_data=mt)(1)
+    Vd = fem.functionspace(host, ("Lagrange", 1))
+    dH = fem.Function(Vd); dH.interpolate(d_expr)
+    zbH = fem.Function(Vd); zbH.interpolate(zb_expr)
+    vH = ufl.TestFunction(Vd)
+    nv = ufl.FacetNormal(host)
+    gT = lambda f: ufl.grad(f) - ufl.dot(ufl.grad(f), nv) * nv
+    HsH, KsH = overland_conveyance(dH, zbH, n_man, eps_S, grad=gT)
+    bH = assemble_vector(fem.form(KsH * ufl.dot(gT(HsH), gT(vH)) * ds_top)); bH.assemble()
+    topdofs = fem.locate_dofs_geometrical(Vd, lambda x: np.isclose(x[1], Hd))
+    xtop = Vd.tabulate_dof_coordinates()[topdofs, 0]
+    oH = np.argsort(xtop); xH, fH = xtop[oH], bH.getArray()[topdofs][oH]
+
+    # (b) Module 2: grad overland flux on the matching 1-D surface mesh
+    surf = dmesh.create_interval(MPI.COMM_WORLD, nx, [0.0, L])
+    Vs = fem.functionspace(surf, ("Lagrange", 1))
+    dS = fem.Function(Vs); dS.interpolate(d_expr)
+    zbS = fem.Function(Vs); zbS.interpolate(zb_expr)
+    vS = ufl.TestFunction(Vs)
+    HsS, KsS = overland_conveyance(dS, zbS, n_man, eps_S)
+    bS = assemble_vector(fem.form(KsS * ufl.dot(ufl.grad(HsS), ufl.grad(vS)) * ufl.dx)); bS.assemble()
+    xc = Vs.tabulate_dof_coordinates()[:, 0]; oS = np.argsort(xc); xS, fS = xc[oS], bS.getArray()[oS]
+
+    assert np.allclose(xH, xS)
+    # compare interior nodes (the two ends differ by boundary treatment: ds_top facet ends vs the
+    # 1-D mesh's natural no-flux ends).
+    rel = np.abs(fH[1:-1] - fS[1:-1]) / (np.abs(fS[1:-1]).max() + 1e-30)
+    assert rel.max() < 1e-9, f"co-located overland operator != Module-2 overland (max rel {rel.max():.2e})"
 
 
 def _top_length(prob):
@@ -23,6 +77,47 @@ def _top_length(prob):
     from dolfinx import fem
     one = fem.Constant(prob.mesh, 1.0)
     return prob.mesh.comm.allreduce(fem.assemble_scalar(fem.form(one * prob._ds_top)), op=MPI.SUM)
+
+
+def _psi_top(prob):
+    """ψ at the top surface (max over the top-facet ψ-dofs; uniform on a flat 2-D column)."""
+    zc = prob.Vpsi.tabulate_dof_coordinates()[:, prob._zaxis]
+    td = np.isclose(zc, zc.max())
+    return float(prob.psi.x.array[td].max())
+
+
+def test_2d_flat_reduces_to_1d_column():
+    """A 2-D flat-top coupled column under uniform rain stays x-uniform AND matches the validated
+    1-D coupled column quantitatively (ψ_top, infiltrated water, surface depth).
+
+    The strongest reduction check: with a flat surface there is no lateral flow, so each x-column of
+    the 2-D solve must reproduce the 1-D coupling. Same vertical resolution -> same ℓ_c -> same k_ex.
+    """
+    nz, rate, t_end, psi0 = 16, 0.05, 0.3, -2.0  # rain << Ks -> supply-limited, converges fast
+    # 1-D reference column
+    m1 = dmesh.create_interval(MPI.COMM_WORLD, nz, [0.0, 1.0])
+    p1 = CoupledProblem(m1, SOIL)
+    p1.set_initial_condition(lambda x: psi0 + 0.0 * x[0], d_value=0.0)
+    p1.add_rain(rate)
+    p1.advance(t_end=t_end, dt=1e-3, dt_max=0.05)
+    psi_top_1d, soil_1d, d_1d = _psi_top(p1), p1.soil_water(), p1.surface_depth()
+
+    # 2-D flat column (same vertical resolution; flat z_b = default 0)
+    m2 = dmesh.create_rectangle(MPI.COMM_WORLD, [[0.0, 0.0], [1.0, 1.0]], [6, nz])
+    p2 = CoupledProblem(m2, SOIL)
+    p2.set_initial_condition(lambda x: psi0 + 0.0 * x[0], d_value=0.0)
+    p2.add_rain(rate)
+    p2.advance(t_end=t_end, dt=1e-3, dt_max=0.05)
+
+    # x-uniform (no lateral structure on a flat surface) -- exact: the columns are identical
+    d2 = p2.d.x.array[p2._top_dofs(p2.Vd)]
+    assert d2.std() < 1e-6, f"2-D flat column not x-uniform (d std {d2.std():.2e})"
+    # quantitative match to the 1-D column. Tolerance ~2% absorbs only the 2-D-triangle vs
+    # 1-D-interval vertical-discretization difference (the physics/ℓ_c/coupling are identical); a
+    # wrong operator would differ by far more. soil_water is per-unit-width (domain width 1).
+    assert abs(_psi_top(p2) - psi_top_1d) < 0.02, f"ψ_top {_psi_top(p2):.4f} vs 1-D {psi_top_1d:.4f}"
+    assert abs(p2.soil_water() - soil_1d) / abs(soil_1d) < 0.02
+    assert abs(p2.surface_depth() - d_1d) < 2e-3
 
 
 def _surface_xd(prob):
@@ -92,3 +187,33 @@ def test_2d_lateral_redistribution_downslope():
     assert prob.surface_depth() >= -1e-12
     assert prob.d.x.array.min() >= -1e-12   # limiter holds d >= 0 everywhere
     assert np.all(np.isfinite(prob.psi.x.array))
+    # limiter does only LIGHT work (front undershoots are mm/cm) -> the accepted λ stays
+    # near-consistent with the clipped d; and no degenerate drying fired (clip_mass_adjust ~ 0).
+    assert prob.max_clip_seen < 0.05, f"heavy limiter clipping ({prob.max_clip_seen:.3e}) -> λ staleness"
+    assert abs(prob.clip_mass_adjust) < 1e-9
+
+
+def test_2d_limiter_degenerate_dries_and_tracks():
+    """The coupled limiter must not SILENTLY create water when the surface-undershoot total <= 0.
+
+    Mirrors the Module-2 regression (the limiter's degenerate branch): if the negative-depth
+    undershoots outweigh all positive surface water (∫d ds_top <= 0) while a positive node survives
+    clipping, a naive clip would jump the total from <=0 to >0 -- silent mass creation. The coupled
+    limiter instead dries the surface (d>=0, ∫d ds_top -> 0) and records the unavoidable adjustment
+    in clip_mass_adjust (never silent).
+    """
+    msh = dmesh.create_rectangle(MPI.COMM_WORLD, [[0.0, 0.0], [1.0, 1.0]], [4, 4])
+    prob = CoupledProblem(msh, SOIL)
+    topdofs = prob._top_dofs(prob.Vd)
+    arr = prob.d.x.array
+    arr[topdofs] = -0.4          # surface mostly negative (pathological near-dry undershoot)
+    arr[topdofs[0]] = 0.05       # ... but one positive node would survive clipping
+    prob.d.x.scatter_forward()
+    oldtotal = prob.surface_water()
+    assert oldtotal < 0.0                       # precondition: deficit outweighs the positive water
+
+    prob._enforce_positivity()
+
+    assert prob.d.x.array.min() >= -1e-12       # non-negative
+    assert prob.surface_water() <= 1e-12        # dried, NOT left with created positive water
+    assert prob.clip_mass_adjust == pytest.approx(-oldtotal, rel=1e-6)  # adjustment tracked, not silent

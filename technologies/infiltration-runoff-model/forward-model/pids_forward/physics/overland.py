@@ -58,7 +58,7 @@ from petsc4py import PETSc
 SECONDS_PER_DAY = 86400.0
 
 
-def overland_conveyance(d, z_b, n_man, eps_S):
+def overland_conveyance(d, z_b, n_man, eps_S, grad=ufl.grad):
     """Diffusion-wave surface head and Manning conductance (design C.3).
 
     Returns ``(H_s, K_s)`` where ``H_s = z_b + d`` is the surface hydraulic head and
@@ -66,13 +66,15 @@ def overland_conveyance(d, z_b, n_man, eps_S):
         K_s = SECONDS_PER_DAY * max(d, 0)^{5/3} / ( n_man * (|grad H_s|^2 + eps_S^2)^{1/4} )
 
     is the Manning conveyance [m^2/day] (slope floor inside the root -> finite Jacobian at zero
-    slope; ``max(d,0)`` guards the fractional power against tiny negative iterates). On a codim-1
-    submesh **manifold** (the coupled host top facets, realization S) ``ufl.grad`` is the
-    *tangential* gradient, so this exact expression serves both the standalone surface mesh and
-    the coupled surface without change.
+    slope; ``max(d,0)`` guards the fractional power against tiny negative iterates). ``grad`` is the
+    surface-gradient operator: ``ufl.grad`` on an intrinsic surface mesh (Module 2 standalone) or a
+    codim-1 manifold; pass the TANGENTIAL gradient ``grad_T = grad - (grad.n)n`` for the Module-3
+    co-located realization (surface fields on the host top facets) -- the SAME conveyance formula
+    serves both (the co-located grad_T form is machine-identical to the standalone grad form, so the
+    lateral operator is provably Module-2's).
     """
     H_s = z_b + d
-    g = ufl.grad(H_s)
+    g = grad(H_s)
     slope_sqrt = (ufl.dot(g, g) + eps_S**2) ** 0.25
     d_pos = ufl.max_value(d, 0.0)
     K_s = SECONDS_PER_DAY * d_pos ** (5.0 / 3.0) / (n_man * slope_sqrt)

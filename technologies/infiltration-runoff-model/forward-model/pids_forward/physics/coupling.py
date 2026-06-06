@@ -39,7 +39,7 @@ from mpi4py import MPI
 from petsc4py import PETSc
 
 from .richards import richards_bulk_residual
-from .overland import SECONDS_PER_DAY
+from .overland import overland_conveyance
 
 
 def _fischer_burmeister(a, b, eps):
@@ -109,12 +109,21 @@ class CoupledProblem:
 
         if ell_c is None:
             # top-cell half-height = half the spacing between the top two DISTINCT z-levels.
-            # Round first: 2-D/3-D meshes have many nodes per level with O(1e-15) float noise, so a
-            # raw np.unique returns near-duplicates and the "spacing" collapses to ~0 (-> k_ex blows
-            # up). Rounding to ~nm precision collapses the noise while keeping real cell spacings.
+            # ASSUMES a FLAT, LAYERED top (also assumed by the top-facet detection at z=ztop and the
+            # off-top pin below). Round first: 2-D/3-D meshes have many nodes per level with O(1e-15)
+            # float noise, so a raw np.unique returns near-duplicates and the spacing collapses to ~0
+            # (-> k_ex blows up). For warped/sloped/unstructured tops this heuristic is unreliable --
+            # GUARDED below to fail LOUDLY (pass ell_c explicitly there). [shore-up #4; per-facet
+            # local ℓ_c is the future fix when non-flat tops are supported.]
             zu = np.unique(np.round(zc, 9))
             local = 0.5 * float(zu[-1] - zu[-2]) if zu.size >= 2 else np.inf
             ell_c = mesh.comm.allreduce(local, op=MPI.MIN)  # top-cell half-height
+            zmin = mesh.comm.allreduce(float(zc.min()) if zc.size else self._ztop, op=MPI.MIN)
+            z_extent = max(self._ztop - zmin, 1e-30)
+            if not np.isfinite(ell_c) or ell_c < 1e-6 * z_extent:
+                raise ValueError(
+                    f"ell_c auto-detection failed (got {ell_c:.2e} vs z-extent {z_extent:.2e}); the "
+                    "top-cell-half-height heuristic assumes a flat, layered top -- pass ell_c explicitly.")
         self.ell_c = float(ell_c)
         self._tau_c = self.ell_c / soil.Ks  # NCP unit scaling: τ_c·(flux) has depth units
 
@@ -142,12 +151,11 @@ class CoupledProblem:
         # grad_T ≡ 0 and this term vanishes (dimension-agnostic). H_s = z_b + d.
         n_vec = ufl.FacetNormal(mesh)
         gT = lambda f: ufl.grad(f) - ufl.dot(ufl.grad(f), n_vec) * n_vec
-        H_s = self.z_b + self.d
-        g_Hs = gT(H_s)
-        slope_sqrt = (ufl.dot(g_Hs, g_Hs) + self.eps_S**2) ** 0.25
-        d_pos = ufl.max_value(self.d, 0.0)
-        K_s = SECONDS_PER_DAY * d_pos ** (5.0 / 3.0) / (self.n_man * slope_sqrt)
-        overland_flux = K_s * ufl.dot(g_Hs, gT(vd)) * self._ds_top
+        # Manning conveyance SHARED with Module 2 (overland_conveyance), via the tangential gradient
+        # grad_T -> the co-located surface operator is provably identical to standalone overland
+        # (test_2d_overland_operator_matches_module2). H_s = z_b + d.
+        H_s, K_s = overland_conveyance(self.d, self.z_b, self.n_man, self.eps_S, grad=gT)
+        overland_flux = K_s * ufl.dot(gT(H_s), gT(vd)) * self._ds_top
         # d block: surface storage + lateral overland flux + λ leaving the store (sign-paired)
         # [+ rain via add_rain].
         self.F_d = ((self.d - self.d_n) / self.dt) * vd * self._ds_top \
@@ -168,7 +176,11 @@ class CoupledProblem:
         self._petsc_options = dict(petsc_options or self._DEFAULT_PETSC_OPTIONS)
         self._problem: NonlinearProblem | None = None
         self._rain = None
-        self.last_clip = 0.0  # largest negative surface depth clipped on the last step (diagnostic)
+        self.last_clip = 0.0      # largest negative surface depth clipped on the last step
+        self.max_clip_seen = 0.0  # largest negative depth clipped over the whole run (heavy clipping
+        # => the accepted λ is increasingly stale vs the clipped d; should stay ~mm/cm-small)
+        self.clip_mass_adjust = 0.0  # cumulative UNAVOIDABLE surface-mass change from the degenerate
+        # (oldtotal<=0) drying branch; 0 in the normal conservative-rescale branch
 
     # -- problem setup --------------------------------------------------------
     def set_initial_condition(self, psi_expr, d_value: float = 0.0) -> None:
@@ -235,6 +247,9 @@ class CoupledProblem:
             factor = 0.0
         if posvol > 0.0:
             arr[:] *= factor; self.d.x.scatter_forward()
+        # normal rescale branch is conservative (surface_water restored); the degenerate oldtotal<=0
+        # branch dries the domain -> track the unavoidable surface-mass change so it is never silent.
+        self.clip_mass_adjust += self.surface_water() - oldtotal
         return -gmin
 
     # -- time stepping --------------------------------------------------------
@@ -248,6 +263,7 @@ class CoupledProblem:
         iters = int(snes.getIterationNumber())
         if converged:
             self.last_clip = self._enforce_positivity()  # keep d_n >= 0 (lateral-overland undershoots)
+            self.max_clip_seen = max(self.max_clip_seen, self.last_clip)
             self.psi_n.x.array[:] = self.psi.x.array
             self.psi_n.x.scatter_forward()
             self.d_n.x.array[:] = self.d.x.array
