@@ -39,6 +39,7 @@ from mpi4py import MPI
 from petsc4py import PETSc
 
 from .richards import richards_bulk_residual
+from .overland import SECONDS_PER_DAY
 
 
 def _fischer_burmeister(a, b, eps):
@@ -71,10 +72,13 @@ class CoupledProblem:
     }
 
     def __init__(self, mesh, soil, *, ell_c: float | None = None, eps_ncp: float = 1e-4,
+                 n_man: float = 0.05, eps_S: float = 1e-3,
                  degree: int = 1, lumped: bool = True, petsc_options=None):
         self.mesh = mesh
         self.soil = soil
         self.eps_ncp = float(eps_ncp)
+        self.n_man = float(n_man)   # Manning roughness for the lateral overland flux (SI s.m^-1/3)
+        self.eps_S = float(eps_S)   # diffusion-wave slope floor
         gdim = mesh.geometry.dim
         self._zaxis = gdim - 1  # gravity / elevation along the last spatial axis
 
@@ -86,6 +90,7 @@ class CoupledProblem:
         self.d = fem.Function(self.Vd, name="d")
         self.d_n = fem.Function(self.Vd, name="d_n")
         self.lam = fem.Function(self.Vlam, name="lambda")  # instantaneous flux: no previous-step value
+        self.z_b = fem.Function(self.Vd, name="z_b")  # surface topography for lateral overland (default flat)
 
         e_g = np.zeros(gdim, dtype=PETSc.ScalarType)
         e_g[-1] = 1.0
@@ -103,7 +108,11 @@ class CoupledProblem:
         self._ds_top = ufl.Measure("ds", domain=mesh, subdomain_data=ft)(1)
 
         if ell_c is None:
-            zu = np.sort(np.unique(zc))
+            # top-cell half-height = half the spacing between the top two DISTINCT z-levels.
+            # Round first: 2-D/3-D meshes have many nodes per level with O(1e-15) float noise, so a
+            # raw np.unique returns near-duplicates and the "spacing" collapses to ~0 (-> k_ex blows
+            # up). Rounding to ~nm precision collapses the noise while keeping real cell spacings.
+            zu = np.unique(np.round(zc, 9))
             local = 0.5 * float(zu[-1] - zu[-2]) if zu.size >= 2 else np.inf
             ell_c = mesh.comm.allreduce(local, op=MPI.MIN)  # top-cell half-height
         self.ell_c = float(ell_c)
@@ -128,8 +137,21 @@ class CoupledProblem:
         self.F_psi = richards_bulk_residual(
             self.psi, self.psi_n, vpsi, soil, self.dt, self.e_g, dx_storage=self._dx_storage
         ) - self.lam * vpsi * self._ds_top
-        # d block: surface storage + λ leaving the store (sign-paired) [+ rain via add_rain].
+        # LATERAL overland: Manning diffusion-wave as a TANGENTIAL-gradient surface PDE on ds_top.
+        # grad_T = grad − (grad·n)n is the surface gradient; in 1-D the top facet is a point so
+        # grad_T ≡ 0 and this term vanishes (dimension-agnostic). H_s = z_b + d.
+        n_vec = ufl.FacetNormal(mesh)
+        gT = lambda f: ufl.grad(f) - ufl.dot(ufl.grad(f), n_vec) * n_vec
+        H_s = self.z_b + self.d
+        g_Hs = gT(H_s)
+        slope_sqrt = (ufl.dot(g_Hs, g_Hs) + self.eps_S**2) ** 0.25
+        d_pos = ufl.max_value(self.d, 0.0)
+        K_s = SECONDS_PER_DAY * d_pos ** (5.0 / 3.0) / (self.n_man * slope_sqrt)
+        overland_flux = K_s * ufl.dot(g_Hs, gT(vd)) * self._ds_top
+        # d block: surface storage + lateral overland flux + λ leaving the store (sign-paired)
+        # [+ rain via add_rain].
         self.F_d = ((self.d - self.d_n) / self.dt) * vd * self._ds_top \
+            + overland_flux \
             + self.lam * vd * self._ds_top \
             + eps_diag * self.d * vd * ufl.dx
         # λ block: the smooth NCP picks the regime (ponded λ=q_pot vs supply-limited d=0).
@@ -146,6 +168,7 @@ class CoupledProblem:
         self._petsc_options = dict(petsc_options or self._DEFAULT_PETSC_OPTIONS)
         self._problem: NonlinearProblem | None = None
         self._rain = None
+        self.last_clip = 0.0  # largest negative surface depth clipped on the last step (diagnostic)
 
     # -- problem setup --------------------------------------------------------
     def set_initial_condition(self, psi_expr, d_value: float = 0.0) -> None:
@@ -159,6 +182,11 @@ class CoupledProblem:
         self.d_n.x.array[topdofs] = d_value
         for f in (self.d, self.d_n, self.lam):
             f.x.scatter_forward()
+
+    def set_topography(self, expr) -> None:
+        """Set the surface bed elevation z_b(x) for the lateral overland flux (default flat z_b=0)."""
+        self.z_b.interpolate(expr)
+        self._problem = None
 
     def add_dirichlet_psi(self, locator, value) -> None:
         dofs = fem.locate_dofs_geometrical(self.Vpsi, locator)
@@ -185,6 +213,30 @@ class CoupledProblem:
                 kind="mpi",  # monolithic block AIJ so a single LU factorizes the coupled operator
             )
 
+    # -- positivity limiter ---------------------------------------------------
+    def _enforce_positivity(self) -> float:
+        """Conservatively clip d>=0 on the surface, preserving the surface budget ∫d ds_top.
+
+        The lateral overland (Manning diffusion-wave) undershoots to small negative d at advancing
+        wet/dry fronts (same as standalone Module 2). Left in d_n, those negatives accumulate and
+        eventually stall the coupled Newton. Post-step we clip them to 0 and rescale the remaining
+        positive surface water by oldtotal/posvol so the surface storage ∫d ds_top is preserved to
+        machine precision (no-op when d>=0). The off-top DOFs are pinned to 0 -> unaffected.
+        """
+        arr = self.d.x.array
+        gmin = self.mesh.comm.allreduce(float(arr.min()) if arr.size else 0.0, op=MPI.MIN)
+        if gmin >= 0.0:
+            return 0.0
+        oldtotal = self.surface_water()              # ∫d ds_top including the negatives
+        np.maximum(arr, 0.0, out=arr); self.d.x.scatter_forward()
+        posvol = self.surface_water()                # positive surface water after clipping
+        factor = (oldtotal / posvol) if posvol > 0.0 else 0.0
+        if factor < 0.0:
+            factor = 0.0
+        if posvol > 0.0:
+            arr[:] *= factor; self.d.x.scatter_forward()
+        return -gmin
+
     # -- time stepping --------------------------------------------------------
     def step(self, dt: float):
         """Advance one monolithic backward-Euler Newton step. Returns (converged, iters)."""
@@ -195,6 +247,7 @@ class CoupledProblem:
         converged = snes.getConvergedReason() > 0
         iters = int(snes.getIterationNumber())
         if converged:
+            self.last_clip = self._enforce_positivity()  # keep d_n >= 0 (lateral-overland undershoots)
             self.psi_n.x.array[:] = self.psi.x.array
             self.psi_n.x.scatter_forward()
             self.d_n.x.array[:] = self.d.x.array
@@ -206,7 +259,7 @@ class CoupledProblem:
             self.d.x.scatter_forward()
         return converged, iters
 
-    def advance(self, t_end, dt, *, dt_min=1e-6, dt_max=None, grow=1.5, cut=0.5,
+    def advance(self, t_end, dt, *, dt_min=1e-9, dt_max=None, grow=1.5, cut=0.5,
                 target_low=3, target_high=8, shrink=0.7, max_steps=100000):
         """March to ``t_end`` with adaptive backward-Euler steps (cut-and-retry on non-convergence)."""
         t = 0.0
