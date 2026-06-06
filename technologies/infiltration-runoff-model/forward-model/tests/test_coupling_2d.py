@@ -154,6 +154,31 @@ def test_2d_flat_closed_conservation():
     assert np.all(np.isfinite(prob.psi.x.array))
 
 
+def test_2d_closed_conservation_is_structural():
+    """Closed flat column under smooth sub-Ks rain: total water grows by EXACTLY the rainfall, to
+    near machine precision -- conservation is STRUCTURAL, not merely within a loose gate.
+
+    Pins the diagonal-allocation fix (Codex review 2026-06-06). The pinned interior d/λ rows get their
+    required matrix diagonal from a VERTEX (dP) integral on exactly those vertices, which is
+    conservation-neutral: it touches only the pinned rows the Dirichlet BC overwrites, never the free
+    top rows. The earlier whole-domain eps_diag*d*vd*dx leaked a spurious ~1e-12 sink into the FREE top
+    rows (measured: 1.18e-12 vs 5.5e-14 here) -> not structural. Smooth (rate < Ks => no ponding) so
+    the positivity limiter is a no-op; the only thing that could break exact closure is such a spurious
+    residual term. (The gate is deliberately tight to catch a reintroduced whole-domain allocation.)
+    """
+    msh = dmesh.create_rectangle(MPI.COMM_WORLD, [[0.0, 0.0], [1.0, 2.0]], [12, 16])
+    prob = CoupledProblem(msh, SOIL)
+    prob.set_initial_condition(lambda x: -2.0 + 0.0 * x[0], d_value=0.0)
+    w0 = prob.total_water()
+    rate = 0.1  # < Ks=0.25 -> supply-limited, smooth, no ponding/clipping
+    prob.add_rain(rate)
+    prob.advance(t_end=0.5, dt=1e-3, dt_max=0.05)
+
+    cum_rain = rate * _top_length(prob) * 0.5
+    assert prob.max_clip_seen == 0.0  # no clipping -> limiter is a no-op (precondition for "structural")
+    assert abs((prob.total_water() - w0) - cum_rain) / cum_rain < 5e-13  # structural to ~machine eps
+
+
 def test_2d_lateral_redistribution_downslope():
     """Heavy rain on a SLOPED 2-D hillslope ponds, then the Manning overland term ROUTES the ponded
     water downslope -- it accumulates at the downhill end. Closed domain conserves.
@@ -217,3 +242,88 @@ def test_2d_limiter_degenerate_dries_and_tracks():
     assert prob.d.x.array.min() >= -1e-12       # non-negative
     assert prob.surface_water() <= 1e-12        # dried, NOT left with created positive water
     assert prob.clip_mass_adjust == pytest.approx(-oldtotal, rel=1e-6)  # adjustment tracked, not silent
+
+
+# ---------------------------------------------------------------------------------------------
+# Lateral OUTFLOW boundary condition (free-drainage outlet) -- co-located realization A.
+#
+# In realization A the overland PDE lives on the host top facets (ds_top, codim-1), so the outlet
+# (downstream end of the surface) is the BOUNDARY of ds_top -- a codim-2 host entity: in this 2-D
+# cross-section, the downstream-TOP CORNER VERTEX. The outlet imposes the Manning normal-depth point
+# discharge q_out = SECONDS_PER_DAY*(1/n_man)*d^{5/3}*sqrt(slope) [m^2/day per unit width] via a
+# single-mesh VERTEX integral (dP) -- FFCX-native on stock 0.10 (NOT the mixed-dim codim-0 path that
+# blocked realization S; verified in scratch/m3_outflow_spike.py). Same (locator, slope) API as
+# Module-2 OverlandProblem.add_outflow_bc. [3-D extends the outlet to a perimeter CURVE = codim-2
+# edges; that is a separate spike -- the dimension-agnostic normalized-band variant is the fallback.]
+# ---------------------------------------------------------------------------------------------
+def test_2d_outflow_bc_rejects_nonpositive_slope():
+    """slope<=0 is a caller error (slope=0 dams the outlet; slope<0 gives sqrt(<0)=NaN)."""
+    msh = dmesh.create_rectangle(MPI.COMM_WORLD, [[0.0, 0.0], [2.0, 1.0]], [4, 4])
+    prob = CoupledProblem(msh, SOIL)
+    with pytest.raises(ValueError):
+        prob.add_outflow_bc(lambda x: np.isclose(x[0], 2.0), slope=0.0)
+    with pytest.raises(ValueError):
+        prob.add_outflow_bc(lambda x: np.isclose(x[0], 2.0), slope=-0.01)
+
+
+def test_2d_outflow_bc_rejects_empty_outlet():
+    """A locator matching NO top-boundary vertex is a caller error (typo) -- fail loudly, not silently
+    no-op (Codex review 2026-06-06). Uses a GLOBAL count, so a parallel-legitimately-empty rank does
+    not falsely raise (the outlet vertex may live on another rank)."""
+    msh = dmesh.create_rectangle(MPI.COMM_WORLD, [[0.0, 0.0], [2.0, 1.0]], [4, 4])
+    prob = CoupledProblem(msh, SOIL)
+    with pytest.raises(ValueError):
+        prob.add_outflow_bc(lambda x: np.isclose(x[0], 123456.0), slope=0.05)  # matches nothing
+
+
+def test_2d_outflow_point_discharge_magnitude():
+    """The outlet discharge equals the Manning normal-depth value at the outlet node, in m^2/day.
+
+    Pins the EXACT mechanism + the day<->second factor (hard-coded 86400, not imported): set a known
+    uniform surface depth d0 on a known slope, add the outflow BC at x=L, and require outflow_rate()
+    == 86400*(1/n)*d0^{5/3}*sqrt(slope). In the 2-D cross-section the outlet is a single top corner
+    vertex, so the vertex integral equals the nodal point discharge exactly (no time-stepping needed).
+    """
+    L, n_man, S0, d0 = 4.0, 0.05, 0.05, 0.06
+    msh = dmesh.create_rectangle(MPI.COMM_WORLD, [[0.0, 0.0], [L, 1.0]], [16, 6])
+    prob = CoupledProblem(msh, SOIL, n_man=n_man)
+    prob.set_initial_condition(lambda x: -1.0 + 0.0 * x[0], d_value=d0)
+    prob.add_outflow_bc(lambda x: np.isclose(x[0], L), slope=S0)
+
+    expected = 86400.0 * (1.0 / n_man) * d0 ** (5.0 / 3.0) * np.sqrt(S0)  # one outlet corner -> point Q
+    assert prob.outflow_rate() == pytest.approx(expected, rel=1e-6)
+
+
+def test_2d_outflow_drains_and_conserves():
+    """Heavy rain on a sloped hillslope with an OPEN downstream outlet: ponded water routes downhill
+    and DRAINS through the outlet; the global books close as Δtotal = cum_rain - cum_outflow.
+
+    The open-domain analogue of test_2d_lateral_redistribution_downslope (which is closed). Drives the
+    coupled blocked Newton WITH the vertex-measure outflow term, the residual-consistent outflow
+    accounting (last_outflow recorded pre-limiter; cum_outflow accumulated in step), and proves water
+    genuinely leaves the system (cum_outflow > 0 and total grows by LESS than the full rainfall).
+    """
+    L = 5.0
+    msh = dmesh.create_rectangle(MPI.COMM_WORLD, [[0.0, 0.0], [L, 1.0]], [10, 5])
+    prob = CoupledProblem(msh, SOIL, n_man=0.05)
+    prob.set_initial_condition(lambda x: -0.8 + 0.0 * x[0], d_value=0.0)
+    prob.set_topography(lambda x: 0.05 * (L - x[0]))   # 5% slope down toward the x=L outlet
+    rate = 0.6  # > Ks -> infiltration-excess ponding
+    prob.add_rain(rate)
+    prob.add_outflow_bc(lambda x: np.isclose(x[0], L), slope=0.05)  # normal-depth free drain
+    w0 = prob.total_water()
+
+    prob.advance(t_end=0.02, dt=5e-5, dt_max=1e-3)
+
+    cum_rain = rate * _top_length(prob) * 0.02
+    # water genuinely left through the outlet, and a non-trivial fraction of the rain did so.
+    assert prob.cum_outflow > 0.05 * cum_rain, f"negligible outflow ({prob.cum_outflow:.3e})"
+    assert prob.outflow_rate() >= 0.0
+    # global mass balance WITH the open outlet (residual-consistent, pre-limiter outflow).
+    assert abs((prob.total_water() - w0) - (cum_rain - prob.cum_outflow)) / cum_rain < 1e-6
+    # open domain retains LESS than it would closed (the outflow removed cum_outflow).
+    assert (prob.total_water() - w0) < cum_rain
+    assert prob.surface_depth() >= -1e-12
+    assert prob.d.x.array.min() >= -1e-12
+    assert np.all(np.isfinite(prob.psi.x.array))
+    assert abs(prob.clip_mass_adjust) < 1e-9

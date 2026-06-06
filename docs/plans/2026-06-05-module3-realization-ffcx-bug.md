@@ -137,3 +137,63 @@ operator validated. Shore-up done (commit `7a26179`):
 5. **Test-suite speed.** The lateral-routing test is ~51 s (overland stiffness ⇒ ~1500 tiny adaptive
    steps; NOT a mesh-size issue — meshes are 50–200 cells). Use `pytest -k "not lateral"` for fast
    iteration; full suite for milestones.
+
+## 7. Lateral OUTFLOW boundary condition (2026-06-06) + Codex review
+
+The closed-domain 2-D coupling now has a free-drainage outlet so ponded surface water can EXIT
+(`Δtotal = cum_rain − cum_outflow`). `CoupledProblem.add_outflow_bc(locator, slope)` mirrors Module-2's
+API and imposes the Manning normal-depth point discharge `q_out = SECONDS_PER_DAY·(1/n)·d^{5/3}·√slope`
+[m²/day per unit width].
+
+- **Mechanism (the realization-A wrinkle):** in the co-located realization the surface lives on the
+  host top facets (`ds_top`, codim-1), so the outlet — the *boundary of the surface* — is a **codim-2**
+  host entity: the downstream-TOP corner VERTEX in the 2-D cross-section. It is imposed as a single-mesh
+  **VERTEX integral (`dP`, `ufl.Measure("vertex")`)** at that corner. Spike `scratch/m3_outflow_spike.py`
+  proved `dP` assembles the EXACT nodal discharge (machine precision) with a finite auto-Jacobian, and —
+  being single-mesh, NOT mixed-dim codim-0 — it does **not** re-trigger the realization-S FFCX bug (§2).
+  (A normalized downstream-band sink on `ds_top` is the dimension-agnostic fallback, kept for 3-D.)
+- **TDD tests** (`tests/test_coupling_2d.py`): slope-guard, empty-outlet guard, exact point-discharge
+  magnitude (hard-coded 86400), drain-and-conserve (`Δtotal = cum_rain − cum_outflow` to 1e-6), and the
+  structural-conservation regression below. Full suite **55/55**.
+
+**Codex adversarial review (2026-06-06) → two MUST-FIXes applied + TDD'd:**
+1. **`eps_diag` conservation leak (FIXED).** The old whole-domain `eps_diag·d·v·dx` (diagonal allocation
+   for the pinned interior d/λ rows) leaked a tiny spurious sink into the FREE top rows, so "structural"
+   conservation was overstated (measured **1.18e-12** rel). Replaced with a **vertex (`dP`) integral on
+   exactly the pinned interior vertices** (tag 1) — adds the diagonal slot the Dirichlet pin overwrites,
+   touches **zero** free top rows → conservation now structural (**5.5e-14**). Pinned by
+   `test_2d_closed_conservation_is_structural` (gate 5e-13; RED on the old form, GREEN now). Because
+   DOLFINx requires one `subdomain_data` per integral type per form, the pin (tag 1) and every outlet
+   (tags 2..) now share ONE vertex meshtags, rebuilt by `_finalize_forms` (forms refactored so
+   rain/outlets/pin compose cleanly).
+2. **Silent empty-outlet no-op (FIXED).** `add_outflow_bc` with a locator matching no top-boundary
+   vertex now raises `ValueError` (global allreduce'd count, so a parallel-legit-empty rank doesn't
+   falsely raise). Pinned by `test_2d_outflow_bc_rejects_empty_outlet`.
+
+**New residual concerns (carried forward, from the review):**
+6. **Outlet tagging is NOT MPI-safe.** `locate_entities_boundary(dim=0)` for vertices "will not
+   necessarily mark all exterior entities" in parallel (DOLFINx docs); the outflow_rate allreduce-SUM
+   could also double-count a shared vertex. Untested in parallel (consistent with concern #4). Before
+   any MPI claim: ownership-aware tagging + a 2-rank regression with the outlet on a partition boundary.
+7. **3-D outlet = codim-2 perimeter CURVE (edges), not a vertex.** `dP` cannot line-integrate a curve.
+   For 3-D, **spike a true codim-2 "ridge" (edge) integral** first (UFL exposes a `ridge` type); the
+   normalized downstream-band sink on `ds_top` is the dimension-agnostic fallback if the ridge path is
+   unavailable/buggy.
+8. **No explicit Jacobian regression for the outlet term** (nice-to-have, Codex). Convergence + the
+   exact-magnitude residual test give strong indirect evidence the auto-Jacobian includes `dq_out/dd`;
+   a finite-difference Jacobian check is deferred.
+9. **Ponding-depth SAWTOOTH at the thin-film wet/dry front (2026-06-06, characterized; DEFERRED).** On a
+   sloped CLOSED 2-D run the surface profile `d(x)` shows an alternating 0/nonzero sawtooth in the
+   near-dry UPSLOPE film (the physically-important downslope ponding is smooth). Diagnosed
+   (`scratch/m3_diagnose_sawtooth.py`): the backward-Euler diffusion-wave over/undershoots in
+   alternation at the advancing front; the post-step positivity limiter clips the negative lobes to
+   exactly 0 → the sawtooth. It is **mm-scale, mass-conserving, and confined to a near-zero-water
+   region** (cosmetic). **Fix attempts (reverted):** mass-LUMPING the surface storage (the FFCX-safe
+   row-sum point-mass equivalent of Module 2's vertex-quadrature lumping, which FFCX 0.10 rejects on a
+   facet integral) only **halved** it (−4.5e-3 → −3.1e-3 min Δd); lumping the λ-coupling too gave no
+   further gain; lumping the **NCP** made the stiff sloped front **singular** (∂Φ/∂λ→0 at supply-limited
+   nodes once decoupled — the consistent NCP needs neighbour coupling). So the residual is **unstabilized
+   Galerkin advection of the kinematic (slope) flux** at the sharp front — a proper **stabilized /
+   monotone surface scheme** (SUPG/upwind, or flux limiting) is the real fix, deferred as a larger
+   numerics task. Kept the CONSISTENT (validated, 55/55) formulation meanwhile; the artifact does not
+   affect conservation or the physical ponding/drainage.

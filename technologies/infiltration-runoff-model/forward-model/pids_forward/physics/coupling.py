@@ -39,7 +39,7 @@ from mpi4py import MPI
 from petsc4py import PETSc
 
 from .richards import richards_bulk_residual
-from .overland import overland_conveyance
+from .overland import overland_conveyance, SECONDS_PER_DAY
 
 
 def _fischer_burmeister(a, b, eps):
@@ -136,11 +136,11 @@ class CoupledProblem:
         vd = ufl.TestFunction(self.Vd)
         vlam = ufl.TestFunction(self.Vlam)
         self._vd = vd
+        self._vlam = vlam
 
         # potential infiltration (design §D.3 Robin) and the smooth complementarity g = q_pot − λ.
         q_pot = (soil.K_ufl(self.psi) / self.ell_c) * (self.d - self.psi)
         g = q_pot - self.lam
-        eps_diag = 1e-10  # allocates interior d/λ matrix diagonals for the off-top Dirichlet pin
 
         # ψ block: Richards bulk + infiltration influx (−λ into the soil top, flux-BC sign).
         self.F_psi = richards_bulk_residual(
@@ -151,23 +151,39 @@ class CoupledProblem:
         # grad_T ≡ 0 and this term vanishes (dimension-agnostic). H_s = z_b + d.
         n_vec = ufl.FacetNormal(mesh)
         gT = lambda f: ufl.grad(f) - ufl.dot(ufl.grad(f), n_vec) * n_vec
-        # Manning conveyance SHARED with Module 2 (overland_conveyance), via the tangential gradient
-        # grad_T -> the co-located surface operator is provably identical to standalone overland
-        # (test_2d_overland_operator_matches_module2). H_s = z_b + d.
+        # Manning conveyance SHARED with Module 2 (overland_conveyance); the co-located grad_T operator
+        # is provably identical to standalone overland (test_2d_overland_operator_matches_module2).
         H_s, K_s = overland_conveyance(self.d, self.z_b, self.n_man, self.eps_S, grad=gT)
         overland_flux = K_s * ufl.dot(gT(H_s), gT(vd)) * self._ds_top
-        # d block: surface storage + lateral overland flux + λ leaving the store (sign-paired)
-        # [+ rain via add_rain].
-        self.F_d = ((self.d - self.d_n) / self.dt) * vd * self._ds_top \
+        # d / λ BULK residuals: surface storage + lateral overland flux + sign-paired λ; the NCP regime
+        # selector. The vertex diagonal-allocation, rainfall, and outlet terms are added by
+        # _finalize_forms (which shares ONE vertex meshtags across all dP integrals -- DOLFINx requires
+        # a single subdomain_data per integral type within a form).
+        # NOTE (sawtooth, 2026-06-06): the CONSISTENT surface storage/coupling produce a small odd-even
+        # oscillation at the advancing thin-film wet/dry front, which the positivity limiter clips to 0
+        # (a mm-scale, mass-conserving cosmetic SAWTOOTH confined to the near-dry upslope; the physical
+        # downslope ponding is smooth). Mass-lumping the surface storage/λ only halved it; the residual
+        # is unstabilized Galerkin advection of the kinematic (slope) flux and needs a stabilized/monotone
+        # scheme -- deferred (docs/plans/2026-06-05-module3-realization-ffcx-bug.md §8). Kept consistent
+        # here (clean, validated) since lumping did not cleanly resolve it.
+        self._F_d_bulk = ((self.d - self.d_n) / self.dt) * vd * self._ds_top \
             + overland_flux \
-            + self.lam * vd * self._ds_top \
-            + eps_diag * self.d * vd * ufl.dx
-        # λ block: the smooth NCP picks the regime (ponded λ=q_pot vs supply-limited d=0).
-        self.F_lam = _fischer_burmeister(self.d, self._tau_c * g, self.eps_ncp) * vlam * self._ds_top \
-            + eps_diag * self.lam * vlam * ufl.dx
+            + self.lam * vd * self._ds_top
+        self._F_lam_bulk = _fischer_burmeister(self.d, self._tau_c * g, self.eps_ncp) * vlam * self._ds_top
 
-        # constrain d and λ to the top surface: pin all non-surface DOFs to 0.
+        # Pinned interior d/λ vertices: their rows are Dirichlet-pinned to 0 but need a MATRIX DIAGONAL
+        # to overwrite (ds_top contributes none for interior rows -> zero pivot, MUMPS INFOG(1)=-3). A
+        # tiny VERTEX (dP) integral on EXACTLY these vertices (tag 1, added in _finalize_forms) adds the
+        # diagonal slot and is CONSERVATION-NEUTRAL: it touches only the overwritten pinned rows, never
+        # the free top rows -> the surface-water balance is structural. (The earlier whole-domain
+        # eps_diag*d*vd*dx leaked a ~1e-12 spurious sink into the top rows -- Codex review 2026-06-06.)
         below = lambda x: x[self._zaxis] < self._ztop - 0.25 * self.ell_c
+        mesh.topology.create_connectivity(0, mesh.topology.dim)
+        self._pinned_verts = np.sort(dmesh.locate_entities(mesh, 0, below)).astype(np.int32)
+        self._eps_diag = 1e-10  # magnitude immaterial (these rows are overwritten by the Dirichlet pin)
+
+        # constrain d and λ to the top surface: pin all non-surface DOFs to 0 (same `below` as the
+        # diagonal-allocation tag, so every pinned row has a diagonal slot to overwrite).
         self._bcs = [
             fem.dirichletbc(PETSc.ScalarType(0.0), fem.locate_dofs_geometrical(self.Vd, below), self.Vd),
             fem.dirichletbc(PETSc.ScalarType(0.0), fem.locate_dofs_geometrical(self.Vlam, below), self.Vlam),
@@ -176,11 +192,16 @@ class CoupledProblem:
         self._petsc_options = dict(petsc_options or self._DEFAULT_PETSC_OPTIONS)
         self._problem: NonlinearProblem | None = None
         self._rain = None
+        self._outlets: list = []        # (outlet_vertices, slope) per add_outflow_bc call
+        self._outflow_forms: list = []  # compiled q_out*dP forms for outflow_rate()
         self.last_clip = 0.0      # largest negative surface depth clipped on the last step
         self.max_clip_seen = 0.0  # largest negative depth clipped over the whole run (heavy clipping
         # => the accepted λ is increasingly stale vs the clipped d; should stay ~mm/cm-small)
         self.clip_mass_adjust = 0.0  # cumulative UNAVOIDABLE surface-mass change from the degenerate
         # (oldtotal<=0) drying branch; 0 in the normal conservative-rescale branch
+        self.last_outflow = 0.0   # outlet discharge at the SOLVED state (pre-limiter), for accounting
+        self.cum_outflow = 0.0    # cumulative outflow volume ∫ outflow dt over accepted steps
+        self._finalize_forms()    # build self.F_d, self.F_lam (+ outflow forms) with the shared dP
 
     # -- problem setup --------------------------------------------------------
     def set_initial_condition(self, psi_expr, d_value: float = 0.0) -> None:
@@ -206,13 +227,94 @@ class CoupledProblem:
         self._problem = None
 
     def add_rain(self, rate):
-        """Rainfall onto the surface store (m/day, positive = water in). Returns the Constant."""
+        """Rainfall onto the surface store (m/day, positive = water in). Returns the Constant.
+
+        Sets the (single) rainfall source; drive ``.value`` on the returned Constant for a time-varying
+        hyetograph (e.g. rain.value = 0 for recession). Calling again REPLACES the source.
+        """
         r = rate if isinstance(rate, fem.Constant) else fem.Constant(
             self.mesh, PETSc.ScalarType(float(rate)))
-        self.F_d = self.F_d - r * self._vd * self._ds_top
         self._rain = r
-        self._problem = None
+        self._finalize_forms()
         return r
+
+    def _finalize_forms(self) -> None:
+        """(Re)build F_d, F_lam and the outflow forms with ONE shared vertex (dP) meshtags.
+
+        DOLFINx requires a single ``subdomain_data`` per integral type within a form, so the pinned-
+        interior diagonal allocation (tag 1) and every outlet (tags 2..) must live in ONE vertex
+        meshtags. Called at construction and whenever rainfall or outlets change. The pinned and outlet
+        vertex sets are disjoint (below-top vs on-top), so the combined tag array has no duplicates.
+        """
+        verts = [self._pinned_verts]
+        tags = [np.full(self._pinned_verts.size, 1, dtype=np.int32)]
+        for k, (overts, _slope) in enumerate(self._outlets, start=2):
+            verts.append(overts)
+            tags.append(np.full(overts.size, k, dtype=np.int32))
+        allv = np.concatenate(verts).astype(np.int32)
+        allt = np.concatenate(tags)
+        order = np.argsort(allv)
+        vt = dmesh.meshtags(self.mesh, 0, allv[order], allt[order])
+        dP = ufl.Measure("vertex", domain=self.mesh, subdomain_data=vt)
+
+        # d block: bulk + diagonal-allocation (tag 1) [+ rain] [+ outlets].
+        F_d = self._F_d_bulk + self._eps_diag * self.d * self._vd * dP(1)
+        if self._rain is not None:
+            F_d = F_d - self._rain * self._vd * self._ds_top
+        self._outflow_forms = []
+        for k, (_overts, slope) in enumerate(self._outlets, start=2):
+            d_pos = ufl.max_value(self.d, 0.0)
+            q_out = SECONDS_PER_DAY * (1.0 / self.n_man) * d_pos ** (5.0 / 3.0) * ufl.sqrt(slope)
+            F_d = F_d + q_out * self._vd * dP(k)
+            self._outflow_forms.append(fem.form(q_out * dP(k)))
+        self.F_d = F_d
+        # λ block: bulk + diagonal-allocation (tag 1).
+        self.F_lam = self._F_lam_bulk + self._eps_diag * self.lam * self._vlam * dP(1)
+        self._problem = None
+
+    def add_outflow_bc(self, locator, slope: float):
+        """Free-drainage surface outlet: ponded water leaves at the Manning NORMAL-DEPTH discharge.
+
+        ``q_out = SECONDS_PER_DAY*(1/n_man)*d^{5/3}*sqrt(slope)`` [m^2/day per unit width] -- the
+        friction slope at the outlet taken as the bed ``slope`` (standard kinematic/normal-depth
+        outlet, vs the natural no-flux boundary that would dam it). Same (locator, slope) API as the
+        standalone Module-2 ``OverlandProblem.add_outflow_bc``.
+
+        REALIZATION A: the surface lives on the host top facets, so the outlet -- the boundary of that
+        surface -- is a codim-2 host entity. In this 2-D cross-section it is the downstream-TOP corner
+        VERTEX; the discharge is imposed as a single-mesh VERTEX integral (``dP``), which is FFCX-native
+        on stock 0.10 (NOT the mixed-dim codim-0 path that blocked realization S -- verified in
+        scratch/m3_outflow_spike.py) and yields a clean auto-Jacobian. ``locator`` is intersected with
+        the top surface (z=ztop) so only surface boundary vertices become outlets (below-top d is
+        pinned 0 anyway, but the intersection keeps the outlet unambiguous). The outlet vertices are
+        recorded and woven into F_d by ``_finalize_forms`` (sharing the one vertex meshtags with the
+        diagonal-allocation pin); ``outflow_rate()`` reports the integrated discharge across all outlets.
+        [3-D: the outlet becomes a perimeter CURVE = codim-2 edges -> a separate spike; the
+        normalized downstream-band sink on ds_top is the dimension-agnostic fallback.]
+
+        ``slope`` must be strictly positive: ``slope=0`` silently turns the outlet into a no-flux wall
+        (damming) and ``slope<0`` injects ``sqrt(<0)``=NaN; both are caller errors, rejected up front.
+        """
+        if slope <= 0.0:
+            raise ValueError(
+                f"add_outflow_bc requires slope > 0 (normal-depth friction slope); got {slope!r}. "
+                "slope=0 dams the outlet; slope<0 gives sqrt(<0)=NaN.")
+        on_top = lambda x: locator(x) & np.isclose(x[self._zaxis], self._ztop)
+        overts = np.sort(dmesh.locate_entities_boundary(self.mesh, 0, on_top)).astype(np.int32)
+        if self.mesh.comm.allreduce(int(overts.size), op=MPI.SUM) == 0:
+            raise ValueError(
+                "add_outflow_bc: the locator matched no top-surface boundary vertex -- the outlet "
+                "would be a silent no-op. Check the locator (it is intersected with the top z=ztop).")
+        self._outlets.append((overts, float(slope)))
+        self._finalize_forms()  # rebuild F_d with the shared vertex meshtags (pin tag 1 + outlets)
+        return None
+
+    def outflow_rate(self) -> float:
+        """Total discharge leaving through all surface outlets (m^2/day per unit width)."""
+        total = 0.0
+        for form in self._outflow_forms:
+            total += self.mesh.comm.allreduce(fem.assemble_scalar(form), op=MPI.SUM)
+        return total
 
     def _top_dofs(self, V):
         return fem.locate_dofs_geometrical(V, lambda x: np.isclose(x[self._zaxis], self._ztop))
@@ -262,6 +364,12 @@ class CoupledProblem:
         converged = snes.getConvergedReason() > 0
         iters = int(snes.getIterationNumber())
         if converged:
+            # Record the outlet discharge at the SOLVED state (before the limiter rescales d): this
+            # is the residual-consistent discharge that balances the storage change exactly
+            # (W^{n+1}-W^n = dt*(rain - last_outflow)). The limiter conserves total water but perturbs
+            # the boundary depth, so a post-limiter outflow_rate() would not close the books.
+            self.last_outflow = self.outflow_rate()
+            self.cum_outflow += dt * self.last_outflow
             self.last_clip = self._enforce_positivity()  # keep d_n >= 0 (lateral-overland undershoots)
             self.max_clip_seen = max(self.max_clip_seen, self.last_clip)
             self.psi_n.x.array[:] = self.psi.x.array
