@@ -104,6 +104,7 @@ class RichardsProblem:
         self._v = v
         self._bcs: list = []
         self._flux_tags: list = []
+        self._drainage_forms: list = []  # compiled q_n*ds GHB forms for drainage_rate()
         self._petsc_options = dict(petsc_options or self._DEFAULT_PETSC_OPTIONS)
         self._problem: NonlinearProblem | None = None
 
@@ -178,6 +179,36 @@ class RichardsProblem:
         self.F = self.F + ((pond - pond_n) / self.dt) * self._v * ds_t - q * self._v * ds_t
         self._problem = None
         return q
+
+    def add_drainage_bc(self, locator, conductance, external_head):
+        """General-head (Cauchy / MODFLOW GHB) subsurface drainage on a boundary.
+
+        Outward Darcy flux ``q_n = conductance * (H - external_head)`` with hydraulic head
+        ``H = psi + z`` (z = elevation, last axis). Lets the soil matrix exchange water with an external
+        reservoir at head ``external_head`` through a boundary conductance ``conductance`` [1/day] --
+        lateral groundwater outflow (a side), deep percolation (the base), or a drain. BIDIRECTIONAL:
+        drains OUT when ``H > external_head``, draws IN when ``H < external_head``; reduces to no-flow as
+        conductance -> 0 and to a Dirichlet head ``H = external_head`` as conductance -> inf. Enters the
+        residual as the standard exterior-facet term ``+ q_n * v * ds`` (since the bulk residual's Darcy
+        term is K(grad psi + e_g).grad v with K grad H . n = -q_n). LINEAR in psi -> smooth, exact
+        Jacobian. This is Darcy/head physics, NOT the surface Manning law.
+        """
+        if conductance < 0.0:
+            raise ValueError(f"add_drainage_bc requires conductance >= 0 [1/day]; got {conductance!r}")
+        ds_d = self._boundary_ds(locator)
+        z = ufl.SpatialCoordinate(self.mesh)[self.mesh.geometry.dim - 1]
+        q_n = conductance * (self.psi + z - external_head)
+        self.F = self.F + q_n * self._v * ds_d
+        self._drainage_forms.append(fem.form(q_n * ds_d))
+        self._problem = None
+        return None
+
+    def drainage_rate(self) -> float:
+        """Net outward subsurface drainage across all GHB boundaries (+ = net out of the domain)."""
+        total = 0.0
+        for form in self._drainage_forms:
+            total += self.mesh.comm.allreduce(fem.assemble_scalar(form), op=MPI.SUM)
+        return total
 
     def ponded_depth(self) -> float:
         """Ponded water depth max(psi, 0) at the top (highest-elevation) boundary node."""

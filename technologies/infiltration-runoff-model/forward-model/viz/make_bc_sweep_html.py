@@ -81,8 +81,8 @@ BC_COLOR = {
 BC_LABEL = {
     "closed":       "closed (no outlet)",
     "open_matched": "open @ S0=0.05",
-    "open_steep":   "open @ 2&middot;S0=0.10",
-    "open_shallow": "open @ 0.5&middot;S0=0.025",
+    "open_steep":   "open @ 2·S0=0.10",
+    "open_shallow": "open @ 0.5·S0=0.025",
 }
 PARTITION_COLOR = {"infiltrated": "#8d6e63", "ponded": "#0288d1", "drained": "#43a047"}
 
@@ -168,6 +168,16 @@ def build_html(nc_paths: dict[str, str], out_path: str, date: str = "") -> str:
     dt_hi = max(dt_hi, float(np.nanmax(cum_rain)))
     dt_range = [0.0, dt_hi * 1.08]
 
+    # partition axis: TIGHT range around the bar + cum-rain values (else bars look squished).
+    part = {
+        "infiltrated": [float(_attr(ds_map[k], "final_infiltrated_m2", 0.0)) for k in BC_ORDER],
+        "ponded":      [float(_attr(ds_map[k], "final_ponded_m2", 0.0)) for k in BC_ORDER],
+        "drained":     [float(_attr(ds_map[k], "final_drained_m2", 0.0)) for k in BC_ORDER],
+    }
+    cum_per_bc = [float(_attr(ds_map[k], "cum_rain_total_m2", 0.0)) for k in BC_ORDER]
+    part_max = max([v for comp in part.values() for v in comp] + cum_per_bc + [1e-9])
+    part_range = [0.0, part_max * 1.18]
+
     # =============================================================== figure layout
     #   row1 (colspan 2): outlet hydrograph q(t) + rain hyetograph (twin axis)  [HEADLINE]
     #   row2 (colspan 2): water partition grouped bars per BC
@@ -186,11 +196,11 @@ def build_html(nc_paths: dict[str, str], out_path: str, date: str = "") -> str:
         vertical_spacing=0.10,
         horizontal_spacing=0.12,
         subplot_titles=(
-            "1 &middot; Outlet hydrograph  q(t)  [m&sup2;/day]",
-            "2 &middot; Water partition per BC  [m&sup2;]",
-            "3 &middot; Ponding-depth profile  d(x)  [m, log] &mdash; outlet at right",
-            "4 &middot; &Delta; total stored water (t)  [m&sup2;]  vs cum-rain",
-            "5 &middot; Conservation  |mass-balance error| (t)  [log]",
+            "1 · Outlet hydrograph  q(t)  [m²/day]",
+            "2 · Water partition per BC  [m²]",
+            "3 · Ponding-depth profile  d(x)  [m, log] — outlet at right",
+            "4 · Δ total stored water (t)  [m²]  vs cum-rain",
+            "5 · Conservation  |mass-balance error| (t)  [log]",
         ),
     )
 
@@ -241,31 +251,25 @@ def build_html(nc_paths: dict[str, str], out_path: str, date: str = "") -> str:
 
     # =============================================================== row2: water partition
     # grouped bars: one x-group per BC, three bars (infiltrated / ponded / drained).
-    bc_x = [BC_LABEL[k].replace("&middot;", "·") for k in BC_ORDER]
-    part = {
-        "infiltrated": [float(_attr(ds_map[k], "final_infiltrated_m2", 0.0)) for k in BC_ORDER],
-        "ponded":      [float(_attr(ds_map[k], "final_ponded_m2", 0.0)) for k in BC_ORDER],
-        "drained":     [float(_attr(ds_map[k], "final_drained_m2", 0.0)) for k in BC_ORDER],
-    }
+    bc_x = [BC_LABEL[k] for k in BC_ORDER]
     for comp in ("infiltrated", "ponded", "drained"):
         fig.add_trace(
             go.Bar(
                 x=bc_x, y=part[comp], name=comp.capitalize(),
                 marker=dict(color=PARTITION_COLOR[comp]),
                 legendgroup="partition",
-                hovertemplate="%{x}<br>" + comp + "=%{y:.5f} m&sup2;<extra></extra>",
+                hovertemplate="%{x}<br>" + comp + "=%{y:.5f} m²<extra></extra>",
             ),
             row=2, col=1,
         )
     # reference: cum-rain total per BC as a thin black outline marker.
-    cum_per_bc = [float(_attr(ds_map[k], "cum_rain_total_m2", 0.0)) for k in BC_ORDER]
     fig.add_trace(
         go.Scatter(
             x=bc_x, y=cum_per_bc, mode="markers",
             marker=dict(symbol="line-ew", size=46, color="#212121",
                         line=dict(width=2.2, color="#212121")),
             name="cum rain (total)", legendgroup="partition",
-            hovertemplate="%{x}<br>cum rain=%{y:.5f} m&sup2;<extra></extra>",
+            hovertemplate="%{x}<br>cum rain=%{y:.5f} m²<extra></extra>",
         ),
         row=2, col=1,
     )
@@ -285,7 +289,7 @@ def build_html(nc_paths: dict[str, str], out_path: str, date: str = "") -> str:
                 line=dict(color=BC_COLOR[key], width=1.0, dash="dot"),
                 opacity=0.35,
                 name=f"{BC_LABEL[key]} (t=0)", legendgroup=key, showlegend=False,
-                hovertemplate="x=%{x:.3f} m<br>d&#8320;=%{y:.3e} m<extra>" + key + " init</extra>",
+                hovertemplate="x=%{x:.3f} m<br>d₀=%{y:.3e} m<extra>" + key + " init</extra>",
             ),
             row=3, col=1,
         )
@@ -308,8 +312,8 @@ def build_html(nc_paths: dict[str, str], out_path: str, date: str = "") -> str:
         go.Scatter(
             x=time, y=cum_rain, mode="lines",
             line=dict(color=CUM_COLOR, width=3.0, dash="dash"),
-            name="cumulative rain  [m&sup2;]", legendgroup="cumref",
-            hovertemplate="t=%{x:.4f} day<br>cum rain=%{y:.5f} m&sup2;<extra></extra>",
+            name="cumulative rain  [m²]", legendgroup="cumref",
+            hovertemplate="t=%{x:.4f} day<br>cum rain=%{y:.5f} m²<extra></extra>",
         ),
         row=4, col=1,
     )
@@ -319,7 +323,7 @@ def build_html(nc_paths: dict[str, str], out_path: str, date: str = "") -> str:
                 x=time, y=series[key]["dtotal"], mode="lines",
                 line=dict(color=BC_COLOR[key], width=2.4),
                 name=BC_LABEL[key], legendgroup=key, showlegend=False,
-                hovertemplate=("t=%{x:.4f} day<br>&Delta;stored=%{y:.5f} m&sup2;"
+                hovertemplate=("t=%{x:.4f} day<br>Δstored=%{y:.5f} m²"
                                "<extra>" + key + "</extra>"),
             ),
             row=4, col=1,
@@ -376,12 +380,12 @@ def build_html(nc_paths: dict[str, str], out_path: str, date: str = "") -> str:
         pad=dict(t=0, r=10),
         showactive=False,
         buttons=[
-            dict(label="&#9654; Play", method="animate",
+            dict(label="▶ Play", method="animate",
                  args=[None, dict(mode="immediate",
                                   fromcurrent=True,
                                   frame=dict(duration=120, redraw=True),
                                   transition=dict(duration=0))]),
-            dict(label="&#9208; Pause", method="animate",
+            dict(label="⏸ Pause", method="animate",
                  args=[[None], dict(mode="immediate",
                                     frame=dict(duration=0, redraw=True),
                                     transition=dict(duration=0))]),
@@ -399,7 +403,7 @@ def build_html(nc_paths: dict[str, str], out_path: str, date: str = "") -> str:
 
     # row2: partition bars
     fig.update_xaxes(title_text="boundary condition", row=2, col=1)
-    fig.update_yaxes(title_text="final water  [m&sup2;]", row=2, col=1, rangemode="tozero")
+    fig.update_yaxes(title_text="final water  [m²]", range=part_range, row=2, col=1)
 
     # row3: ponding profile d(x) log-y; outlet at right (x increases to the outlet at L)
     fig.update_xaxes(title_text=f"horizontal position x  [{x_units}]   (outlet at right, x=L)",
@@ -410,7 +414,7 @@ def build_html(nc_paths: dict[str, str], out_path: str, date: str = "") -> str:
     # row4 left: delta total stored water
     fig.update_xaxes(title_text=f"time  [{t_units}]",
                      range=[float(time.min()), float(time.max())], row=4, col=1)
-    fig.update_yaxes(title_text="&Delta; stored water  [m&sup2;]", range=dt_range,
+    fig.update_yaxes(title_text="Δ stored water  [m²]", range=dt_range,
                      row=4, col=1)
 
     # row4 right: conservation mbe(t) log
@@ -425,27 +429,28 @@ def build_html(nc_paths: dict[str, str], out_path: str, date: str = "") -> str:
     q_spread = (max(peak_qs) - min(peak_qs)) / max(min(peak_qs), 1e-30) * 100.0
     mbe_max_all = max(float(_attr(ds_map[k], "mass_balance_error_max", 0.0)) for k in BC_ORDER)
 
+    NB = " "  # non-breaking space (renders; '&nbsp;' would show literally)
     metrics_lines = [
-        f"<b>module</b>: BC sweep (coupling) &nbsp; <b>date</b>: {date}",
+        f"<b>module</b>: BC sweep (coupling) {NB} <b>date</b>: {date}",
         (f"<b>storm</b>: r={_fmt(rain_rate)} m/{t_units} for {_fmt(storm_dur)} {t_units}, "
          f"t_end={_fmt(t_end)} {t_units}"),
         (f"<b>hillslope</b>: L={_fmt(L)} m, S0={_fmt(S0)}, Ks={_fmt(Ks)} m/{t_units}, "
-         f"n={_fmt(n_manning)}, &psi;&#8320;={_fmt(psi0)} m"),
-        f"<b>cum rain total</b> &asymp; {_fmt(cum_rain_total)} m&sup2;",
+         f"n={_fmt(n_manning)}, ψ₀={_fmt(psi0)} m"),
+        f"<b>cum rain total</b> ≈ {_fmt(cum_rain_total)} m²",
     ]
     metrics_html = "<br>".join(metrics_lines)
 
     findings = (
         "<b>FINDINGS</b><br>"
-        "Closed traps water (pond &rarr; ~9 cm downhill wedge); any open outlet drains "
-        "~98% (surface stays sub-mm). Outlet slope (&frac12;&times;&ndash;2&times; S0) barely "
-        f"discriminates (~{q_spread:.0f}% spread in peak q) &mdash; a free point outlet is "
+        "Closed traps water (pond → ~9 cm downhill wedge); any open outlet drains "
+        "~98% (surface stays sub-mm). Outlet slope (½×–2× S0) barely "
+        f"discriminates (~{q_spread:.0f}% spread in peak q) — a free point outlet is "
         "supply-limited (q_out passes ~the rain supply at sub-mm depth), matching Module-2's "
         "1-D kinematic outlet."
     )
     conservation_line = (
-        f"<b>conservation</b>: max|mbe| &le; {mbe_max_all:.0e} for all 4 BCs "
-        "(&Delta;total = cum_rain &minus; cum_outflow closes)"
+        f"<b>conservation</b>: max|mbe| ≤ {mbe_max_all:.0e} for all 4 BCs "
+        "(Δtotal = cum_rain − cum_outflow closes)"
     )
 
     fig.add_annotation(
@@ -460,7 +465,7 @@ def build_html(nc_paths: dict[str, str], out_path: str, date: str = "") -> str:
         bgcolor="rgba(245,245,245,0.96)",
     )
 
-    title = ("<b>PIDS Pillar-2 Tier-3: outflow-BC sweep (coupling)</b> &middot; "
+    title = ("<b>PIDS Pillar-2 Tier-3: outflow-BC sweep (coupling)</b> · "
              f"{date}")
     fig.update_layout(
         title=dict(text=title + "<br><span style='font-size:13px'>"

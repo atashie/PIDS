@@ -102,8 +102,10 @@ class CoupledProblem:
         self._ztop = mesh.comm.allreduce(float(zc.max()) if zc.size else -np.inf, op=MPI.MAX)
         fdim = mesh.topology.dim - 1
         mesh.topology.create_connectivity(fdim, mesh.topology.dim)
+        self._fdim = fdim
         top_facets = np.sort(dmesh.locate_entities_boundary(
-            mesh, fdim, lambda x: np.isclose(x[self._zaxis], self._ztop)))
+            mesh, fdim, lambda x: np.isclose(x[self._zaxis], self._ztop))).astype(np.int32)
+        self._top_facets = top_facets
         ft = dmesh.meshtags(mesh, fdim, top_facets, np.ones(top_facets.size, dtype=np.int32))
         self._ds_top = ufl.Measure("ds", domain=mesh, subdomain_data=ft)(1)
 
@@ -135,6 +137,7 @@ class CoupledProblem:
         vpsi = ufl.TestFunction(self.Vpsi)
         vd = ufl.TestFunction(self.Vd)
         vlam = ufl.TestFunction(self.Vlam)
+        self._vpsi = vpsi
         self._vd = vd
         self._vlam = vlam
 
@@ -148,10 +151,11 @@ class CoupledProblem:
         q_pot = soil.kirchhoff_ufl(self.psi, self.d) / self.ell_c
         g = q_pot - self.lam
 
-        # ψ block: Richards bulk + infiltration influx (−λ into the soil top, flux-BC sign).
-        self.F_psi = richards_bulk_residual(
-            self.psi, self.psi_n, vpsi, soil, self.dt, self.e_g, dx_storage=self._dx_storage
-        ) - self.lam * vpsi * self._ds_top
+        # ψ block: Richards VOLUME bulk; the surface λ influx (−λ into the soil top) and any subsurface
+        # drainage GHB terms are woven onto ONE shared facet meshtags by _build_F_psi (DOLFINx requires a
+        # single subdomain_data per integral type per form -- the λ-top and drainage facets must share it).
+        self._F_psi_bulk = richards_bulk_residual(
+            self.psi, self.psi_n, vpsi, soil, self.dt, self.e_g, dx_storage=self._dx_storage)
         # LATERAL overland: Manning diffusion-wave as a TANGENTIAL-gradient surface PDE on ds_top.
         # grad_T = grad − (grad·n)n is the surface gradient; in 1-D the top facet is a point so
         # grad_T ≡ 0 and this term vanishes (dimension-agnostic). H_s = z_b + d.
@@ -207,6 +211,11 @@ class CoupledProblem:
         # (oldtotal<=0) drying branch; 0 in the normal conservative-rescale branch
         self.last_outflow = 0.0   # outlet discharge at the SOLVED state (pre-limiter), for accounting
         self.cum_outflow = 0.0    # cumulative outflow volume ∫ outflow dt over accepted steps
+        self._drains: list = []          # (drain_facets, conductance, external_head) per add_drainage_bc
+        self._drainage_forms: list = []  # compiled q_n*ds GHB forms (subsurface Darcy/head drainage)
+        self.last_drainage = 0.0  # net subsurface drainage at the SOLVED state (+ = out)
+        self.cum_drainage = 0.0   # cumulative subsurface drainage volume ∫ drainage dt
+        self._build_F_psi()       # ψ block: bulk + λ-top influx (+ drainage GHB) on one facet meshtags
         self._finalize_forms()    # build self.F_d, self.F_lam (+ outflow forms) with the shared dP
 
     # -- problem setup --------------------------------------------------------
@@ -325,6 +334,60 @@ class CoupledProblem:
     def _top_dofs(self, V):
         return fem.locate_dofs_geometrical(V, lambda x: np.isclose(x[self._zaxis], self._ztop))
 
+    def add_drainage_bc(self, locator, conductance, external_head):
+        """Subsurface Darcy/head drainage on a boundary (general-head / Cauchy / MODFLOW GHB).
+
+        Outward Darcy flux ``q_n = conductance*(H − external_head)``, ``H = ψ + z`` (z = elevation), into
+        an external reservoir at head ``external_head`` through boundary conductance ``conductance``
+        [1/day]. Lets the SOIL MATRIX drain -- lateral groundwater outflow (a side), deep percolation
+        (the base), or a drain -- distinct from the surface Manning outlet. BIDIRECTIONAL; reduces to
+        no-flow (conductance→0) / Dirichlet head (conductance→∞). Enters F_psi as the standard
+        exterior-facet term ``+q_n·v_ψ·ds`` (a codim-1 facet integral; no vertex-measure machinery).
+        Records to ``drainage_rate``/``cum_drainage`` for the balance Δtotal = cum_rain − cum_outflow −
+        cum_drainage. (The Richards solve self-limits unsaturated drainage to the soil's K-capacity.)
+        """
+        if conductance < 0.0:
+            raise ValueError(f"add_drainage_bc requires conductance >= 0 [1/day]; got {conductance!r}")
+        self.mesh.topology.create_connectivity(self._fdim, self.mesh.topology.dim)
+        facets = np.sort(dmesh.locate_entities_boundary(self.mesh, self._fdim, locator)).astype(np.int32)
+        if self.mesh.comm.allreduce(int(facets.size), op=MPI.SUM) == 0:
+            raise ValueError("add_drainage_bc: the locator matched no boundary facet (silent no-op).")
+        self._drains.append((facets, float(conductance), float(external_head)))
+        self._build_F_psi()   # rebuild F_psi: bulk + λ-top + drainage, sharing ONE facet meshtags
+        return None
+
+    def _build_F_psi(self) -> None:
+        """(Re)build F_psi = ψ-volume bulk − λ·v·ds_top + Σ drainage GHB terms, with ALL exterior-facet
+        integrals on ONE shared facet meshtags (tag 1 = top λ-coupling; tags 2.. = drainage boundaries)
+        -- DOLFINx requires a single subdomain_data per integral type per form. (F_d keeps its own
+        _ds_top; the λ term over the SAME top facets cancels F_d's +λ term in the conservation balance.)
+        """
+        groups = [(1, self._top_facets)]
+        for k, (facets, _C, _He) in enumerate(self._drains, start=2):
+            groups.append((k, facets))
+        allf = np.concatenate([f for _, f in groups]).astype(np.int32)
+        allt = np.concatenate([np.full(f.size, t, dtype=np.int32) for t, f in groups])
+        order = np.argsort(allf)
+        ft = dmesh.meshtags(self.mesh, self._fdim, allf[order], allt[order])
+        ds = ufl.Measure("ds", domain=self.mesh, subdomain_data=ft)
+        z = ufl.SpatialCoordinate(self.mesh)[self._zaxis]
+
+        F_psi = self._F_psi_bulk - self.lam * self._vpsi * ds(1)   # λ influx into the soil top
+        self._drainage_forms = []
+        for k, (_facets, C, He) in enumerate(self._drains, start=2):
+            q_n = C * (self.psi + z - He)
+            F_psi = F_psi + q_n * self._vpsi * ds(k)
+            self._drainage_forms.append(fem.form(q_n * ds(k)))
+        self.F_psi = F_psi
+        self._problem = None
+
+    def drainage_rate(self) -> float:
+        """Net outward subsurface drainage across all GHB boundaries (m^2/day per unit width; + = out)."""
+        total = 0.0
+        for form in self._drainage_forms:
+            total += self.mesh.comm.allreduce(fem.assemble_scalar(form), op=MPI.SUM)
+        return total
+
     def _ensure_problem(self) -> None:
         if self._problem is None:
             self._problem = NonlinearProblem(
@@ -376,6 +439,10 @@ class CoupledProblem:
             # the boundary depth, so a post-limiter outflow_rate() would not close the books.
             self.last_outflow = self.outflow_rate()
             self.cum_outflow += dt * self.last_outflow
+            # subsurface Darcy/head drainage (on ψ; unaffected by the d-limiter): Δtotal = cum_rain
+            # − cum_outflow − cum_drainage.
+            self.last_drainage = self.drainage_rate()
+            self.cum_drainage += dt * self.last_drainage
             self.last_clip = self._enforce_positivity()  # keep d_n >= 0 (lateral-overland undershoots)
             self.max_clip_seen = max(self.max_clip_seen, self.last_clip)
             self.psi_n.x.array[:] = self.psi.x.array
