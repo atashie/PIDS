@@ -337,24 +337,41 @@ class CoupledProblem:
     def add_drainage_bc(self, locator, conductance, external_head):
         """Subsurface Darcy/head drainage on a boundary (general-head / Cauchy / MODFLOW GHB).
 
-        Outward Darcy flux ``q_n = conductance*(H − external_head)``, ``H = ψ + z`` (z = elevation), into
-        an external reservoir at head ``external_head`` through boundary conductance ``conductance``
-        [1/day]. Lets the SOIL MATRIX drain -- lateral groundwater outflow (a side), deep percolation
-        (the base), or a drain -- distinct from the surface Manning outlet. BIDIRECTIONAL; reduces to
-        no-flow (conductance→0) / Dirichlet head (conductance→∞). Enters F_psi as the standard
-        exterior-facet term ``+q_n·v_ψ·ds`` (a codim-1 facet integral; no vertex-measure machinery).
-        Records to ``drainage_rate``/``cum_drainage`` for the balance Δtotal = cum_rain − cum_outflow −
-        cum_drainage. (The Richards solve self-limits unsaturated drainage to the soil's K-capacity.)
+        Relative-permeability-weighted outward Darcy flux ``q_n = conductance·kr(ψ)·(H − external_head)``,
+        ``kr = K(ψ)/Ks``, ``H = ψ + z`` (z = elevation), into an external reservoir at head
+        ``external_head`` through SATURATED boundary conductance ``conductance`` [1/day]. The kr(ψ) weight
+        makes the GHB the physical Darcy flux through a boundary film of conductivity K(ψ): it SELF-LIMITS
+        as the boundary dries (a constant-C GHB would over-drain unsaturated soil by driving the boundary
+        head down to deliver an unphysical flux -- Codex review 2026-06-07). Saturated boundary (kr=1) →
+        standard GHB. Lets the SOIL MATRIX drain -- lateral groundwater outflow (a side), deep percolation
+        (the base), or a drain -- distinct from the surface Manning outlet. BIDIRECTIONAL (a high
+        external_head makes it an injector); reduces to no-flow (conductance→0) / saturated-Dirichlet head
+        (conductance→∞). Enters F_psi as the standard exterior-facet term ``+q_n·v_ψ·ds`` (a codim-1 facet
+        integral; no vertex-measure machinery). Records to ``drainage_rate``/``cum_drainage`` for the
+        balance Δtotal = cum_rain − cum_outflow − cum_drainage + clip_mass_adjust. Drain boundaries must be
+        disjoint from the top surface and from each other (one shared facet meshtags in _build_F_psi).
         """
-        if conductance < 0.0:
+        C_const = conductance if isinstance(conductance, fem.Constant) else fem.Constant(
+            self.mesh, PETSc.ScalarType(float(conductance)))
+        if float(C_const.value) < 0.0:
             raise ValueError(f"add_drainage_bc requires conductance >= 0 [1/day]; got {conductance!r}")
         self.mesh.topology.create_connectivity(self._fdim, self.mesh.topology.dim)
         facets = np.sort(dmesh.locate_entities_boundary(self.mesh, self._fdim, locator)).astype(np.int32)
         if self.mesh.comm.allreduce(int(facets.size), op=MPI.SUM) == 0:
             raise ValueError("add_drainage_bc: the locator matched no boundary facet (silent no-op).")
-        self._drains.append((facets, float(conductance), float(external_head)))
+        # guard against double-tagging in the shared F_psi meshtags: a drain may not overlap the top
+        # λ-coupling surface or a previously-added drain (Codex review 2026-06-07).
+        tagged = [self._top_facets] + [f for f, _C, _He in self._drains]
+        for prior in tagged:
+            ov = int(np.intersect1d(facets, prior).size)
+            if self.mesh.comm.allreduce(ov, op=MPI.SUM) > 0:
+                raise ValueError(
+                    "add_drainage_bc: locator overlaps the top surface or an existing drainage boundary; "
+                    "GHB boundaries must be disjoint (they share one facet meshtags in F_psi)."
+                )
+        self._drains.append((facets, C_const, float(external_head)))
         self._build_F_psi()   # rebuild F_psi: bulk + λ-top + drainage, sharing ONE facet meshtags
-        return None
+        return C_const        # handle for a time-varying / ramped conductance (drive .value)
 
     def _build_F_psi(self) -> None:
         """(Re)build F_psi = ψ-volume bulk − λ·v·ds_top + Σ drainage GHB terms, with ALL exterior-facet
@@ -375,7 +392,8 @@ class CoupledProblem:
         F_psi = self._F_psi_bulk - self.lam * self._vpsi * ds(1)   # λ influx into the soil top
         self._drainage_forms = []
         for k, (_facets, C, He) in enumerate(self._drains, start=2):
-            q_n = C * (self.psi + z - He)
+            kr = self.soil.K_ufl(self.psi) / self.soil.Ks   # relative perm: self-limits unsaturated drainage
+            q_n = C * kr * (self.psi + z - He)
             F_psi = F_psi + q_n * self._vpsi * ds(k)
             self._drainage_forms.append(fem.form(q_n * ds(k)))
         self.F_psi = F_psi

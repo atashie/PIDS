@@ -12,10 +12,18 @@ Darcy/head drainage BC."
 
 ## 1. The boundary condition — general-head / Cauchy (MODFLOW GHB)
 
+> **Codex correction 2026-06-07 (implemented):** the flux is **relative-permeability-weighted** —
+> `q_n = C·kr(ψ)·(H − H_ext)`, `kr = K(ψ)/Ks` — NOT constant-C. A constant-C GHB over-drains unsaturated
+> soil (it imposes the flux regardless of saturation, so the solver drives the boundary head down through
+> an unresolved layer to deliver it). The kr weight makes it the physical Darcy flux through a film of
+> conductivity `K(ψ)`, so it self-limits as the boundary dries. Saturated boundary ⇒ `kr=1` ⇒ the
+> standard GHB below. See §6. The global balance also carries `+ clip_mass_adjust` (the degenerate-limiter
+> branch). Drain boundaries must be **disjoint** from the top surface and from each other.
+
 A leaky boundary connecting the soil to an external reservoir at head `H_ext`, with conductance `C`:
 
 ```
-outward Darcy flux   q_n = C · (H − H_ext),      H = ψ + z   (hydraulic head; z = elevation, last axis)
+outward Darcy flux   q_n = C · kr(ψ) · (H − H_ext),   kr = K(ψ)/Ks,   H = ψ + z   (z = elevation, last axis)
 ```
 
 - `C` [1/day] = boundary conductance (inverse resistance to the reservoir: `K_interface/L_interface`,
@@ -83,3 +91,30 @@ LINEAR in ψ (for constant `C, H_ext`) → smooth, robust, exact auto-Jacobian.
   outflow) = a special case of (b).
 - The GHB conductance `C` for a real site (aquifer T, drain geometry) is a parameterization question for
   the domain/forcing modules; here `C, H_ext` are caller inputs.
+
+## 6. Codex adversarial review (2026-06-07) — corrections applied
+
+Static review of the as-committed constant-C GHB (commit 61418c4). Verdict **fix-then-assess**. No
+sign/convention bug (the `+q_n·v·ds`, `H=ψ+z`, `e_g=+ẑ` chain is correct). Three must-fixes, all applied
+before the 2-D assessment:
+
+1. **Relative-permeability weighting (the physics fix).** The claim "the Richards solve self-limits
+   unsaturated drainage to the soil's K-capacity" was **wrong**: constant-C imposes `q_n=C(H−H_ext)`
+   regardless of saturation, so the solver drives the boundary head down (gradients `q/K ≈ 12` at `ψ=−0.2`,
+   `≈92` at `ψ=−0.5` for loam) to deliver an unphysical flux → over-drains. Fix: `q_n = C·kr(ψ)·(H−H_ext)`,
+   `kr=K(ψ)/Ks`. This is the Darcy flux through a boundary film of conductivity `K(ψ)`; it self-limits as
+   the boundary dries and reduces to the standard GHB when saturated (`kr=1`). Pinned by
+   `test_drainage_relative_permeability_weighting` (unsaturated `drainage_rate == C·kr·ΔH`, kr≈0.017 for
+   the loam at ψ=−0.5). The saturated analytical gate is unchanged (`kr=1`).
+2. **Disjointness guard.** `_build_F_psi` concatenates top + drain facets into ONE meshtags; an
+   overlapping drain locator would double-tag a facet (ambiguous). Both `add_drainage_bc` now reject a
+   locator overlapping the top surface or a prior drain. Pinned by `test_drainage_bc_rejects_overlapping_facets`.
+3. **Balance accounting.** The exact global balance is
+   `Δtotal = cum_rain − cum_outflow − cum_drainage + clip_mass_adjust` (the degenerate-limiter branch's
+   mass adjustment is part of the total change; it is 0 in the normal/non-clipping case). Folded into the
+   conservation test.
+
+**Bidirectional inflow** (a high `H_ext` makes a "drain" an injector) is correct physics for a reservoir
+boundary; the one-way clamp stays in §5 future. **Assessment watch-items:** very negative ψ with large
+`q_drain`; sensitivity to `C`/`H_ext`; negative `drainage_rate` (= inflow); `clip_mass_adjust ≠ 0`; the
+surface-film/head caveat biasing the head field near a side drain (flux is right, the head field isn't).

@@ -105,6 +105,7 @@ class RichardsProblem:
         self._bcs: list = []
         self._flux_tags: list = []
         self._drainage_forms: list = []  # compiled q_n*ds GHB forms for drainage_rate()
+        self._drainage_facets = np.empty(0, dtype=np.int32)  # disjointness guard across GHB boundaries
         self._petsc_options = dict(petsc_options or self._DEFAULT_PETSC_OPTIONS)
         self._problem: NonlinearProblem | None = None
 
@@ -183,21 +184,36 @@ class RichardsProblem:
     def add_drainage_bc(self, locator, conductance, external_head):
         """General-head (Cauchy / MODFLOW GHB) subsurface drainage on a boundary.
 
-        Outward Darcy flux ``q_n = conductance * (H - external_head)`` with hydraulic head
-        ``H = psi + z`` (z = elevation, last axis). Lets the soil matrix exchange water with an external
-        reservoir at head ``external_head`` through a boundary conductance ``conductance`` [1/day] --
-        lateral groundwater outflow (a side), deep percolation (the base), or a drain. BIDIRECTIONAL:
-        drains OUT when ``H > external_head``, draws IN when ``H < external_head``; reduces to no-flow as
-        conductance -> 0 and to a Dirichlet head ``H = external_head`` as conductance -> inf. Enters the
+        Relative-permeability-weighted outward Darcy flux ``q_n = conductance * kr(psi) * (H -
+        external_head)``, ``kr = K(psi)/Ks``, hydraulic head ``H = psi + z`` (z = elevation, last axis).
+        The kr(psi) weight makes the GHB the physical Darcy flux through a boundary film of conductivity
+        K(psi): it SELF-LIMITS as the boundary dries (a constant-C GHB would over-drain unsaturated soil
+        by driving the boundary head down to deliver an unphysical flux -- Codex review 2026-06-07).
+        Saturated boundary (kr=1) -> standard GHB. Lets the soil matrix exchange water with an external
+        reservoir -- lateral groundwater outflow (a side), deep percolation (the base), or a drain.
+        BIDIRECTIONAL: drains OUT when ``H > external_head``, draws IN when ``H < external_head``; reduces
+        to no-flow as conductance -> 0 and to a saturated-Dirichlet head as conductance -> inf. Enters the
         residual as the standard exterior-facet term ``+ q_n * v * ds`` (since the bulk residual's Darcy
-        term is K(grad psi + e_g).grad v with K grad H . n = -q_n). LINEAR in psi -> smooth, exact
-        Jacobian. This is Darcy/head physics, NOT the surface Manning law.
+        term is K(grad psi + e_g).grad v with K grad H . n = -q_n). Smooth (C^1) Jacobian via K_ufl. This
+        is Darcy/head physics, NOT the surface Manning law. Drain boundaries must be disjoint.
         """
         if conductance < 0.0:
             raise ValueError(f"add_drainage_bc requires conductance >= 0 [1/day]; got {conductance!r}")
-        ds_d = self._boundary_ds(locator)
+        fdim = self.mesh.topology.dim - 1
+        self.mesh.topology.create_connectivity(fdim, self.mesh.topology.dim)
+        facets = np.sort(dmesh.locate_entities_boundary(self.mesh, fdim, locator)).astype(np.int32)
+        ov = int(np.intersect1d(facets, self._drainage_facets).size)
+        if self.mesh.comm.allreduce(ov, op=MPI.SUM) > 0:
+            raise ValueError("add_drainage_bc: locator overlaps an existing drainage boundary "
+                             "(would double-count the flux); GHB boundaries must be disjoint.")
+        self._drainage_facets = np.union1d(self._drainage_facets, facets).astype(np.int32)
+        tag = len(self._flux_tags) + 1
+        self._flux_tags.append(tag)
+        ft = dmesh.meshtags(self.mesh, fdim, facets, np.full(facets.shape, tag, dtype=np.int32))
+        ds_d = ufl.Measure("ds", domain=self.mesh, subdomain_data=ft)(tag)
         z = ufl.SpatialCoordinate(self.mesh)[self.mesh.geometry.dim - 1]
-        q_n = conductance * (self.psi + z - external_head)
+        kr = self.soil.K_ufl(self.psi) / self.soil.Ks   # relative perm: self-limits unsaturated drainage
+        q_n = conductance * kr * (self.psi + z - external_head)
         self.F = self.F + q_n * self._v * ds_d
         self._drainage_forms.append(fem.form(q_n * ds_d))
         self._problem = None
