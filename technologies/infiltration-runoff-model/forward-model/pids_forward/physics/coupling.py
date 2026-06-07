@@ -138,8 +138,14 @@ class CoupledProblem:
         self._vd = vd
         self._vlam = vlam
 
-        # potential infiltration (design §D.3 Robin) and the smooth complementarity g = q_pot − λ.
-        q_pot = (soil.K_ufl(self.psi) / self.ell_c) * (self.d - self.psi)
+        # potential infiltration and the smooth complementarity g = q_pot − λ. SORPTIVE leg (design §D
+        # spec 2026-06-06): the cross-film conductance uses the FILM-INTEGRAL (Kirchhoff matric flux
+        # potential) of K, q_pot = [∫_{ψ_top}^{d} K(ψ)dψ]/ℓ_c, NOT the dry cell value K(ψ_top) — the
+        # surface saturates (K→Ks) when ponded, which the dry value misses (under-infiltrating dry soil
+        # ~50× at coarse resolution; benchmark scratch/m3_sorptivity_benchmark.py). kirchhoff_ufl is C¹
+        # (no max kink), captures the saturated ψ>0 part via K_ufl's air-entry cap, and reduces to the
+        # old form / head continuity as ℓ_c→0. The transient is carried by the Richards solve below.
+        q_pot = soil.kirchhoff_ufl(self.psi, self.d) / self.ell_c
         g = q_pot - self.lam
 
         # ψ block: Richards bulk + infiltration influx (−λ into the soil top, flux-BC sign).

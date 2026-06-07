@@ -112,12 +112,14 @@ def test_2d_flat_reduces_to_1d_column():
     # x-uniform (no lateral structure on a flat surface) -- exact: the columns are identical
     d2 = p2.d.x.array[p2._top_dofs(p2.Vd)]
     assert d2.std() < 1e-6, f"2-D flat column not x-uniform (d std {d2.std():.2e})"
-    # quantitative match to the 1-D column. Tolerance ~2% absorbs only the 2-D-triangle vs
-    # 1-D-interval vertical-discretization difference (the physics/ℓ_c/coupling are identical); a
-    # wrong operator would differ by far more. soil_water is per-unit-width (domain width 1).
-    assert abs(_psi_top(p2) - psi_top_1d) < 0.02, f"ψ_top {_psi_top(p2):.4f} vs 1-D {psi_top_1d:.4f}"
-    assert abs(p2.soil_water() - soil_1d) / abs(soil_1d) < 0.02
-    assert abs(p2.surface_depth() - d_1d) < 2e-3
+    # quantitative match to the 1-D column. Tolerance ~3% absorbs only the 2-D-triangle vs
+    # 1-D-interval vertical-discretization difference (physics/ℓ_c/Kirchhoff leg are identical); a
+    # wrong operator would differ by far more. (The sorptive Kirchhoff leg makes infiltration sharper,
+    # which amplifies the triangle-vs-interval discretization gap from ~2% to ~2.3% -- 2026-06-06.)
+    # soil_water is per-unit-width (domain width 1).
+    assert abs(_psi_top(p2) - psi_top_1d) < 0.03, f"ψ_top {_psi_top(p2):.4f} vs 1-D {psi_top_1d:.4f}"
+    assert abs(p2.soil_water() - soil_1d) / abs(soil_1d) < 0.03
+    assert abs(p2.surface_depth() - d_1d) < 3e-3
 
 
 def _surface_xd(prob):
@@ -154,17 +156,43 @@ def test_2d_flat_closed_conservation():
     assert np.all(np.isfinite(prob.psi.x.array))
 
 
-def test_2d_closed_conservation_is_structural():
-    """Closed flat column under smooth sub-Ks rain: total water grows by EXACTLY the rainfall, to
-    near machine precision -- conservation is STRUCTURAL, not merely within a loose gate.
+def test_2d_surface_balance_is_structural():
+    """Tolerance-INDEPENDENT structural-conservation guard (Codex review 2026-06-06): the surface
+    (d-block) residual tested against v=1 over the FREE top rows must EXACTLY equal the physical balance
+    (storage + sign-paired λ), to machine precision -- proving the eps_diag diagonal allocation
+    contributes ZERO on the free rows (it sits on the pinned interior vertices) and no spurious VOLUME
+    (dx) term leaks. This is a pure residual ASSEMBLY at a set state, so it does NOT depend on the
+    Newton solve tolerance -- it is the real leak tripwire (the numeric gate below only tracks solver
+    tolerance and is too loose to catch the historical ~1.18e-12 whole-domain eps_diag*dx leak).
+    """
+    from dolfinx.fem.petsc import assemble_vector
+    msh = dmesh.create_rectangle(MPI.COMM_WORLD, [[0.0, 0.0], [1.0, 1.0]], [5, 4])
+    prob = CoupledProblem(msh, SOIL)
+    prob.dt.value = 0.1
+    prob.set_initial_condition(lambda x: -0.5 + 0.0 * x[0], d_value=0.0)
+    # nontrivial state: d on the top, λ on the top (every surface term active)
+    topd = prob._top_dofs(prob.Vd); topl = prob._top_dofs(prob.Vlam)
+    prob.d.x.array[topd] = 0.03; prob.d.x.scatter_forward()
+    prob.lam.x.array[topl] = 0.2; prob.lam.x.scatter_forward()
+    prob._ensure_problem()  # build the forms
 
-    Pins the diagonal-allocation fix (Codex review 2026-06-06). The pinned interior d/λ rows get their
-    required matrix diagonal from a VERTEX (dP) integral on exactly those vertices, which is
-    conservation-neutral: it touches only the pinned rows the Dirichlet BC overwrites, never the free
-    top rows. The earlier whole-domain eps_diag*d*vd*dx leaked a spurious ~1e-12 sink into the FREE top
-    rows (measured: 1.18e-12 vs 5.5e-14 here) -> not structural. Smooth (rate < Ks => no ponding) so
-    the positivity limiter is a no-op; the only thing that could break exact closure is such a spurious
-    residual term. (The gate is deliberately tight to catch a reintroduced whole-domain allocation.)
+    b = assemble_vector(fem.form(prob.F_d)); b.assemble()
+    assembled_free_sum = float(np.sum(b.getArray()[topd]))  # = <F_d, v=1> over the FREE top rows
+    # physical balance for v=1 (flat, no rain/overland-contribution/outlet): storage + λ. overland flux
+    # ~ grad_T(v)=grad_T(1)=0; eps_diag is on pinned dofs (excluded from topd). Computed independently.
+    storage = fem.assemble_scalar(fem.form(((prob.d - prob.d_n) / prob.dt) * prob._ds_top))
+    lam_term = fem.assemble_scalar(fem.form(prob.lam * prob._ds_top))
+    expected = float(storage + lam_term)
+    assert abs(assembled_free_sum - expected) <= 1e-13 * (abs(expected) + 1.0), \
+        f"surface balance not structural: assembled {assembled_free_sum:.6e} vs physical {expected:.6e}"
+
+
+def test_2d_closed_conservation_is_structural():
+    """Closed flat column under smooth sub-Ks rain: total water grows by the rainfall to solver
+    precision. The TIGHT structural guard is test_2d_surface_balance_is_structural (tolerance-free);
+    this complementary end-to-end check confirms the SOLVED run conserves -- its gate (1e-11) tracks the
+    Newton tolerance (snes_atol=1e-12; with the more-nonlinear Kirchhoff q_pot the closure sits at
+    ~2.5e-12 rel), NOT a structural leak. Smooth (rate < Ks => no ponding) so the limiter is a no-op.
     """
     msh = dmesh.create_rectangle(MPI.COMM_WORLD, [[0.0, 0.0], [1.0, 2.0]], [12, 16])
     prob = CoupledProblem(msh, SOIL)
@@ -175,8 +203,8 @@ def test_2d_closed_conservation_is_structural():
     prob.advance(t_end=0.5, dt=1e-3, dt_max=0.05)
 
     cum_rain = rate * _top_length(prob) * 0.5
-    assert prob.max_clip_seen == 0.0  # no clipping -> limiter is a no-op (precondition for "structural")
-    assert abs((prob.total_water() - w0) - cum_rain) / cum_rain < 5e-13  # structural to ~machine eps
+    assert prob.max_clip_seen == 0.0  # no clipping -> limiter is a no-op
+    assert abs((prob.total_water() - w0) - cum_rain) / cum_rain < 1e-11  # solver-tolerance-limited
 
 
 def test_2d_lateral_redistribution_downslope():
