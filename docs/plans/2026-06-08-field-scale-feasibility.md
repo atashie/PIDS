@@ -68,3 +68,13 @@ A static Codex audit returned FIX-FIRST; all findings addressed and the case re-
   *approximation*, above). The dead/wrong `se_ufl` was removed.
 - **(should-fix) conservation wording** corrected: it is the **discrete vertex-lumped** balance, and the
   full balance now carries `clip_mass_adjust` (verified ≈ 1.6e-15 ⇒ negligible).
+
+## Continuation to 0.8 d (+ checkpoint/resume)
+Extended the run **0.5 → 0.8 d** (deterministic re-run reproduces 0→0.5 exactly, then continues): wall
+~17.5 min / 512 steps, mass balance **3.09e-12**. After the storm ends the integrated budget is FROZEN
+(`cum_outflow` 305.3 m³, `soil_water` 5885.55 m³ — impermeable base + no rain ⇒ no budget change); the
+recession converges trivially (Newton = 3, dt at the 2e-3 cap). The 0.5→0.8 behavior is purely
+**internal subsurface redistribution** (the front advancing/perching at the sand barrier + low-K base).
+The probe now writes a **restartable checkpoint** (full ψ/d field + cumulative accounting), so further
+continuations are a true instant resume (`python scratch/feasibility_2ha_layered.py resume`) rather than
+a re-run. (HTML `validation/sanity/viz/feasibility_2ha_0p8d__2026-06-08.html`; gitignored.)

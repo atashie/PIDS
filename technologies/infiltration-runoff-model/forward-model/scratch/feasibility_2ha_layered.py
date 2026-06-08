@@ -17,6 +17,8 @@ time series) for the separate viz subagent. Run from forward-model/ with PYTHONP
 """
 from __future__ import annotations
 
+import os
+import sys
 import time
 import numpy as np
 import ufl
@@ -146,6 +148,23 @@ def _grid_index(coords_xy):
     return xu, yu, np.searchsorted(xu, xr_), np.searchsorted(yu, yr_)
 
 
+# --------------------------------------------------------------------------- checkpoint save/resume
+def save_state(prob, t_sim, cum_rain, w0, path):
+    """Save the FULL restartable state (psi/d fields + the cumulative accounting + clock)."""
+    np.savez(path, psi=prob.psi.x.array, d=prob.d.x.array, t_sim=t_sim, cum_rain=cum_rain, w0=w0,
+             cum_outflow=prob.cum_outflow, cum_drainage=prob.cum_drainage, clip=prob.clip_mass_adjust)
+
+
+def load_state(prob, path):
+    """Load a checkpoint into a FRESH CoupledProblem on the SAME (deterministic) mesh -> true resume."""
+    z = np.load(path)
+    for f, key in ((prob.psi, "psi"), (prob.psi_n, "psi"), (prob.d, "d"), (prob.d_n, "d")):
+        f.x.array[:] = z[key]; f.x.scatter_forward()
+    prob.cum_outflow = float(z["cum_outflow"]); prob.cum_drainage = float(z["cum_drainage"])
+    prob.clip_mass_adjust = float(z["clip"])
+    return float(z["t_sim"]), float(z["cum_rain"]), float(z["w0"])
+
+
 # --------------------------------------------------------------------------- the feasibility run
 def main():
     COMM = MPI.COMM_WORLD
@@ -153,9 +172,11 @@ def main():
     z_levels = np.concatenate([np.arange(0.0, 0.5 + 1e-9, 0.05),       # 0..0.5 @ 0.05 (11 nodes)
                                [0.51],                                  # sand top (0.01 m cell)
                                np.linspace(0.51, 1.0, 11)[1:]])         # 0.51..1.0 (10 nodes)
-    rate, storm_dur, t_end, psi0 = 0.30, 0.30, 0.50, -1.0
-    WALL_BUDGET_S = 2400.0   # 40 min guard
-    N_OUT = 45               # NetCDF snapshots
+    rate, storm_dur, t_end, psi0 = 0.30, 0.30, 0.80, -1.0   # extended 0.5 -> 0.8 d (continuation)
+    WALL_BUDGET_S = 3600.0   # 60 min guard
+    N_OUT = 50               # NetCDF snapshots
+    ckpt = f"{DATA_DIR}/feasibility_2ha_ckpt__{DATE}.npz"   # restartable checkpoint
+    RESUME = len(sys.argv) > 1 and sys.argv[1] == "resume" and os.path.exists(ckpt)
 
     t = time.perf_counter()
     msh = graded_box(COMM, Lx, Ly, NX, NY, z_levels)
@@ -170,10 +191,15 @@ def main():
     prob.set_topography(lambda x: S0 * (Lx - x[0]))
     rain = prob.add_rain(0.0)
     prob.add_outflow_bc(lambda x: np.isclose(x[0], Lx), slope=S0)
+    if RESUME:
+        t0, cum_rain0, w0 = load_state(prob, ckpt)   # true pick-up-where-it-left-off
+        print(f"  RESUMED from {ckpt}: t0={t0:.4f} d  cum_rain={cum_rain0:.1f}  cum_out={prob.cum_outflow:.1f}",
+              flush=True)
+    else:
+        t0, cum_rain0, w0 = 0.0, 0.0, prob.total_water()
     top_area = COMM.allreduce(
         fem.assemble_scalar(fem.form(fem.Constant(msh, 1.0) * prob._ds_top)), op=MPI.SUM)
-    w0 = prob.total_water()
-    print(f"  top_area={top_area:.0f} m^2  initial total_water={w0:.2f} m^3", flush=True)
+    print(f"  top_area={top_area:.0f} m^2  total_water(t0)={prob.total_water():.2f} m^3 (w0={w0:.2f})", flush=True)
 
     # --- viz extraction maps (structured grids on the graded mesh) ---
     topd = prob._top_dofs(prob.Vd)
@@ -195,7 +221,7 @@ def main():
 
     nys, nxs = ys_u.size, xs_u.size
     nzc, nxc = zc_u.size, xc_u.size
-    out_times = np.linspace(0.0, t_end, N_OUT)
+    out_times = np.linspace(t0, t_end, N_OUT)   # snapshots span [t0, t_end] (continuation on resume)
     d_map = np.zeros((N_OUT, nys, nxs)); psi_xs = np.zeros((N_OUT, nzc, nxc)); th_xs = np.zeros((N_OUT, nzc, nxc))
     th_xy = np.zeros((N_OUT, z_layers.size, nys, nxs))
     rainfall = np.zeros(N_OUT); soil_w = np.zeros(N_OUT); surf_w = np.zeros(N_OUT)
@@ -214,9 +240,9 @@ def main():
         expected = cum_rain - prob.cum_outflow + prob.clip_mass_adjust
         mbe[k] = abs((prob.total_water() - w0) - expected) / (cum_rain + 1e-30)
 
-    print("=== marching (storm 0.3 d @ 0.3 m/day, then recession to 0.5 d) ===", flush=True)
-    snap(0, 0.0)
-    dt, t_sim, cum_rain, nsteps, k_out = 1e-4, 0.0, 0.0, 0, 1
+    print(f"=== marching {t0:.3f} -> {t_end} d (storm 0.3 d @ 0.3 m/day, then recession) ===", flush=True)
+    snap(0, cum_rain0)
+    dt, t_sim, cum_rain, nsteps, k_out = (2e-3 if RESUME else 1e-4), t0, cum_rain0, 0, 1
     tstart = time.perf_counter(); first_step_s = None
     while t_sim < t_end - 1e-12:
         h = min(dt, t_end - t_sim)
@@ -303,9 +329,10 @@ def main():
                    mass_balance_error_max=float(mbe.max()), clip_mass_adjust=float(prob.clip_mass_adjust),
                    peak_surface_depth_m=float(prob.surface_depth())),
     )
-    out_nc = f"{DATA_DIR}/feasibility_2ha__{DATE}.nc"
+    out_nc = f"{DATA_DIR}/feasibility_2ha_{'resume' if RESUME else '0p8d'}__{DATE}.nc"
     ds.to_netcdf(out_nc)
-    print(f"WROTE {out_nc}", flush=True)
+    save_state(prob, t_sim, cum_rain, w0, ckpt)   # checkpoint for the NEXT continuation (true resume)
+    print(f"WROTE {out_nc}  + checkpoint {ckpt} (resume with: python scratch/feasibility_2ha_layered.py resume)", flush=True)
     print("DONE", flush=True)
 
 
