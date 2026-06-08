@@ -73,12 +73,33 @@ class CoupledProblem:
 
     def __init__(self, mesh, soil, *, ell_c: float | None = None, eps_ncp: float = 1e-4,
                  n_man: float = 0.05, eps_S: float = 1e-3,
-                 degree: int = 1, lumped: bool = True, petsc_options=None):
+                 degree: int = 1, lumped: bool = True, quadrature_degree: int = 8,
+                 petsc_options=None):
         self.mesh = mesh
         self.soil = soil
         self.eps_ncp = float(eps_ncp)
         self.n_man = float(n_man)   # Manning roughness for the lateral overland flux (SI s.m^-1/3)
         self.eps_S = float(eps_S)   # diffusion-wave slope floor
+        # CAP the nonlinear (van Genuchten / Manning / Kirchhoff) integration degree. FFCX's auto
+        # estimate balloons on these fractional-power integrands (residual ~26, Jacobian ~41); on 3-D
+        # TETRAHEDRA that is O(deg^3) quadrature points -> ~1000x slower assembly (a 6x6x5 box smoke
+        # step: 16.5 s -> 0.08 s; benchmark scratch/m3_3d_perf_probe2.py). The cap is sized by the
+        # Darcy VOLUME term (the highest-auto-degree term); the surface/NCP/Kirchhoff/drainage terms
+        # are lower-degree and generously covered. Accuracy vs the auto degree (Codex/agent audit
+        # 2026-06-07): BIT-IDENTICAL (~1e-14) for SMOOTH cells, including ponded/supply-limited states;
+        # for a cell whose psi STRADDLES the air-entry head it deviates O(1e-4) at degree 6 and ~1.6e-5
+        # at degree 8 (-> default 8, free at these sizes); a one-cell unsaturated->ponded WETTING FRONT
+        # has an in-cell kink (se_ufl's air-entry min/max) that NO polynomial quadrature resolves
+        # (handled instead by lumped storage + small dt, not by raising the degree). End-to-end this
+        # does not measurably move the solution or Newton convergence (verified: dpsi < 1e-3, identical
+        # iteration counts cap=8 vs cap=30 on a dry-start heavy-rain ponding solve). Applied to the
+        # Darcy volume dx, the ds_top surface, and the drainage GHB facets; the vertex-lumped storage
+        # measure is unaffected. Pinned by test_3d_quadrature_cap_accuracy; re-audit (scratch/
+        # m3_quad_cap_audit.py) if a future surface term raises the ds_top auto-degree.
+        self._quad_degree = int(quadrature_degree)
+        assert mesh.geometry.dim == mesh.topology.dim, (
+            "CoupledProblem assumes a full-dimensional host (gdim == tdim); the _zaxis (gdim-1) and "
+            "_codim2_dim (tdim-2) conventions diverge on an embedded manifold mesh.")
         gdim = mesh.geometry.dim
         self._zaxis = gdim - 1  # gravity / elevation along the last spatial axis
 
@@ -103,11 +124,21 @@ class CoupledProblem:
         fdim = mesh.topology.dim - 1
         mesh.topology.create_connectivity(fdim, mesh.topology.dim)
         self._fdim = fdim
+        # codim-2 outlet entity dim: the lateral-outflow outlet is the BOUNDARY of the top surface --
+        # a corner VERTEX in the 2-D cross-section (tdim-2 = 0) and a perimeter EDGE/ridge in 3-D
+        # (tdim-2 = 1). add_outflow_bc locates entities of this dim; _finalize_forms imposes the
+        # discharge on the matching measure (vertex dP in 2-D, ridge dr in 3-D). Create the
+        # (codim2, tdim) connectivity locate_entities_boundary needs for the 3-D edge case.
+        self._codim2_dim = mesh.topology.dim - 2
+        if self._codim2_dim >= 1:
+            mesh.topology.create_connectivity(self._codim2_dim, mesh.topology.dim)
         top_facets = np.sort(dmesh.locate_entities_boundary(
             mesh, fdim, lambda x: np.isclose(x[self._zaxis], self._ztop))).astype(np.int32)
         self._top_facets = top_facets
         ft = dmesh.meshtags(mesh, fdim, top_facets, np.ones(top_facets.size, dtype=np.int32))
-        self._ds_top = ufl.Measure("ds", domain=mesh, subdomain_data=ft)(1)
+        self._ds_top = ufl.Measure(
+            "ds", domain=mesh, subdomain_data=ft,
+            metadata={"quadrature_degree": self._quad_degree})(1)
 
         if ell_c is None:
             # top-cell half-height = half the spacing between the top two DISTINCT z-levels.
@@ -155,7 +186,8 @@ class CoupledProblem:
         # drainage GHB terms are woven onto ONE shared facet meshtags by _build_F_psi (DOLFINx requires a
         # single subdomain_data per integral type per form -- the λ-top and drainage facets must share it).
         self._F_psi_bulk = richards_bulk_residual(
-            self.psi, self.psi_n, vpsi, soil, self.dt, self.e_g, dx_storage=self._dx_storage)
+            self.psi, self.psi_n, vpsi, soil, self.dt, self.e_g, dx_storage=self._dx_storage,
+            quadrature_degree=self._quad_degree)
         # LATERAL overland: Manning diffusion-wave as a TANGENTIAL-gradient surface PDE on ds_top.
         # grad_T = grad − (grad·n)n is the surface gradient; in 1-D the top facet is a point so
         # grad_T ≡ 0 and this term vanishes (dimension-agnostic). H_s = z_b + d.
@@ -254,34 +286,60 @@ class CoupledProblem:
         return r
 
     def _finalize_forms(self) -> None:
-        """(Re)build F_d, F_lam and the outflow forms with ONE shared vertex (dP) meshtags.
+        """(Re)build F_d, F_lam and the outflow forms, weaving in the pin diagonal-allocation and any
+        outlets on the correct codim-2 measure.
 
-        DOLFINx requires a single ``subdomain_data`` per integral type within a form, so the pinned-
-        interior diagonal allocation (tag 1) and every outlet (tags 2..) must live in ONE vertex
-        meshtags. Called at construction and whenever rainfall or outlets change. The pinned and outlet
-        vertex sets are disjoint (below-top vs on-top), so the combined tag array has no duplicates.
+        The pinned-interior diagonal allocation is ALWAYS a vertex (``dP``, tag 1) integral -- pinned
+        d/λ rows are 0-dim dofs in any dimension. The OUTLET is the codim-2 boundary of the surface:
+        - 2-D: a VERTEX (tdim-2 = 0). Same integral type as the pin, so DOLFINx's one-subdomain_data-
+          per-integral-type rule forces pin + outlets into ONE shared vertex meshtags (tags 1, 2..).
+        - 3-D: a ridge EDGE (tdim-2 = 1). A DIFFERENT integral type from the vertex pin, so the
+          outlets get their OWN ``ridge`` (``dr``) meshtags (tags 2..) that coexists with the pin's
+          vertex meshtags in the same F_d (verified FFCX-safe: scratch/m3_3d_outlet_spike.py). The
+          ridge line integral ∫ q_out dr = (per-width q_out)·edge_length is the exact outlet discharge.
+        Called at construction and whenever rainfall or outlets change.
         """
-        verts = [self._pinned_verts]
-        tags = [np.full(self._pinned_verts.size, 1, dtype=np.int32)]
-        for k, (overts, _slope) in enumerate(self._outlets, start=2):
-            verts.append(overts)
-            tags.append(np.full(overts.size, k, dtype=np.int32))
-        allv = np.concatenate(verts).astype(np.int32)
-        allt = np.concatenate(tags)
-        order = np.argsort(allv)
-        vt = dmesh.meshtags(self.mesh, 0, allv[order], allt[order])
-        dP = ufl.Measure("vertex", domain=self.mesh, subdomain_data=vt)
+        if self._codim2_dim == 0 and self._outlets:
+            # 2-D: pin (tag 1) + outlets (tags 2..) share ONE vertex meshtags (same integral type).
+            ents = [self._pinned_verts]
+            tags = [np.full(self._pinned_verts.size, 1, dtype=np.int32)]
+            for k, (overts, _slope) in enumerate(self._outlets, start=2):
+                ents.append(overts)
+                tags.append(np.full(overts.size, k, dtype=np.int32))
+            allv = np.concatenate(ents).astype(np.int32)
+            allt = np.concatenate(tags)
+            order = np.argsort(allv)
+            vt = dmesh.meshtags(self.mesh, 0, allv[order], allt[order])
+            dP = ufl.Measure("vertex", domain=self.mesh, subdomain_data=vt)
+            out_measure = dP  # outlets ride the same vertex measure
+        else:
+            # pin alone on a vertex meshtags (2-D with no outlets, 3-D, or degenerate 1-D)...
+            vt = dmesh.meshtags(self.mesh, 0, np.sort(self._pinned_verts),
+                                np.full(self._pinned_verts.size, 1, dtype=np.int32))
+            dP = ufl.Measure("vertex", domain=self.mesh, subdomain_data=vt)
+            out_measure = None
+            if self._outlets:  # 3-D: outlets on a SEPARATE ridge (codim-2 edge) meshtags
+                rents, rtags = [], []
+                for k, (oedges, _slope) in enumerate(self._outlets, start=2):
+                    rents.append(oedges)
+                    rtags.append(np.full(oedges.size, k, dtype=np.int32))
+                allr = np.concatenate(rents).astype(np.int32)
+                allrt = np.concatenate(rtags)
+                order = np.argsort(allr)
+                rt = dmesh.meshtags(self.mesh, self._codim2_dim, allr[order], allrt[order])
+                out_measure = ufl.Measure("ridge", domain=self.mesh, subdomain_data=rt,
+                                          metadata={"quadrature_degree": self._quad_degree})
 
-        # d block: bulk + diagonal-allocation (tag 1) [+ rain] [+ outlets].
+        # d block: bulk + diagonal-allocation (tag 1) [+ rain] [+ outlets on out_measure].
         F_d = self._F_d_bulk + self._eps_diag * self.d * self._vd * dP(1)
         if self._rain is not None:
             F_d = F_d - self._rain * self._vd * self._ds_top
         self._outflow_forms = []
-        for k, (_overts, slope) in enumerate(self._outlets, start=2):
+        for k, (_oents, slope) in enumerate(self._outlets, start=2):
             d_pos = ufl.max_value(self.d, 0.0)
             q_out = SECONDS_PER_DAY * (1.0 / self.n_man) * d_pos ** (5.0 / 3.0) * ufl.sqrt(slope)
-            F_d = F_d + q_out * self._vd * dP(k)
-            self._outflow_forms.append(fem.form(q_out * dP(k)))
+            F_d = F_d + q_out * self._vd * out_measure(k)
+            self._outflow_forms.append(fem.form(q_out * out_measure(k)))
         self.F_d = F_d
         # λ block: bulk + diagonal-allocation (tag 1).
         self.F_lam = self._F_lam_bulk + self._eps_diag * self.lam * self._vlam * dP(1)
@@ -296,36 +354,64 @@ class CoupledProblem:
         standalone Module-2 ``OverlandProblem.add_outflow_bc``.
 
         REALIZATION A: the surface lives on the host top facets, so the outlet -- the boundary of that
-        surface -- is a codim-2 host entity. In this 2-D cross-section it is the downstream-TOP corner
-        VERTEX; the discharge is imposed as a single-mesh VERTEX integral (``dP``), which is FFCX-native
-        on stock 0.10 (NOT the mixed-dim codim-0 path that blocked realization S -- verified in
-        scratch/m3_outflow_spike.py) and yields a clean auto-Jacobian. ``locator`` is intersected with
-        the top surface (z=ztop) so only surface boundary vertices become outlets (below-top d is
-        pinned 0 anyway, but the intersection keeps the outlet unambiguous). The outlet vertices are
-        recorded and woven into F_d by ``_finalize_forms`` (sharing the one vertex meshtags with the
-        diagonal-allocation pin); ``outflow_rate()`` reports the integrated discharge across all outlets.
-        [3-D: the outlet becomes a perimeter CURVE = codim-2 edges -> a separate spike; the
-        normalized downstream-band sink on ds_top is the dimension-agnostic fallback.]
+        surface -- is a codim-2 host entity (``tdim-2``). In the 2-D cross-section it is the
+        downstream-TOP corner VERTEX, imposed as a single-mesh VERTEX integral (``dP``); in 3-D it is
+        the downstream-top EDGE (a perimeter curve), imposed as a codim-2 RIDGE integral (``dr``) so
+        that ``∫_edge q_out dr = (per-width q_out)·edge_length`` is the exact line discharge [m^3/day].
+        Both are single-mesh, FFCX-native on stock 0.10 (NOT the mixed-dim codim-0 path that blocked
+        realization S -- spikes scratch/m3_outflow_spike.py (2-D) + m3_3d_outlet_spike.py (3-D ridge,
+        incl. an S-style coexistence guard)) with clean auto-Jacobians. ``locator`` is intersected
+        with the top surface (z=ztop) so only surface boundary entities become outlets (below-top d is
+        pinned 0 anyway, but the intersection keeps the outlet unambiguous). The outlet entities are
+        recorded and woven into F_d by ``_finalize_forms`` (the vertex pin and the 3-D ridge outlet are
+        different integral types -> separate meshtags); ``outflow_rate()`` reports the integrated
+        discharge across all outlets. (The normalized downstream-band sink on ds_top is the documented
+        dimension-agnostic fallback if a future curved/unstructured outlet ever defeats the ridge path.)
 
         ``slope`` must be strictly positive: ``slope=0`` silently turns the outlet into a no-flux wall
         (damming) and ``slope<0`` injects ``sqrt(<0)``=NaN; both are caller errors, rejected up front.
+
+        MPI caveat (deferred; verification is serial): ``locate_entities_boundary`` at the codim-2 dim
+        "will not necessarily mark all exterior entities" in parallel, and ``outflow_rate``'s
+        allreduce-SUM could double-count an outlet edge shared across a partition boundary -- WORSE for
+        3-D ridges (edges straddle partitions more often than corner vertices). Needs ownership-aware
+        tagging + a 2-rank regression before any MPI outflow claim.
         """
         if slope <= 0.0:
             raise ValueError(
                 f"add_outflow_bc requires slope > 0 (normal-depth friction slope); got {slope!r}. "
                 "slope=0 dams the outlet; slope<0 gives sqrt(<0)=NaN.")
-        on_top = lambda x: locator(x) & np.isclose(x[self._zaxis], self._ztop)
-        overts = np.sort(dmesh.locate_entities_boundary(self.mesh, 0, on_top)).astype(np.int32)
-        if self.mesh.comm.allreduce(int(overts.size), op=MPI.SUM) == 0:
+        if self._codim2_dim < 0:
             raise ValueError(
-                "add_outflow_bc: the locator matched no top-surface boundary vertex -- the outlet "
-                "would be a silent no-op. Check the locator (it is intersected with the top z=ztop).")
-        self._outlets.append((overts, float(slope)))
-        self._finalize_forms()  # rebuild F_d with the shared vertex meshtags (pin tag 1 + outlets)
+                "add_outflow_bc: no lateral outlet in 1-D -- the surface is a single point (the "
+                "vertical ponding store), so there is no codim-2 outlet boundary to drain through.")
+        on_top = lambda x: locator(x) & np.isclose(x[self._zaxis], self._ztop)
+        oents = np.sort(dmesh.locate_entities_boundary(
+            self.mesh, self._codim2_dim, on_top)).astype(np.int32)
+        if self.mesh.comm.allreduce(int(oents.size), op=MPI.SUM) == 0:
+            raise ValueError(
+                "add_outflow_bc: the locator matched no top-surface boundary entity (vertex in 2-D, "
+                "edge in 3-D) -- the outlet would be a silent no-op. Check the locator (it is "
+                "intersected with the top z=ztop).")
+        # guard against outlet-vs-outlet overlap (symmetric with add_drainage_bc): overlapping
+        # locators would put the SAME entity under two tags in the shared outlet meshtags, silently
+        # dropping/mis-tagging one outlet's discharge and breaking the cum_outflow books.
+        for prior_oents, _ in self._outlets:
+            ov = int(np.intersect1d(oents, prior_oents).size)
+            if self.mesh.comm.allreduce(ov, op=MPI.SUM) > 0:
+                raise ValueError(
+                    "add_outflow_bc: locator overlaps an existing outlet; outlets must be disjoint "
+                    "(they share one codim-2 meshtags in _finalize_forms).")
+        self._outlets.append((oents, float(slope)))
+        self._finalize_forms()  # rebuild F_d: vertex pin (tag 1) + outlet (vertex dP / ridge dr)
         return None
 
     def outflow_rate(self) -> float:
-        """Total discharge leaving through all surface outlets (m^2/day per unit width)."""
+        """Total discharge leaving through all surface outlets -- the assembled outlet sink (a TOTAL,
+        not per-unit-width). ``q_out`` is the per-width Manning integrand; the measure supplies the
+        geometric factor, so the assembled value is m^2/day at the 2-D point outlet (unit-width
+        cross-section) and m^3/day at the 3-D edge outlet (∫ q_out dr = per-width q_out · edge_length).
+        """
         total = 0.0
         for form in self._outflow_forms:
             total += self.mesh.comm.allreduce(fem.assemble_scalar(form), op=MPI.SUM)
@@ -386,7 +472,8 @@ class CoupledProblem:
         allt = np.concatenate([np.full(f.size, t, dtype=np.int32) for t, f in groups])
         order = np.argsort(allf)
         ft = dmesh.meshtags(self.mesh, self._fdim, allf[order], allt[order])
-        ds = ufl.Measure("ds", domain=self.mesh, subdomain_data=ft)
+        ds = ufl.Measure("ds", domain=self.mesh, subdomain_data=ft,
+                         metadata={"quadrature_degree": self._quad_degree})
         z = ufl.SpatialCoordinate(self.mesh)[self._zaxis]
 
         F_psi = self._F_psi_bulk - self.lam * self._vpsi * ds(1)   # λ influx into the soil top
@@ -400,7 +487,8 @@ class CoupledProblem:
         self._problem = None
 
     def drainage_rate(self) -> float:
-        """Net outward subsurface drainage across all GHB boundaries (m^2/day per unit width; + = out)."""
+        """Net outward subsurface drainage across all GHB boundaries (+ = out) -- the assembled facet
+        flux total: m^2/day in the 2-D unit-width cross-section, m^3/day on a 3-D boundary face."""
         total = 0.0
         for form in self._drainage_forms:
             total += self.mesh.comm.allreduce(fem.assemble_scalar(form), op=MPI.SUM)

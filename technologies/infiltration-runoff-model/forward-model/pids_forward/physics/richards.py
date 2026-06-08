@@ -22,7 +22,7 @@ from petsc4py import PETSc
 
 
 def richards_bulk_residual(psi, psi_n, v, soil, dt, e_g, *, dx=ufl.dx, dx_storage=None,
-                           source=None):
+                           source=None, quadrature_degree=None):
     """Mixed-form Richards BULK residual (storage + Darcy), design B.1/B.4.
 
     The composable core of Module 1, factored out so both ``RichardsProblem`` (standalone) and the
@@ -35,7 +35,21 @@ def richards_bulk_residual(psi, psi_n, v, soil, dt, e_g, *, dx=ufl.dx, dx_storag
     unit vector ``e_g`` (last-axis), and the storage term on ``dx_storage`` (pass a vertex-lumped
     measure for the production path; defaults to ``dx``). Boundary/exchange terms (Neumann flux,
     ponding, the §D land-surface coupling) are added by the caller on top of this bulk residual.
+
+    ``quadrature_degree`` CAPS the Darcy-volume (and ``source``) integration degree. The van
+    Genuchten K/theta have fractional powers, so FFCX's automatic degree estimate balloons (residual
+    ~26, Jacobian ~41); on 3-D TETRAHEDRA that is O(deg^3) quadrature points (~1000x slower assembly).
+    The capped result is BIT-IDENTICAL to the auto degree for SMOOTH cells, but DEVIATES in a cell
+    whose psi straddles the air-entry head (O(1e-4) at degree 6, ~1.6e-5 at degree 8) and at a
+    one-cell wetting front (an in-cell kink no polynomial quadrature resolves -- handled by lumped
+    storage + small dt, not quadrature); end-to-end this does not measurably move the solution
+    (CoupledProblem caps at 8; see its note). ``None`` (default) keeps the automatic estimate --
+    REQUIRED for the MMS convergence tests, whose manufactured ``source`` is a genuinely high-degree
+    expression that must be integrated accurately. Only the Darcy ``dx`` is affected; ``dx_storage``
+    (vertex-lumped) is left as the caller set it.
     """
+    if quadrature_degree is not None:
+        dx = ufl.dx(metadata={"quadrature_degree": int(quadrature_degree)})
     if dx_storage is None:
         dx_storage = dx
     theta = soil.theta_ufl(psi)
