@@ -152,7 +152,7 @@ class EmbeddedFeature:
     # (Arik 2026-06-09: no reset on reversal). Validated by tests/test_sorptive_closure_gate.py (the full-
     # curve C-004 gate) + tests/test_feature_sorptive.py (the machinery reduces to the validated clock).
     def configure_sorptive(self, soil, *, psi_i=-1.0, psi_wall=0.0, des_sorp=None,
-                           r_w=R_W_DEFAULT, perimeter=None, C_disp=1.0, C_drain=1.0):
+                           r_w=R_W_DEFAULT, perimeter=None, r_eq=None, C_disp=1.0, C_drain=1.0):
         """Switch the wall exchange to the Phase-3 sorptivity clock. ``soil`` is a VanGenuchten-like object
         (provides ``theta``/``K``/``kirchhoff``/``kirchhoff_ufl``). Reference (de)sorptivity, storable
         contrast Δθ and Kirchhoff drop ΔΦ are evaluated at the antecedent soil head ``psi_i`` and the wall
@@ -176,7 +176,42 @@ class EmbeddedFeature:
         self.I_disp = fem.Function(self.V, name="I_disp")
         self.I_drain = fem.Function(self.V, name="I_drain")
         self.Omega = fem.Function(self.V, name="Omega")
+        self._setup_shell(r_eq)
         return self
+
+    # -- dual-scale embedding: the off-Γ shell (far-field ψ_cell) + the sub-grid fill capacity -----------
+    # The naive co-located coupling UNDER-predicts ~3x: injecting the wall flux into the near-Γ cell
+    # saturates it, so ψ(Γ) -> 0 and the clock drive collapses (worsens with refinement). The fix
+    # (validated 2026-06-09, ≤2% across host resolutions): (1) read the clock DRIVE from an off-Γ SHELL
+    # ψ_cell (~1.5 host cells out -- the true far field), NOT ψ(Γ); (2) GATE the host source OFF until the
+    # sub-grid annulus [r_w, r_eq] fills (I >= I_fill = Δθ(r_eq²−r_w²)/2r_w), so during sorption the host
+    # stays at ψ_i, ψ_cell ≈ ψ_i, and the clock reproduces the resolved reference. The I-clock is the total
+    # uptake; the sub-grid reservoir (I·perimeter − host_gain) is held internally (an explicit mass term
+    # for a fully-coupled sim). See [[pids-module4-starting-note]], scratch/_zdualscale_probe.py.
+    def _setup_shell(self, r_eq):
+        xc = self.V.tabulate_dof_coordinates()
+        gco = xc[self._gamma_dofs]
+        off = np.setdiff1d(np.arange(xc.shape[0], dtype=np.int32), self._gamma_dofs).astype(np.int32)
+        # distance of each off-Γ dof to the feature (nearest Γ dof) ~ perpendicular radial distance
+        d = (np.min(np.linalg.norm(xc[off][:, None, :] - gco[None, :, :], axis=2), axis=1)
+             if off.size and gco.size else np.empty(0))
+        h = float(np.min(d)) if d.size else self._r_w        # local host cell size ~ nearest off-Γ dof
+        if r_eq is None:
+            sel = (d > 0.9 * h) & (d < 2.1 * h)
+            if not np.any(sel):
+                sel = d < 2.5 * h                            # widen if the first ring is empty
+            self._r_eq = float(d[sel].mean()) if np.any(sel) else float(2.0 * self._r_w)
+        else:
+            self._r_eq = float(r_eq)
+            sel = np.abs(d - self._r_eq) < h
+            if not np.any(sel) and d.size:
+                sel = np.zeros(d.size, dtype=bool); sel[np.argsort(np.abs(d - self._r_eq))[:8]] = True
+        self._shell_dofs = off[sel] if d.size else np.empty(0, dtype=np.int32)
+        self._I_fill = max(self.dth_disp * (self._r_eq**2 - self._r_w**2) / (2.0 * self._r_w), 0.0)
+
+    def _psi_cell(self, psi):
+        """Far-field ψ on the off-Γ shell (the clock drive reference); global host mean if the shell is empty."""
+        return float(psi.x.array[self._shell_dofs].mean() if self._shell_dofs.size else psi.x.array.mean())
 
     def seed_clock(self, t_seed):
         """Seed both per-face accumulators to the planar early limb ``S·sqrt(t_seed)`` (the antecedent
@@ -192,18 +227,23 @@ class EmbeddedFeature:
         return C * S * S * F(Ipos / (dth * self._r_w)) / (2.0 * Ipos * dPhi_ref)
 
     def update_well_index(self, psi):
-        """Refresh the LAGGED well-index coefficient ``Omega`` on Γ from the current ``psi`` (soil) and
-        ``H_f``: per face, disperse (H_f>ψ) uses the cylindrical branch, drain the throttle branch. Call
-        once at the start of a step; the residual then treats ``Omega`` as a frozen coefficient."""
+        """Refresh the LAGGED well-index coefficient ``Omega`` on Γ. Direction is set by the far-field
+        ψ_cell (H_f>ψ_cell → cylindrical disperse branch, else throttle drain branch); ``Omega`` is GATED
+        to 0 until that direction's sub-grid annulus fills (``I >= I_fill``) -- during the sub-grid sorption
+        phase the host receives NO source (the uptake is held in the I-clock reservoir). Call once at the
+        start of a step; the residual then treats ``Omega`` as a frozen coefficient (the on-Γ Kirchhoff
+        difference still self-limits as ψ(Γ) saturates)."""
         g = self._gamma_dofs
-        psg, hfg = psi.x.array[g], self.Hf.x.array[g]
+        hfg, psi_cell = self.Hf.x.array[g], self._psi_cell(psi)
         z0, k = throttle_params(self.dth_drain)
         om_d = self._omega_branch(self.I_disp.x.array[g], self.S_disp, self.dPhi_ref_disp,
                                   self.dth_disp, F_cylindrical, self._C_disp)
         om_r = self._omega_branch(self.I_drain.x.array[g], self.S_drain, self.dPhi_ref_drain,
                                   self.dth_drain, lambda z: F_throttle(z, z0, k), self._C_drain)
+        om_d = np.where(self.I_disp.x.array[g] >= self._I_fill, om_d, 0.0)   # storage gate
+        om_r = np.where(self.I_drain.x.array[g] >= self._I_fill, om_r, 0.0)
         self.Omega.x.array[:] = 0.0
-        self.Omega.x.array[g] = np.where(hfg > psg, om_d, om_r)
+        self.Omega.x.array[g] = np.where(hfg > psi_cell, om_d, om_r)
         self.Omega.x.scatter_forward()
 
     def sorptive_into_feature(self, v, psi):
@@ -231,12 +271,12 @@ class EmbeddedFeature:
         ACTIVE accumulator (disperse: H_f>ψ → I_disp; drain → I_drain); the inactive one is frozen.
         ``nsub`` sub-steps the 1/I stiffness over the step."""
         g = self._gamma_dofs
-        psg, hfg = psi.x.array[g], self.Hf.x.array[g]
-        disperse = hfg > psg
+        hfg, psi_cell = self.Hf.x.array[g], self._psi_cell(psi)   # drive read from the off-Γ far field
+        disperse = hfg > psi_cell
         # the driving-potential MAGNITUDE, evaluated low->high so the K-graded Kirchhoff quadrature clusters
         # at the wet end both ways (kirchhoff is graded toward its upper limit; kirchhoff(0,-1) would under-
         # resolve the large-K wet end and break the drain<->disperse symmetry of |ΔΦ|).
-        dPhi_mag = self._soil.kirchhoff(np.minimum(psg, hfg), np.maximum(psg, hfg))
+        dPhi_mag = self._soil.kirchhoff(np.minimum(psi_cell, hfg), np.maximum(psi_cell, hfg))
         scale_d = np.where(disperse, dPhi_mag / self.dPhi_ref_disp, 0.0)
         scale_r = np.where(~disperse, dPhi_mag / self.dPhi_ref_drain, 0.0)
         z0, k = throttle_params(self.dth_drain)
