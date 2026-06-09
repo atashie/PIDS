@@ -23,6 +23,33 @@ review → three-tier assessment → Arik sign-off → commit. Architecture: `20
    reference; analytical sorptivity-clock `σ(t;S,Ks)` as the fallback if the steady Kirchhoff leg can't
    reproduce the early-time `S√t`.
 
+## Surface-inlet + multi-layer contact — design decisions (2026-06-08, Arik)
+Verified against the code: **layered soil is ALREADY supported** — `CoupledProblem` only ever calls
+`soil.theta_ufl/K_ufl/kirchhoff_ufl` + `soil.Ks`, so a duck-typed z-/x-dependent soil object
+(`SpatialCoordinate`+`conditional`) drops in unchanged, proven at field scale (`feasibility_2ha_layered.py`,
+conservation ~1e-12). The feature inherits **local-layer** exchange for free **iff** σ is built from the
+soil OBJECT's UFL methods (not frozen scalars). The open-to-surface intake is NEW code but FFCX-clean in
+realization A (`d` and `H_f` both co-located on the host → a single-mesh vertex/facet term, like the
+existing λ/pin machinery).
+
+1. **Surface inlet = large-σ conductance, behaving as CAPTURE-ALL.** `q_inlet = σ_surf·(H_s − H_f)`,
+   `H_s = z_b + d`, **bidirectional** (overtopping: channel spills back when `H_f > H_s`), `σ_surf` LARGE.
+   PIDS sits at the convergence low point, so the overland diffusion-wave already routes surface water to
+   the channel node; large σ_surf then draws ponding down faster than the soil infiltrates → the channel
+   gets FIRST CLAIM and the soil gets only the infiltration-excess: the **priority cascade EMERGES from the
+   physics** (no mouth-width footprint, no hard priority constraint). When the channel fills/conveyance
+   saturates (`H_f→H_s`) `q_inlet→0` and the remainder infiltrates/pools TOPOGRAPHICALLY. ("Excess spills to
+   evenly cover the non-PIDS soils" is a PARCEL-scale conceptual outcome, NOT a FEM constraint — the FEM
+   routes by topography; confirmed Arik 2026-06-08.) Sign-paired: sink on `d`, source on `H_f`. Surface
+   budget: `∂d/∂t + div(q_ovl) + λ_soil + q_inlet = rain`.
+2. **Wall exchange = ISOTROPIC σ over a configurable contact depth.** `q_wall = σ_wall·(H_f − ψ_soil)`
+   (Kirchhoff form), isotropic (same exchange all directions), active from the surface down to a USER
+   `D_contact` (→ resolve to N mesh layers), each layer's LOCAL properties. Bidirectional (disperse `H_f>ψ`
+   / drain `ψ>H_f`). **NO per-face config**: bare-vs-clay is a per-FEATURE σ magnitude (clay-lined → σ≈0,
+   conveyance-only; bare/open → σ>0), not per-face.
+3. **The channel DISPLACES soil** over its footprint (footprint-weighted: subtract the channel cross-section
+   from the soil leg) — a small/second-order correction for narrow channels.
+
 ## Phase-0 spike result (DONE, Codex-vetted; `scratch/m4_embedding_spike{,2}.py`)
 - Co-located interior `ridge` integral works: `∫_Γ 1 ds = 1.0`, exchange residual+Jacobian, storage on Γ.
 - **Conveyance is EXACT with the tangential projection** `∇H_f·t̂` (manufactured `H_f=b·s`: energy matches
