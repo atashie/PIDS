@@ -179,22 +179,30 @@ class EmbeddedFeature:
         self._setup_shell(r_eq)
         return self
 
-    # -- dual-scale embedding: the off-Γ shell (far-field ψ_cell) + the sub-grid fill capacity -----------
-    # The naive co-located coupling UNDER-predicts ~3x: injecting the wall flux into the near-Γ cell
-    # saturates it, so ψ(Γ) -> 0 and the clock drive collapses (worsens with refinement). The fix
-    # (validated 2026-06-09, ≤2% across host resolutions): (1) read the clock DRIVE from an off-Γ SHELL
-    # ψ_cell (~1.5 host cells out -- the true far field), NOT ψ(Γ); (2) GATE the host source OFF until the
-    # sub-grid annulus [r_w, r_eq] fills (I >= I_fill = Δθ(r_eq²−r_w²)/2r_w), so during sorption the host
-    # stays at ψ_i, ψ_cell ≈ ψ_i, and the clock reproduces the resolved reference. The I-clock is the total
-    # uptake; the sub-grid reservoir (I·perimeter − host_gain) is held internally (an explicit mass term
-    # for a fully-coupled sim). See [[pids-module4-starting-note]], scratch/_zdualscale_probe.py.
+    # -- EXPERIMENTAL coupling machinery (off-Γ shell + sub-grid gate) -- NOT validated for coupled fidelity.
+    # WARNING (adversarial review + Codex, 2026-06-09): this "dual-scale" coupling was OVER-CLAIMED. The
+    # off-Γ shell ψ_cell drive + storage gate do NOT give a genuine host-controlled coupled embedding: the
+    # clock I(t) is driven from a far shell (~ the fixed far field), so the embedded uptake is essentially
+    # the OFFLINE clock and the host is a passive accumulator -- the original coupled "acceptance test" was
+    # VACUOUS (gate never opened) and non-general (SILT diverges with refinement). The shell band and the
+    # gate threshold are also benchmark-tuned, not geometry-invariant. The VALIDATED scope of this primitive
+    # is (a) the OFFLINE full-curve gate on the closure (tests/test_sorptive_closure_gate.py) and (b) the
+    # structural properties below (reduces-to-clock, sign-paired conservation, separate accumulators) --
+    # NOT coupled fidelity. A genuine coupled embedding (uptake responsive to the host near-field) needs a
+    # reference with an EVOLVING far field + a host-impedance-sensitivity test + a closed global mass balance
+    # (source − Δstorage − boundary flux) + the drain direction -- deferred Phase-4 research. Honest interim
+    # alternative explored: "far-field clock + conservative DISTRIBUTED deposition" (scratch/
+    # _zdistributed_embed_probe.py: ≤3.5% all soils, host conserves, no over-saturation) -- a deposition
+    # model, NOT host-controlled coupling. See [[pids-module4-starting-note]].
     def _setup_shell(self, r_eq):
+        from scipy.spatial import cKDTree
         xc = self.V.tabulate_dof_coordinates()
         gco = xc[self._gamma_dofs]
         off = np.setdiff1d(np.arange(xc.shape[0], dtype=np.int32), self._gamma_dofs).astype(np.int32)
-        # distance of each off-Γ dof to the feature (nearest Γ dof) ~ perpendicular radial distance
-        d = (np.min(np.linalg.norm(xc[off][:, None, :] - gco[None, :, :], axis=2), axis=1)
-             if off.size and gco.size else np.empty(0))
+        # distance of each off-Γ dof to the feature (nearest Γ dof) ~ perpendicular radial distance.
+        # KDTree query is O(N log N) / O(N) memory -- the dense (N_off, N_gamma, 3) broadcast OOMs at field
+        # scale (~5 GB for 1e6 dofs x 200 faces; Codex review 2026-06-09).
+        d = cKDTree(gco).query(xc[off], k=1)[0] if (off.size and gco.size) else np.empty(0)
         h = float(np.min(d)) if d.size else self._r_w        # local host cell size ~ nearest off-Γ dof
         if r_eq is None:
             sel = (d > 0.9 * h) & (d < 2.1 * h)
@@ -215,7 +223,10 @@ class EmbeddedFeature:
 
     def seed_clock(self, t_seed):
         """Seed both per-face accumulators to the planar early limb ``S·sqrt(t_seed)`` (the antecedent
-        contact age) -- avoids the 1/I singularity at I=0; off-Γ stays 0."""
+        contact age) -- avoids the 1/I singularity at I=0; off-Γ stays 0. ``t_seed`` must be > 0 (t_seed=0
+        seeds I=0 and the next advance divides by zero -> NaN)."""
+        if float(t_seed) <= 0.0:
+            raise ValueError(f"seed_clock needs t_seed > 0 (got {t_seed}); t_seed=0 seeds I=0 -> 1/I NaN.")
         self._t_seed = float(t_seed)
         for Ifun, S in ((self.I_disp, self.S_disp), (self.I_drain, self.S_drain)):
             Ifun.x.array[:] = 0.0
@@ -283,10 +294,11 @@ class EmbeddedFeature:
         Id, Ir = self.I_disp.x.array[g].copy(), self.I_drain.x.array[g].copy()
         h = dt / nsub
         for _ in range(nsub):
-            Id = Id + h * (self._C_disp * self.S_disp ** 2 / (2.0 * Id)
-                           * F_cylindrical(Id / (self.dth_disp * self._r_w)) * scale_d)
-            Ir = Ir + h * (self._C_drain * self.S_drain ** 2 / (2.0 * Ir)
-                           * F_throttle(Ir / (self.dth_drain * self._r_w), z0, k) * scale_r)
+            Idc, Irc = np.maximum(Id, 1e-300), np.maximum(Ir, 1e-300)   # clamp the 1/I (defensive)
+            Id = Id + h * (self._C_disp * self.S_disp ** 2 / (2.0 * Idc)
+                           * F_cylindrical(Idc / (self.dth_disp * self._r_w)) * scale_d)
+            Ir = Ir + h * (self._C_drain * self.S_drain ** 2 / (2.0 * Irc)
+                           * F_throttle(Irc / (self.dth_drain * self._r_w), z0, k) * scale_r)
         self.I_disp.x.array[g], self.I_drain.x.array[g] = Id, Ir
         self.I_disp.x.scatter_forward()
         self.I_drain.x.scatter_forward()

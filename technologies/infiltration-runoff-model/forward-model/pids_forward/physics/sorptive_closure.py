@@ -47,6 +47,8 @@ R_W_DEFAULT = 0.05  # default feature (wall) radius [m] -- matches the Phase-1 r
 _Z0_A = 2.41
 _Z0_S = -5.35
 _THROTTLE_K = 7.46
+_Z0_FLOOR = 0.1  # positive floor: z0=2.41-5.35*dtheta goes <=0 for dtheta>=0.45 (coarse soil, dry antecedent),
+#                  which would make exp(-(zeta/z0)^k) NaN; floor it (the throttle just saturates there).
 
 
 def parlange_sorptivity(soil, psi_i, psi_w=0.0, n=20001):
@@ -77,14 +79,19 @@ def F_cylindrical(zeta):
 
 def F_throttle(zeta, z0, k):
     """Drain conductivity-throttle shape ``F = exp(-(zeta/z0)^k)`` (-> 1 as zeta -> 0, sub-sqrt-t for
-    zeta>0). Semi-empirical ``(z0, k)`` from :func:`throttle_params`. Scalar or array."""
-    return np.exp(-((np.asarray(zeta, dtype=float) / z0) ** k))
+    zeta>0). Semi-empirical ``(z0, k)`` from :func:`throttle_params`. Scalar or array. ``zeta`` is clamped
+    to >=0 (a transient forward-Euler overshoot to zeta<0 would give ``(neg)^k`` = NaN for non-integer k;
+    the zeta=0 limit F=1 is the safe value); ``z0`` must be > 0 (guaranteed by :func:`throttle_params`)."""
+    z = np.maximum(np.asarray(zeta, dtype=float), 0.0)
+    return np.exp(-((z / z0) ** k))
 
 
 def throttle_params(dtheta):
     """Semi-empirical drain-throttle constants ``(z0, k)`` for a soil with storable contrast ``dtheta``.
-    ``z0 = 2.41 - 5.35*dtheta``, ``k = 7.46`` (fitted; NOT a-priori -- see module docstring)."""
-    return _Z0_A + _Z0_S * float(dtheta), _THROTTLE_K
+    ``z0 = max(2.41 - 5.35*dtheta, 0.1)``, ``k = 7.46`` (fitted; NOT a-priori -- see module docstring). The
+    positive floor keeps ``F_throttle`` finite for high-contrast soils (``dtheta >= 0.45`` would make the raw
+    ``z0`` non-positive)."""
+    return max(_Z0_A + _Z0_S * float(dtheta), _Z0_FLOOR), _THROTTLE_K
 
 
 def des_sorp_ratio(dtheta):
@@ -119,12 +126,14 @@ def sorptive_clock(t, S, dtheta, r_w, F, C=1.0, nsub=400):
     (substep-converged: 400 == RK45 to <0.01%). Returns ``I`` at each node of ``t``. This is the offline
     gate integrator; the live feature uses :func:`dIdt` inside the FEM time step."""
     t = np.asarray(t, dtype=float)
+    if t.size and t[0] <= 0.0:
+        raise ValueError("sorptive_clock needs t[0] > 0 (seed I[0]=S*sqrt(t[0]); t[0]=0 -> I=0 -> 1/I blow-up).")
     I = np.empty_like(t)
     I[0] = S * np.sqrt(t[0])
     for i in range(1, t.size):
         Ii, h = I[i - 1], (t[i] - t[i - 1]) / nsub
         for _ in range(nsub):
-            Ii = Ii + h * dIdt(Ii, S, dtheta, r_w, F, C)
+            Ii = Ii + h * dIdt(max(Ii, 1e-300), S, dtheta, r_w, F, C)   # clamp guards a transient I->0
         I[i] = Ii
     return I
 
