@@ -26,6 +26,15 @@ import dolfinx.fem.petsc as fp
 from mpi4py import MPI
 from petsc4py import PETSc
 
+from .sorptive_closure import (
+    F_cylindrical,
+    F_throttle,
+    des_sorp_ratio,
+    parlange_sorptivity,
+    throttle_params,
+    R_W_DEFAULT,
+)
+
 
 class EmbeddedFeature:
     """A single embedded feature Γ on a host mesh: ``H_f`` co-located on the host, pinned off Γ.
@@ -134,6 +143,113 @@ class EmbeddedFeature:
         """Sign-paired soil exchange, HOST block: ``−∫_Γ σ·(H_f − ψ)·w dΓ`` -- the exact negative of the
         feature term on the SAME dΓ, so the coupling conserves water to machine precision (structural)."""
         return -self.sigma * (self.Hf - psi) * w * self.dGamma
+
+    # -- Phase-3 sorptive-exchange CLOSURE (the gate-validated sorptivity clock) -----------------------
+    # Upgrades the constant-σ wall exchange to q = Ω(I)·[Φ(H_f)−Φ(ψ)] (the Kirchhoff form): a per-face
+    # cumulative-uptake state advances a sorptivity clock, with a DIRECTION SWITCH -- DISPERSE (H_f>ψ) uses
+    # the a-priori cylindrical Green-Ampt branch (F_cylindrical + Parlange S), DRAIN (ψ>H_f) the semi-
+    # empirical sub-√t throttle branch (F_throttle + a desorptivity). SEPARATE I_disp/I_drain accumulators
+    # (Arik 2026-06-09: no reset on reversal). Validated by tests/test_sorptive_closure_gate.py (the full-
+    # curve C-004 gate) + tests/test_feature_sorptive.py (the machinery reduces to the validated clock).
+    def configure_sorptive(self, soil, *, psi_i=-1.0, psi_wall=0.0, des_sorp=None,
+                           r_w=R_W_DEFAULT, perimeter=None, C_disp=1.0, C_drain=1.0):
+        """Switch the wall exchange to the Phase-3 sorptivity clock. ``soil`` is a VanGenuchten-like object
+        (provides ``theta``/``K``/``kirchhoff``/``kirchhoff_ufl``). Reference (de)sorptivity, storable
+        contrast Δθ and Kirchhoff drop ΔΦ are evaluated at the antecedent soil head ``psi_i`` and the wall
+        head ``psi_wall`` (gate scenario: disperse dry soil psi_i=−1, saturated wall psi_wall=0; the drain
+        mirror uses the same |ΔΦ| magnitude). DISPERSE = a-priori (cyl Green-Ampt + Parlange S). DRAIN =
+        semi-empirical (throttle + a ``des_sorp``·S desorptivity; pass ``des_sorp`` to override the ratio
+        default). The closure flux is per unit WALL AREA, so the per-length ridge exchange carries the wall
+        ``perimeter`` (default circular ``2π·r_w``). Creates the SEPARATE per-face states
+        ``I_disp``/``I_drain`` and the lagged ``Omega``."""
+        self._soil = soil
+        self._r_w = float(r_w)
+        self._perimeter = 2.0 * np.pi * self._r_w if perimeter is None else float(perimeter)
+        self._C_disp, self._C_drain = float(C_disp), float(C_drain)
+        self.S_disp = parlange_sorptivity(soil, psi_i, psi_wall)
+        self.dth_disp = abs(float(soil.theta(psi_wall) - soil.theta(psi_i)))
+        self.dPhi_ref_disp = float(soil.kirchhoff(psi_i, psi_wall))
+        self._des_ratio = des_sorp_ratio(self.dth_disp) if des_sorp is None else float(des_sorp)
+        self.S_drain = self._des_ratio * self.S_disp
+        self.dth_drain = self.dth_disp
+        self.dPhi_ref_drain = self.dPhi_ref_disp
+        self.I_disp = fem.Function(self.V, name="I_disp")
+        self.I_drain = fem.Function(self.V, name="I_drain")
+        self.Omega = fem.Function(self.V, name="Omega")
+        return self
+
+    def seed_clock(self, t_seed):
+        """Seed both per-face accumulators to the planar early limb ``S·sqrt(t_seed)`` (the antecedent
+        contact age) -- avoids the 1/I singularity at I=0; off-Γ stays 0."""
+        self._t_seed = float(t_seed)
+        for Ifun, S in ((self.I_disp, self.S_disp), (self.I_drain, self.S_drain)):
+            Ifun.x.array[:] = 0.0
+            Ifun.x.array[self._gamma_dofs] = S * np.sqrt(t_seed)
+            Ifun.x.scatter_forward()
+
+    def _omega_branch(self, I, S, dPhi_ref, dth, F, C):
+        Ipos = np.maximum(I, 1e-30)
+        return C * S * S * F(Ipos / (dth * self._r_w)) / (2.0 * Ipos * dPhi_ref)
+
+    def update_well_index(self, psi):
+        """Refresh the LAGGED well-index coefficient ``Omega`` on Γ from the current ``psi`` (soil) and
+        ``H_f``: per face, disperse (H_f>ψ) uses the cylindrical branch, drain the throttle branch. Call
+        once at the start of a step; the residual then treats ``Omega`` as a frozen coefficient."""
+        g = self._gamma_dofs
+        psg, hfg = psi.x.array[g], self.Hf.x.array[g]
+        z0, k = throttle_params(self.dth_drain)
+        om_d = self._omega_branch(self.I_disp.x.array[g], self.S_disp, self.dPhi_ref_disp,
+                                  self.dth_disp, F_cylindrical, self._C_disp)
+        om_r = self._omega_branch(self.I_drain.x.array[g], self.S_drain, self.dPhi_ref_drain,
+                                  self.dth_drain, lambda z: F_throttle(z, z0, k), self._C_drain)
+        self.Omega.x.array[:] = 0.0
+        self.Omega.x.array[g] = np.where(hfg > psg, om_d, om_r)
+        self.Omega.x.scatter_forward()
+
+    def sorptive_into_feature(self, v, psi):
+        """Sorptive wall exchange, FEATURE block: ``∫_Γ p·Ω·[Φ(H_f)−Φ(ψ)]·v dΓ`` (the Kirchhoff flux q per
+        wall area times the wall perimeter p; a sink on H_f when disperse). ``Ω`` is the lagged coefficient;
+        the Kirchhoff difference is the differentiable ``kirchhoff_ufl`` (so the Newton Jacobian is clean)."""
+        return self._perimeter * self.Omega * self._soil.kirchhoff_ufl(psi, self.Hf) * v * self.dGamma
+
+    def sorptive_into_host(self, w, psi):
+        """Sorptive wall exchange, HOST block: ``−∫_Γ p·Ω·[Φ(H_f)−Φ(ψ)]·w dΓ`` -- the exact negative on the
+        SAME dΓ (structurally conservative)."""
+        return -self._perimeter * self.Omega * self._soil.kirchhoff_ufl(psi, self.Hf) * w * self.dGamma
+
+    def host_sorptive_flux(self, psi):
+        """Net sorptive exchange rate across Γ ``∫_Γ p·Ω·[Φ(H_f)−Φ(ψ)] dΓ`` (+ into the soil = disperse;
+        − = drain), using the current lagged ``Omega`` (volumetric: includes the wall perimeter p)."""
+        return self.mesh.comm.allreduce(fem.assemble_scalar(
+            fem.form(self._perimeter * self.Omega * self._soil.kirchhoff_ufl(psi, self.Hf) * self.dGamma)),
+            op=MPI.SUM)
+
+    def advance_clock(self, psi, dt, nsub=400):
+        """Advance the per-face state(s) over ``dt`` (post-step), integrating the clock
+        ``dI/dt = (S²/2I)·F(ζ)·(|ΔΦ_live|/ΔΦ_ref)`` with the END-of-step driving potential
+        ``ΔΦ_live = Φ(H_f)−Φ(ψ)`` (a partial/evolving head drop scales the flux). Each face feeds only its
+        ACTIVE accumulator (disperse: H_f>ψ → I_disp; drain → I_drain); the inactive one is frozen.
+        ``nsub`` sub-steps the 1/I stiffness over the step."""
+        g = self._gamma_dofs
+        psg, hfg = psi.x.array[g], self.Hf.x.array[g]
+        disperse = hfg > psg
+        # the driving-potential MAGNITUDE, evaluated low->high so the K-graded Kirchhoff quadrature clusters
+        # at the wet end both ways (kirchhoff is graded toward its upper limit; kirchhoff(0,-1) would under-
+        # resolve the large-K wet end and break the drain<->disperse symmetry of |ΔΦ|).
+        dPhi_mag = self._soil.kirchhoff(np.minimum(psg, hfg), np.maximum(psg, hfg))
+        scale_d = np.where(disperse, dPhi_mag / self.dPhi_ref_disp, 0.0)
+        scale_r = np.where(~disperse, dPhi_mag / self.dPhi_ref_drain, 0.0)
+        z0, k = throttle_params(self.dth_drain)
+        Id, Ir = self.I_disp.x.array[g].copy(), self.I_drain.x.array[g].copy()
+        h = dt / nsub
+        for _ in range(nsub):
+            Id = Id + h * (self._C_disp * self.S_disp ** 2 / (2.0 * Id)
+                           * F_cylindrical(Id / (self.dth_disp * self._r_w)) * scale_d)
+            Ir = Ir + h * (self._C_drain * self.S_drain ** 2 / (2.0 * Ir)
+                           * F_throttle(Ir / (self.dth_drain * self._r_w), z0, k) * scale_r)
+        self.I_disp.x.array[g], self.I_drain.x.array[g] = Id, Ir
+        self.I_disp.x.scatter_forward()
+        self.I_drain.x.scatter_forward()
 
     def hf_residual(self, v):
         """The feature's contribution to the ``H_f`` block: conveyance + the off-Γ pin diagonal

@@ -87,9 +87,30 @@ def throttle_params(dtheta):
     return _Z0_A + _Z0_S * float(dtheta), _THROTTLE_K
 
 
+def des_sorp_ratio(dtheta):
+    """Semi-empirical desorptivity/sorptivity ratio ``S_des/S_sorp`` from the storable contrast ``dtheta``,
+    so the drain leg has a soil-derivable (if not a-priori) desorptivity for production use. Linear fit to
+    the Phase-1 references (SAND dtheta=0.381 -> 0.33; LOAM 0.187 -> 0.46; SILT 0.106 -> 0.56; CLAY 0.014 ->
+    0.64): ``ratio = clip(0.66 - 0.86*dtheta, 0.2, 0.9)``. NOT a-priori (no robust closed-form desorptivity;
+    the saturated psi=0 start is a D=K/C->inf singularity) -- a documented v1 default; pass an explicit value
+    to override (e.g. a measured desorptivity / sorptivity)."""
+    return float(np.clip(0.66 - 0.86 * float(dtheta), 0.2, 0.9))
+
+
 def dIdt(I, S, dtheta, r_w, F, C=1.0):
     """The clock RHS ``C*(S^2/2I)*F(zeta)`` at cumulative state ``I`` (the live per-face exchange flux)."""
     return C * (S * S) / (2.0 * I) * F(I / (dtheta * r_w))
+
+
+def well_index(I, S, dtheta, F, dPhi_ref, r_w=R_W_DEFAULT, C=1.0):
+    """The cumulative-state geometric WELL-INDEX ``Omega(I) = C*S^2*F(zeta) / (2*I*dPhi_ref)`` [1/m], the
+    soil/geometry factor of the Kirchhoff exchange flux ``q = Omega(I) * dPhi_live`` (the live driving
+    potential ``dPhi_live = Phi(H_f) - Phi(psi_cell)``). ``dPhi_ref`` is the REFERENCE Kirchhoff drop the
+    (de)sorptivity ``S`` was evaluated over; at ``dPhi_live == dPhi_ref`` the flux recovers the validated
+    clock ``dI/dt = (S^2/2I)*F`` exactly, and it scales linearly with the live potential otherwise. This
+    is the form the EmbeddedFeature UFL residual uses (``Omega`` a lagged-state coefficient, ``dPhi_live``
+    the differentiable ``kirchhoff_ufl`` difference)."""
+    return C * (S * S) * F(I / (dtheta * r_w)) / (2.0 * I * dPhi_ref)
 
 
 def sorptive_clock(t, S, dtheta, r_w, F, C=1.0, nsub=400):
