@@ -59,3 +59,9 @@ desktop.ini
 # self-contained viz HTML (inlined Plotly) and the NetCDF results are regenerable.
 **/validation/sanity/viz/*.html
 **/validation/sanity/data/
+
+# --- Benchmark comparison artifacts (regenerate via benchmarks/build_comparison_*.py) ---
+# Same rationale: the heavy self-contained comparison HTML (inlined Plotly, ~6 MB each) and the
+# NetCDF summaries are regenerable from the committed decks + builders. Track the code, not blobs.
+technologies/infiltration-runoff-model/benchmarks/html/
+technologies/infiltration-runoff-model/benchmarks/data/
