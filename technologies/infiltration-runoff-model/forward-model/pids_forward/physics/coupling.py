@@ -245,8 +245,27 @@ class CoupledProblem:
         self.cum_outflow = 0.0    # cumulative outflow volume ∫ outflow dt over accepted steps
         self._drains: list = []          # (drain_facets, conductance, external_head) per add_drainage_bc
         self._drainage_forms: list = []  # compiled q_n*ds GHB forms (subsurface Darcy/head drainage)
-        self.last_drainage = 0.0  # net subsurface drainage at the SOLVED state (+ = out)
-        self.cum_drainage = 0.0   # cumulative subsurface drainage volume ∫ drainage dt
+        self.last_drainage = 0.0  # net drainage across ALL sinks at the SOLVED state (+ = out)
+        self.cum_drainage = 0.0   # cumulative drainage volume ∫ drainage dt (all sinks)
+        # first-class interior tile drains + surface grate inlets (plan docs/plans/
+        # 2026-06-10-module4-engine-drain-inlet-apis.md). Their UFL terms are STATIC (a DG-0 cell
+        # indicator on plain dx / the fixed _ds_top measure -- no meshtags involved), so they
+        # survive the _build_F_psi/_finalize_forms rebuilds by simple re-addition there.
+        self._V0 = None                   # lazy DG-0 space for the cell-sharp sink indicators
+        self._interior_drains: list = []  # (cells, conductance_density, drain_head, eps_act)
+        self._interior_terms: list = []   # UFL F_psi sink terms (re-added on every _build_F_psi)
+        self._interior_forms: list = []   # compiled scalar rate forms
+        self._inlets: list = []           # (top_facets, intake_coeff) per add_surface_inlet
+        self._inlet_terms: list = []      # UFL F_d sink terms (re-added on every _finalize_forms)
+        self._inlet_forms: list = []      # compiled scalar rate forms
+        # per-sink accounting (rate / cumulative), keyed by kind, each list in add-order; sums
+        # equal last_drainage / cum_drainage. Script-level forms appended directly to
+        # _drainage_forms (the pre-API injection pattern) auto-extend the 'ghb' lists in step().
+        # INJECT-LAST discipline for such raw forms: a later add_drainage_bc/add_interior_drain
+        # rebuilds _drainage_forms from _drains and DROPS them (stale cum entries would remain) --
+        # append raw forms only after ALL add_* calls (the dual-run script does).
+        self.last_sinks = {"ghb": [], "interior_drain": [], "surface_inlet": []}
+        self.cum_sinks = {"ghb": [], "interior_drain": [], "surface_inlet": []}
         self._build_F_psi()       # ψ block: bulk + λ-top influx (+ drainage GHB) on one facet meshtags
         self._finalize_forms()    # build self.F_d, self.F_lam (+ outflow forms) with the shared dP
 
@@ -340,6 +359,8 @@ class CoupledProblem:
             q_out = SECONDS_PER_DAY * (1.0 / self.n_man) * d_pos ** (5.0 / 3.0) * ufl.sqrt(slope)
             F_d = F_d + q_out * self._vd * out_measure(k)
             self._outflow_forms.append(fem.form(q_out * out_measure(k)))
+        for term in self._inlet_terms:   # surface grate inlets: static ds_top DG-0 intake terms
+            F_d = F_d + term
         self.F_d = F_d
         # λ block: bulk + diagonal-allocation (tag 1).
         self.F_lam = self._F_lam_bulk + self._eps_diag * self.lam * self._vlam * dP(1)
@@ -456,6 +477,8 @@ class CoupledProblem:
                     "GHB boundaries must be disjoint (they share one facet meshtags in F_psi)."
                 )
         self._drains.append((facets, C_const, float(external_head)))
+        self.last_sinks["ghb"].append(0.0)
+        self.cum_sinks["ghb"].append(0.0)
         self._build_F_psi()   # rebuild F_psi: bulk + λ-top + drainage, sharing ONE facet meshtags
         return C_const        # handle for a time-varying / ramped conductance (drive .value)
 
@@ -483,16 +506,148 @@ class CoupledProblem:
             q_n = C * kr * (self.psi + z - He)
             F_psi = F_psi + q_n * self._vpsi * ds(k)
             self._drainage_forms.append(fem.form(q_n * ds(k)))
+        for term in self._interior_terms:   # interior tile drains: static plain-dx DG-0 sink terms
+            F_psi = F_psi + term
         self.F_psi = F_psi
         self._problem = None
 
+    def _dg0_indicator(self, cells, name: str):
+        """Cell-sharp DG-0 indicator (1 on ``cells``, 0 elsewhere). Localizes a sink WITHOUT any
+        meshtags -- sidesteps the one-subdomain_data-per-integral-type rule entirely, and on an
+        exterior facet the DG-0 coefficient takes the adjacent cell's value (facet-sharp on the
+        top). Quadrature-EXACT for the selected cell set (the indicator is constant per cell);
+        note the realized sink geometry is quantized to WHOLE cells when the locator bounds do not
+        align with cell boundaries."""
+        if self._V0 is None:
+            self._V0 = fem.functionspace(self.mesh, ("DG", 0))
+        tdim = self.mesh.topology.dim
+        self.mesh.topology.create_connectivity(tdim, tdim)  # locate_dofs_topological needs (tdim,tdim)
+        chi = fem.Function(self._V0, name=name)
+        chi.x.array[:] = 0.0
+        dofs = fem.locate_dofs_topological(self._V0, tdim, cells)
+        chi.x.array[dofs] = 1.0
+        chi.x.scatter_forward()
+        return chi
+
+    def add_interior_drain(self, locator, conductance_density, drain_head, *,
+                           eps_act: float = 1e-3):
+        """Volumetric OUTFLOW-ONLY tile drain (MODFLOW-DRN analogue) over the CELLS matched by
+        ``locator`` -- INTERIOR horizons allowed (e.g. a pipe sitting on a clay interface), which
+        the exterior-facet GHB (``add_drainage_bc``) cannot represent.
+
+            q_vol = conductance_density · kr(ψ) · pos(ψ + z − drain_head)      [1/day]
+            pos(u) = ½(u + √(u² + eps_act²))                                    (C^∞ smooth max)
+
+        ``conductance_density`` [1/(day·m)]: band-integrated conductance = density × band volume
+        per metre of driving head. ``drain_head`` = the pipe invert elevation for the standard
+        free-outfall tile (it drains where the local head ψ+z exceeds it). OUTFLOW-ONLY by
+        construction: an air-filled pipe at atmospheric never injects (the bidirectional object
+        remains the GHB); the smooth max leaks ≤ density·eps_act/2 per unit volume AT activation
+        only (``eps_act`` [m] exposed, must be > 0). ``kr = K(ψ)/Ks`` self-limits unsaturated
+        extraction exactly like the GHB (Codex 2026-06-07 rationale). NOTE for layered duck-typed
+        soils: ``kr`` is normalized by the single scalar ``soil.Ks`` the soil object exposes (its
+        surface-layer value) -- place the band in the layer whose Ks that is, or rescale
+        ``conductance_density`` by Ks_surface/Ks_layer. Localization is a cell-sharp
+        DG-0 indicator on plain dx (no meshtags; NOTE ``locator`` is an ALL-vertex predicate --
+        make the band bounds strictly contain the intended cell vertices). Wired into the drainage
+        accounting: ``cum_drainage`` and the structural balance include it; the per-sink split is
+        ``sink_rates()`` / ``cum_sinks['interior_drain']``. Returns the conductance Constant
+        (drive ``.value`` to ramp). Promoted from the signed-off dual-drain illustration
+        (scratch/m4_hillslope_drain_dual.py, commit 63145e2).
+        """
+        C_const = conductance_density if isinstance(conductance_density, fem.Constant) else \
+            fem.Constant(self.mesh, PETSc.ScalarType(float(conductance_density)))
+        if not float(C_const.value) >= 0.0:   # NaN-proof (NaN fails every comparison)
+            raise ValueError("add_interior_drain requires conductance_density >= 0 [1/(day*m)]; "
+                             f"got {conductance_density!r}")
+        if not eps_act > 0.0:
+            raise ValueError(f"add_interior_drain requires eps_act > 0 [m]; got {eps_act!r}")
+        tdim = self.mesh.topology.dim
+        cells = np.sort(dmesh.locate_entities(self.mesh, tdim, locator)).astype(np.int32)
+        if self.mesh.comm.allreduce(int(cells.size), op=MPI.SUM) == 0:
+            raise ValueError("add_interior_drain: the locator matched no cell (it is an ALL-vertex "
+                             "predicate -- widen the bounds to strictly contain the cell vertices).")
+        for prior, _C, _He, _eps in self._interior_drains:
+            ov = int(np.intersect1d(cells, prior).size)
+            if self.mesh.comm.allreduce(ov, op=MPI.SUM) > 0:
+                raise ValueError("add_interior_drain: locator overlaps an existing interior drain "
+                                 "(an ambiguous double sink on shared cells).")
+        chi = self._dg0_indicator(cells, f"chi_drain{len(self._interior_drains)}")
+        z = ufl.SpatialCoordinate(self.mesh)[self._zaxis]
+        u = self.psi + z - float(drain_head)
+        pos = 0.5 * (u + ufl.sqrt(u * u + eps_act * eps_act))
+        kr = self.soil.K_ufl(self.psi) / self.soil.Ks
+        q_vol = C_const * kr * pos * chi
+        dxq = ufl.dx(metadata={"quadrature_degree": self._quad_degree})
+        self._interior_drains.append((cells, C_const, float(drain_head), float(eps_act)))
+        self._interior_terms.append(q_vol * self._vpsi * dxq)
+        self._interior_forms.append(fem.form(q_vol * dxq))
+        self.last_sinks["interior_drain"].append(0.0)
+        self.cum_sinks["interior_drain"].append(0.0)
+        self._build_F_psi()   # re-weave F_psi (the static interior terms are re-added there)
+        return C_const
+
+    def add_surface_inlet(self, locator, intake_coeff):
+        """Grate / catch-basin intake on the PONDED depth over a top-surface footprint:
+        ``q_in = intake_coeff · d`` [m/day] -- removes SURFACE water only (supply-limited linear
+        intake; on dry soil only the documented NCP-smoothing floor of d remains, bounded by the
+        tests). The footprint = the TOP facets matched by ``locator`` (matches on other boundaries
+        are ignored; raises if NO top facet matches), localized by a cell-sharp DG-0 indicator on
+        the existing ``_ds_top`` measure -- the SHARED top facet meshtags routing the λ-coupling /
+        overland terms is untouched (validated plumbing stays as-is). Wired into the drainage
+        accounting (``cum_drainage``/balance; per-sink split ``sink_rates()`` /
+        ``cum_sinks['surface_inlet']``). Returns the intake Constant (drive ``.value``). MPI:
+        serial-only like the outlet tagging (the facet→cell gather is not ownership-aware; the
+        engine's standing serial waiver applies). Promoted from the signed-off dual-drain
+        illustration (63145e2).
+        """
+        C_const = intake_coeff if isinstance(intake_coeff, fem.Constant) else \
+            fem.Constant(self.mesh, PETSc.ScalarType(float(intake_coeff)))
+        if not float(C_const.value) >= 0.0:   # NaN-proof (NaN fails every comparison)
+            raise ValueError(f"add_surface_inlet requires intake_coeff >= 0 [1/day]; "
+                             f"got {intake_coeff!r}")
+        located = np.sort(dmesh.locate_entities_boundary(
+            self.mesh, self._fdim, locator)).astype(np.int32)
+        facets = np.intersect1d(located, self._top_facets)
+        if self.mesh.comm.allreduce(int(facets.size), op=MPI.SUM) == 0:
+            raise ValueError("add_surface_inlet: the locator matched no TOP-surface facet -- the "
+                             "inlet footprint must lie on the land surface.")
+        for prior, _C in self._inlets:
+            ov = int(np.intersect1d(facets, prior).size)
+            if self.mesh.comm.allreduce(ov, op=MPI.SUM) > 0:
+                raise ValueError("add_surface_inlet: footprint overlaps an existing inlet.")
+        f2c = self.mesh.topology.connectivity(self._fdim, self.mesh.topology.dim)
+        cells = np.unique(np.concatenate([f2c.links(f) for f in facets])).astype(np.int32)
+        chi = self._dg0_indicator(cells, f"chi_inlet{len(self._inlets)}")
+        q_in = C_const * self.d * chi
+        self._inlets.append((facets, C_const))
+        self._inlet_terms.append(q_in * self._vd * self._ds_top)
+        self._inlet_forms.append(fem.form(q_in * self._ds_top))
+        self.last_sinks["surface_inlet"].append(0.0)
+        self.cum_sinks["surface_inlet"].append(0.0)
+        self._finalize_forms()   # re-weave F_d (the static inlet terms are re-added there)
+        return C_const
+
     def drainage_rate(self) -> float:
-        """Net outward subsurface drainage across all GHB boundaries (+ = out) -- the assembled facet
-        flux total: m^2/day in the 2-D unit-width cross-section, m^3/day on a 3-D boundary face."""
+        """Net outward drainage across ALL sinks (GHB boundaries + interior tile drains + surface
+        inlets; + = out): m^2/day in the 2-D unit-width cross-section, m^3/day in 3-D. NOTE: the
+        inlet forms depend on d, so calling this AFTER step() can differ from the recorded
+        ``last_drainage`` on steps where the positivity limiter clipped d -- the books use the
+        pre-limiter SOLVED state (same convention as the outflow accounting)."""
         total = 0.0
-        for form in self._drainage_forms:
+        for form in (*self._drainage_forms, *self._interior_forms, *self._inlet_forms):
             total += self.mesh.comm.allreduce(fem.assemble_scalar(form), op=MPI.SUM)
         return total
+
+    def sink_rates(self) -> dict:
+        """Per-sink drainage rates at the CURRENT state, keyed by kind ('ghb', 'interior_drain',
+        'surface_inlet'), each a list in add-order; the flat sum equals ``drainage_rate()``.
+        Script-level forms appended directly to ``_drainage_forms`` (the pre-API injection
+        pattern) report under 'ghb'."""
+        return {kind: [self.mesh.comm.allreduce(fem.assemble_scalar(f), op=MPI.SUM) for f in forms]
+                for kind, forms in (("ghb", self._drainage_forms),
+                                    ("interior_drain", self._interior_forms),
+                                    ("surface_inlet", self._inlet_forms))}
 
     def _ensure_problem(self) -> None:
         if self._problem is None:
@@ -545,10 +700,25 @@ class CoupledProblem:
             # the boundary depth, so a post-limiter outflow_rate() would not close the books.
             self.last_outflow = self.outflow_rate()
             self.cum_outflow += dt * self.last_outflow
-            # subsurface Darcy/head drainage (on ψ; unaffected by the d-limiter): Δtotal = cum_rain
-            # − cum_outflow − cum_drainage.
-            self.last_drainage = self.drainage_rate()
-            self.cum_drainage += dt * self.last_drainage
+            # drainage accounting (GHB + interior tile drains + surface inlets), recorded at the
+            # SOLVED state: Δtotal = cum_rain − cum_outflow − cum_drainage. Per-sink split kept in
+            # last_sinks/cum_sinks; the lists AUTO-EXTEND so script-level forms appended directly
+            # to _drainage_forms (the pre-API injection pattern, e.g. m4_hillslope_drain_dual.py
+            # at 63145e2) keep working and report under 'ghb'.
+            total = 0.0
+            for kind, forms in (("ghb", self._drainage_forms),
+                                ("interior_drain", self._interior_forms),
+                                ("surface_inlet", self._inlet_forms)):
+                while len(self.last_sinks[kind]) < len(forms):
+                    self.last_sinks[kind].append(0.0)
+                    self.cum_sinks[kind].append(0.0)
+                for i, form in enumerate(forms):
+                    r = self.mesh.comm.allreduce(fem.assemble_scalar(form), op=MPI.SUM)
+                    self.last_sinks[kind][i] = r
+                    self.cum_sinks[kind][i] += dt * r
+                    total += r
+            self.last_drainage = total
+            self.cum_drainage += dt * total
             self.last_clip = self._enforce_positivity()  # keep d_n >= 0 (lateral-overland undershoots)
             self.max_clip_seen = max(self.max_clip_seen, self.last_clip)
             self.psi_n.x.array[:] = self.psi.x.array

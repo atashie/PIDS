@@ -8,12 +8,13 @@ scratch/m4_hillslope_drain_clay.py, but with TWO drains replacing the buried bas
   (2) a SURFACE "TILE" (grate inlet) over the same x-footprint on the land surface: a linear intake
       on the ponded depth, q = C_SURF * d  [m/day], removing overland water that crosses it.
 
-WHY script-level sinks: the validated CoupledProblem GHB (add_drainage_bc) supports EXTERIOR-boundary
-facets only and forbids overlapping the top lambda-coupled surface -- the z=1.0 interface is interior
-and the land surface is the NCP exchange boundary, so neither drain can use that API. Both sinks are
-composed HERE: added to prob.F_psi / prob.F_d (after all add_* calls, which rebuild those forms) and
-APPENDED to prob._drainage_forms, so step()'s cum_drainage and the structural mass balance close to
-machine precision exactly as for the engine's own GHB. No module code is changed.
+Both drains use the FIRST-CLASS engine APIs ``add_interior_drain`` / ``add_surface_inlet``
+(plan docs/plans/2026-06-10-module4-engine-drain-inlet-apis.md): the GHB (add_drainage_bc) supports
+EXTERIOR-boundary facets only and forbids the lambda-coupled top, so these sink types got their own
+APIs -- PROMOTED from this run's original script-level form injection (git history 63145e2). The
+API == injection equivalence is pinned by tests/test_engine_drains.py::test_api_matches_script_injection;
+per-drain accounting is engine-owned (last_sinks/cum_sinks), and the structural mass balance
+includes both sinks exactly as for the GHB.
 
 FORCING is deliberately STRONGER than the base-drain clay run (0.085 -> 0.12 m/day, 1.5 -> 2.0 d):
 at 0.085 the loam (Ks 0.25) swallows the whole storm and ponding NEVER occurs (proven by the
@@ -28,10 +29,9 @@ from __future__ import annotations
 
 import time
 import numpy as np
-import ufl
 import xarray as xr
 from mpi4py import MPI
-from dolfinx import mesh as dmesh, fem
+from dolfinx import mesh as dmesh
 
 from pids_forward.physics.coupling import CoupledProblem
 from scratch.m4_hillslope_drain_clay import (
@@ -74,35 +74,25 @@ def run(linesearch: str | None):
     print(f"[build {time.perf_counter()-t_build:5.2f}s ls={ls_name}] mesh {NX}x{NZ} -> {ncell} tris, "
           f"{3*ndof} DOFs; ell_c={prob.ell_c:.4f} m", flush=True)
 
-    # --- engine setup FIRST (add_rain/add_outflow_bc rebuild F_d and would wipe injected terms) ---
+    # --- engine setup (the add_* APIs weave their terms through the central form rebuilds, so
+    # ordering is free; kept in the original order for diff-stability vs 63145e2) ---
     Z_WT = 0.7
     prob.set_initial_condition(lambda x: Z_WT - x[1], d_value=0.0)
     prob.set_topography(lambda x: S0 * (Lx - x[0]))
     prob.add_outflow_bc(lambda x: np.isclose(x[0], Lx), slope=S0)
     rain = prob.add_rain(0.0)
 
-    # --- INJECT the two drains (script-level; see module docstring). Band/footprint edges align with
-    # the 0.5 x 0.1 mesh grid, so the sharp indicators are constant per cell/facet -> exact quadrature.
-    xc = ufl.SpatialCoordinate(msh)
-    in_x = ufl.And(ufl.gt(xc[0], DRAIN_X0), ufl.lt(xc[0], DRAIN_X1))
-    chi_band = ufl.conditional(
-        ufl.And(in_x, ufl.And(ufl.gt(xc[1], Z_IFACE), ufl.lt(xc[1], IFACE_ZTOP))), 1.0, 0.0)
-    chi_top = ufl.conditional(in_x, 1.0, 0.0)
-    kr = soil.K_ufl(prob.psi) / soil.loam["Ks"]   # band lies in the loam branch of the conditional
-    u_drn = prob.psi + xc[1] - HE_IFACE
-    pos = 0.5 * (u_drn + ufl.sqrt(u_drn * u_drn + EPS_POS * EPS_POS))   # smooth max(u, 0)
-    q_iface = C_VOL * kr * pos * chi_band                                # [1/day] volumetric DRN
-    dxq = ufl.dx(metadata={"quadrature_degree": prob._quad_degree})
-    prob.F_psi = prob.F_psi + q_iface * prob._vpsi * dxq
-    iface_form = fem.form(q_iface * dxq)
-
-    q_intake = C_SURF * prob.d * chi_top                                 # [m/day] grate intake
-    prob.F_d = prob.F_d + q_intake * prob._vd * prob._ds_top
-    intake_form = fem.form(q_intake * prob._ds_top)
-
-    prob._drainage_forms.append(iface_form)    # step() accounting: cum_drainage includes both sinks
-    prob._drainage_forms.append(intake_form)   # -> the mass balance closes structurally
-    prob._problem = None
+    # --- the two drains via the first-class engine APIs (see module docstring). Band/footprint
+    # edges align with the 0.5 x 0.1 mesh grid; locators are ALL-VERTEX predicates, so the bounds
+    # are INCLUSIVE (the DG-0 indicator then selects exactly the intended whole cells -> exact).
+    tol = 1e-6
+    prob.add_interior_drain(
+        locator=lambda x: (x[0] > DRAIN_X0 - tol) & (x[0] < DRAIN_X1 + tol)
+                          & (x[1] > Z_IFACE - tol) & (x[1] < IFACE_ZTOP + tol),
+        conductance_density=C_VOL, drain_head=HE_IFACE, eps_act=EPS_POS)
+    prob.add_surface_inlet(
+        locator=lambda x: (x[0] > DRAIN_X0 - tol) & (x[0] < DRAIN_X1 + tol),
+        intake_coeff=C_SURF)
     print(f"  drains: INTERFACE tile x in [{DRAIN_X0},{DRAIN_X1}] z in [{Z_IFACE},{IFACE_ZTOP}] "
           f"(C_VOL={C_VOL}/day/m, He={HE_IFACE} m, outflow-only smooth-DRN) + SURFACE grate inlet "
           f"same x-footprint (C_SURF={C_SURF}/day on d)", flush=True)
@@ -172,12 +162,11 @@ def run(linesearch: str | None):
             print(f"  step 1 (compile+solve): {first_step_s:.1f}s converged={conv} iters={it}",
                   flush=True)
         if conv:
-            # per-drain split at the SOLVED state: the iface form is psi-only (untouched by the
-            # d-limiter) -> exact; the intake = recorded total - iface (also exact, pre-limiter).
-            q_if_now = comm.allreduce(fem.assemble_scalar(iface_form), op=MPI.SUM)
-            q_sf_now = prob.last_drainage - q_if_now
-            cum_if += h * q_if_now
-            cum_sf += h * q_sf_now
+            # per-drain split at the SOLVED state -- engine-owned (last_sinks/cum_sinks)
+            q_if_now = prob.last_sinks["interior_drain"][0]
+            q_sf_now = prob.last_sinks["surface_inlet"][0]
+            cum_if = prob.cum_sinks["interior_drain"][0]
+            cum_sf = prob.cum_sinks["surface_inlet"][0]
             cum_rain += float(rain.value) * top_len * h
             t_sim += h
             nsteps += 1
@@ -363,10 +352,11 @@ def _finish(prob, soil, ncell, ndof, S0, Lx, Dz, NX, NZ, Z_WT, out_times, head_f
             water_table_farfield_final_m=float(wt_far_final),
             base_drain_run_cum_m2=0.054,   # the buried-base-drain clay run, for contrast
             clip_mass_adjust=float(prob.clip_mass_adjust),
-            note="ILLUSTRATION on the validated CoupledProblem engine with SCRIPT-LEVEL drain sinks "
-                 "(the engine GHB cannot tag interior/top facets); appended to _drainage_forms so the "
-                 "mass balance closes structurally. NOT a new validated module, NOT the retracted M4 "
-                 "embedded feature.",
+            note="ILLUSTRATION on the validated CoupledProblem engine via the FIRST-CLASS "
+                 "add_interior_drain/add_surface_inlet APIs (TDD'd, tests/test_engine_drains.py; "
+                 "promoted from this run's original script-level injection, git 63145e2) -- the mass "
+                 "balance includes both sinks structurally. These are RESOLVED drains, NOT the "
+                 "retracted M4 sub-grid embedded feature.",
         ),
     )
     ds.to_netcdf(OUT_NC)
