@@ -32,6 +32,19 @@ SWEEP GEOMETRY (R=40 r_w, L/r_w = sqrt(pi*1599) = 70.9): h/r_w = 70.9/n -> posit
 I_fill/I_max = ((2h)^2 - r_w^2)/(R^2 - r_w^2) = {35, 20, 12.5, 8.6}% at n = {6, 8, 10, 12} caps the
 coarse end. The deployment sweep is therefore n in {6, 8, 10, 12} (h/r_w 11.8 -> 5.9).
 
+DRAIN LEG STATUS (measured 2026-06-11): HONEST FAIL of the gate as-is -- relL2 10.9% (n=8) /
+16.8% (n=12), DEGRADING, early-mid over-delivery up to +120%. Mechanism: the desaturation front
+stays SUB-CELL for the whole 20-d window (R_f ~ 1 cell at the end), so psi_Gamma reads the wet bulk
+and the WI bridge misses the growing sub-cell desaturated-annulus resistance; the crossing handover
+fires immediately (the throttle clock plateaus 80x low for closed domains -- it was fitted on OPEN
+0.5-m refs). NO existing a-priori sub-grid form fits the closed deployment drain: throttle 98%,
+cyl+S_des 42% under, cyl+S_sorp 109% over (the implied desorptivity ~0.74*S_sorp would be a knob
+fitted to the gate -- forbidden by pre-registration). The missing piece is the KNOWN Phase-3 gap
+(no a-priori desorptivity; [[pids-drain-usecase]]) now extended to closed-domain conditions. The
+coupling ARCHITECTURE is sound even here (the host-side bulk response is why a wrong sub-grid model
+still lands within 11-17%); the drain sub-grid closure is open research -- characterized, not
+claimed, not fitted.
+
 Run (deployment sweep, LOAM disperse, R=40 r_w):
   PYTHONPATH=. OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
       python scratch/m4_phase4_wi_probe.py sweep
