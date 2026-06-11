@@ -201,9 +201,22 @@ class RateClockWIScheme:
         feat.Omega.x.array[:] = 0.0
         self._last_rate = 0.0
         if self._in_clock:
-            feat.Omega.x.scatter_forward()
-            self._last_rate = self._clock_rate(psi)
-            return self._last_rate
+            rate = self._clock_rate(psi)
+            if self.direction == "drain":
+                # DRAIN handover = the CROSSING: the throttle clock self-terminates (its plateau
+                # ~0.026 m is far below any I_fill at deployment scale, the throttle being an
+                # OPEN-domain near-field fit), so the sub-grid era ends when its rate decays to the
+                # quasi-steady WI rate at the current ridge state -- the natural intersection, no
+                # free constant. (Disperse keeps the front=2h geometric handover, validated.)
+                psi_g = float(psi.x.array[self._g].mean())
+                qWI_len = self.WI * self.soil.kirchhoff(min(psi_g, self.h_f), max(psi_g, self.h_f))
+                if abs(rate) / feat.length <= abs(qWI_len):
+                    self._in_clock = False
+                    self.t_handover = t
+            if self._in_clock:
+                feat.Omega.x.scatter_forward()
+                self._last_rate = rate
+                return rate
         feat.Omega.x.array[self._g] = self.WI / feat._perimeter
         feat.Omega.x.scatter_forward()
         return 0.0
@@ -259,6 +272,37 @@ if __name__ == "__main__":
                 print(f"  n={n}: DT COLLAPSE", flush=True)
                 continue
             print(f"  n={n:2d}: relL2={rel_l2(out['I'], I_ref):.1%}  "
+                  f"end I/ref={out['I'][-1]/I_ref[-1]:.3f}", flush=True)
+            prof = " ".join(f"{a/b:.3f}" for a, b in zip(out["I"][::4], I_ref[::4]))
+            print(f"        emb/ref (every 4th): {prof}", flush=True)
+    elif which == "v2ctl":
+        # the OVER-CORRECTION control: the early-truncated R40 window, where the offline clock is
+        # nearly right -- an embedded scheme that over-corrects (over-throttles) fails here
+        t, I_ref = refA["LOAM_R40_t"], refA["LOAM_R40_I"]
+        i_max = float(refA["LOAM_R40_Imax"])
+        K = int(np.searchsorted(I_ref, 0.3 * i_max))
+        tc, Ic = t[:K], I_ref[:K]
+        from pids_forward.physics.sorptive_closure import sorptive_clock
+        S, dth = float(refA["LOAM_S"]), float(refA["LOAM_dtheta"])
+        clk = sorptive_clock(tc, S, dth, R_W, F_cylindrical)
+        print(f"CONTROL (R40 truncated to I<0.3 I_max, {K} samples, t_end={tc[-1]:.2f} d): "
+              f"clock relL2={rel_l2(clk, Ic):.1%} (the control property)")
+        for n in (8, 12):
+            out = run_embedded(RateClockWIScheme("disperse"), "LOAM", 40 * R_W, n, tc)
+            if out is not None:
+                print(f"  v2 n={n:2d}: relL2={rel_l2(out['I'], Ic):.1%}", flush=True)
+    elif which == "v2d":
+        # the DRAIN leg at deployment scale (crossing handover)
+        refD = np.load("scratch/m4_phase4_refD40_drain.npz")
+        t, I_ref = refD["LOAM_t"], refD["LOAM_I"]
+        print(f"RATE-CLOCK+WI v2 DRAIN vs refD40 (I_end={I_ref[-1]:.4e} m):")
+        for n in (8, 12):
+            sch = RateClockWIScheme("drain")
+            out = run_embedded(sch, "LOAM", 40 * R_W, n, t, direction="drain")
+            if out is None:
+                print(f"  n={n}: DT COLLAPSE", flush=True)
+                continue
+            print(f"  n={n:2d} (handover t={sch.t_handover}): relL2={rel_l2(out['I'], I_ref):.1%}  "
                   f"end I/ref={out['I'][-1]/I_ref[-1]:.3f}", flush=True)
             prof = " ".join(f"{a/b:.3f}" for a, b in zip(out["I"][::4], I_ref[::4]))
             print(f"        emb/ref (every 4th): {prof}", flush=True)

@@ -83,13 +83,13 @@ BAND_B = (3 * R_W, 4 * R_W)
 T_END_B = 1.2                        # Ref B-drain window (LOAM, 5 r_w)
 
 
-def _setup(soil, r_out, cell=CELL):
+def _setup(soil, r_out, cell=CELL, psi_i=PSI_I):
     n = max(int(round((r_out - R_W) / cell)), 80)
     msh = dmesh.create_interval(COMM, n, [R_W, r_out])
     r = ufl.SpatialCoordinate(msh)[0]
     V = fem.functionspace(msh, ("Lagrange", 1))
     psi = fem.Function(V); psi_n = fem.Function(V)
-    psi.x.array[:] = PSI_I; psi_n.x.array[:] = PSI_I
+    psi.x.array[:] = psi_i; psi_n.x.array[:] = psi_i
     v = ufl.TestFunction(V)
     dt_c = fem.Constant(msh, PETSc.ScalarType(1e-8))
     s_c = fem.Constant(msh, PETSc.ScalarType(0.0))
@@ -103,14 +103,14 @@ def _setup(soil, r_out, cell=CELL):
     wall_dofs = fem.locate_dofs_geometrical(V, lambda x: np.isclose(x[0], R_W))
     bcs = [fem.dirichletbc(PETSc.ScalarType(PSI_WALL), wall_dofs, V)]
     problem = NonlinearProblem(F, psi, bcs=bcs, petsc_options_prefix="m4p4d_", petsc_options=_DRAIN_LU)
-    th_i = float(soil.theta(PSI_I))
+    th_i = float(soil.theta(psi_i))
     removed = fem.form((th_i - theta) * r * dxs)          # water LOST by the soil (>= 0)
     band_deficit = fem.form((th_i - theta) * band_ind * r * dxq)
     return msh, V, psi, psi_n, dt_c, s_c, problem, removed, band_deficit
 
 
-def run_drain_A(soil, r_out, samples, label="", cell=CELL):
-    _, _, psi, psi_n, dt_c, _, problem, removed, _ = _setup(soil, r_out, cell)
+def run_drain_A(soil, r_out, samples, label="", cell=CELL, psi_i=PSI_I):
+    _, _, psi, psi_n, dt_c, _, problem, removed, _ = _setup(soil, r_out, cell, psi_i)
     out, dt, t_prev = [], 1e-8, 0.0
     for i, t_s in enumerate(samples):
         dt = dz._solve_to(problem, psi, psi_n, dt_c, t_prev, t_s, dt)
@@ -155,7 +155,43 @@ def run_drain_B(soil, t_grid, t1, t2, i_max, label=""):
     return np.array(I_wall), s_rate * Bw * (t2 - t1), band_max
 
 
+def _main_r40():
+    """The DEPLOYMENT-SCALE drain reference (LOAM, R_out = 40 r_w = 2 m, partial window).
+
+    Scenario pair: soil at psi_i = -0.03 m (saturated theta -- just BELOW the h_s = -0.02 air entry,
+    so the matching all-Neumann embedded box has C > 0 and a non-singular first solve), wall -1 m.
+    PARTIAL window (full depletion of 7.45 m through matrix desorption alone takes ~years); the
+    discrimination on this leg is the throttle clock's premature plateau (~0.026 m = 0.3% of I_max,
+    fitted on OPEN 0.5-m refs) against the resolved closed curve, which keeps draining via the
+    domain-wide uniform-pressure-drop mechanism."""
+    soil = dz.SOILS["LOAM"]
+    psi_i40 = -0.03
+    r_out, t_end = 40 * R_W, 20.0
+    dth = float(soil.theta(psi_i40) - soil.theta(PSI_WALL))
+    S_sorp = dz.parlange_sorptivity(soil, PSI_WALL, psi_i40)   # wetting pair (-1 -> -0.03)
+    S_des = des_sorp_ratio(dth) * S_sorp
+    z0, kk = throttle_params(dth)
+    i_max = dth * (r_out ** 2 - R_W ** 2) / (2.0 * R_W)
+    t_start = (dth * 0.1 * R_W / S_des) ** 2
+    t = np.geomspace(t_start, t_end, N_SAMP)
+    print(f"DRAIN-40 (psi_i={psi_i40}, wall {PSI_WALL}): dtheta={dth:.4f}, S_des={S_des:.5f}, "
+          f"I_max={i_max:.4f} m, window {t_end} d")
+    I = run_drain_A(soil, r_out, t, label="LOAM drain R40", psi_i=psi_i40)
+    assert np.all(np.diff(I) >= -1e-12 * i_max) and I[-1] <= i_max * (1 + 1e-9)
+    clk = sorptive_clock(t, S_des, dth, R_W, lambda z: F_throttle(z, z0, kk))
+    print(f"   I_end={I[-1]:.4e} m ({I[-1]/i_max:.1%} of I_max)  "
+          f"clock plateau={clk[-1]:.4e}  OFFLINE-THROTTLE-CLOCK relL2={rel_l2(clk, I):.1%}")
+    np.savez("scratch/m4_phase4_refD40_drain.npz",
+             LOAM_t=t, LOAM_I=I, LOAM_Imax=np.array(i_max), LOAM_Sdes=np.array(S_des),
+             LOAM_dtheta=np.array(dth), LOAM_psi_i=np.array(psi_i40), r_w=np.array(R_W))
+    print("Saved -> scratch/m4_phase4_refD40_drain.npz")
+
+
 if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "r40":
+        _main_r40()
+        raise SystemExit(0)
     fix = np.load("tests/data/m4_phase1c_drain_refs.npz")
     saved = {"r_w": np.array(R_W)}
     print("=" * 88)

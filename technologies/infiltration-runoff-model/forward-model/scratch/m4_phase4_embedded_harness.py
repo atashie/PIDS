@@ -79,13 +79,18 @@ def run_embedded(scheme, soil_name, R_out, n, t_grid, direction="disperse",
     L = float(np.sqrt(np.pi * (R_out ** 2 - R_W ** 2)))
     h = L / n
     Lx = nx * h
-    psi_i, h_f = (-1.0, 0.0) if direction == "disperse" else (0.0, -1.0)
+    # drain starts at -0.03 m: saturated theta but just BELOW the h_s=-0.02 air entry, so C>0 and
+    # the all-Neumann first solve is non-singular (C(psi>=h_s)=0 would leave only the singular
+    # stiffness at the saturated start). The drain-40 reference uses the same scenario pair.
+    psi_i, h_f = (-1.0, 0.0) if direction == "disperse" else (-0.03, -1.0)
     ls = "cp" if direction == "disperse" else "bt"
 
     msh = dmesh.create_box(COMM, [[0.0, 0.0, 0.0], [Lx, L, L]], [nx, n, n])
     feat = EmbeddedFeature(msh, lambda x: np.isclose(x[1], L / 2) & np.isclose(x[2], L / 2),
                            tangent=(1.0, 0.0, 0.0), K_feat=1.0, area=np.pi * R_W ** 2, porosity=0.4)
-    feat.configure_sorptive(soil, psi_i=-1.0, psi_wall=0.0)   # |dpsi|=1 pair sets BOTH directions
+    # the closure pair matches the scenario: disperse (-1 -> 0); drain mirror (-1 -> -0.03, the
+    # air-entry-anchored saturated state) -- S/dPhi_ref/dtheta evaluated over the ACTUAL head pair
+    feat.configure_sorptive(soil, psi_i=-1.0, psi_wall=(0.0 if direction == "disperse" else -0.03))
     V = feat.V
     psi, psi_n = fem.Function(V), fem.Function(V)
     psi.x.array[:] = psi_i; psi_n.x.array[:] = psi_i
