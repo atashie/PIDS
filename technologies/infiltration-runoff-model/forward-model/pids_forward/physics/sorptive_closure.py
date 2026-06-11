@@ -42,6 +42,17 @@ import numpy as np
 
 R_W_DEFAULT = 0.05  # default feature (wall) radius [m] -- matches the Phase-1 references
 
+# The MEASURED discrete well index of the P1 ridge source (Peaceman-for-FEM, Phase-4 Task 5,
+# 2026-06-10, scratch/m4_phase4_well_index.py + tests/test_well_index_p1.py): a vertex-line source on
+# the structured create_box TET lattice (and identically on the create_rectangle TRIANGLE lattice --
+# the x-invariant restriction of the 3-D operator IS the 2-D one) produces the analytic log field
+# beyond ~2h (slope dev <1.1% at n>=12) with well-block value u_h(Gamma) = -(1/2pi)*ln(r_0),
+# r_0 = R0_OVER_H_P1 * h, h-independent to 0.05% across n=8..64 (FD-Peaceman analog: 0.208).
+# The wall->cell exchange bridges through WI = 2*pi/ln(r_0(h)/r_w); note r_0 < r_w throughout the
+# Phase-4 harness regime (negative-log bridge: the discrete ridge value legitimately OVERSHOOTS the
+# wall potential; total bridge+host resistance is exactly the analytic ln(R/r_w) by construction).
+R0_OVER_H_P1 = 0.1986
+
 # Semi-empirical drain-throttle constants (joint tunnel+annulus optimum, Phase-3 design wf 2026-06-09):
 # z0 = _Z0_A + _Z0_S*dtheta, k = _THROTTLE_K. NOT a-priori (see module docstring).
 _Z0_A = 2.41
