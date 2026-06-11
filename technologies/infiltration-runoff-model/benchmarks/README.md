@@ -48,6 +48,7 @@ One NetCDF per case so the generator stays solver-free:
 | overland — standalone hillslope | ⚠ **deferred 2026-06-09** — ParFlow standalone-overland limitation (see §5a); benchmarked instead via the coupled comparison (§5c) |
 | coupled — surface↔subsurface (ponding) | ✓ **done 2026-06-09** — 6 scenarios (normal/extreme rain × dry/normal/wet antecedent); RMS Δθ 0.003–0.019, both mass-conservative, peak ponding agrees to ~5–10 mm (see §5c). `html/coupled__{normal,extreme}_on_{dry,normal,wet}__2026-06-09.html` |
 | coupled 3-D — hillslope (lateral routing + GW seepage) | ✓ **done 2026-06-10** — loam (overland) matches to ~1% (overland 0.479 vs 0.474 m³, infiltration identical, peak ponding 0.72 vs 0.73 mm); sand (lateral GW) qualitatively matches with a documented GHB **BC delta** (constant-head face over-drains ~4.8×). Early-infiltration-transient delta characterized (see §5d). `html/coupled_3d__{loam_overland,sand_lateral_gw}__2026-06-10.html` |
+| canonical tilted-V catchment (B6, convergent routing) | ⚠ **done 2026-06-10/11 — findings, not a clean match** — ParFlow reproduces the known answer exactly (Q → **1.000·Q_eq** = 4.86 m³/s, kinematic AND diffusive); the in-house engine **routes the V** but plateaus at **0.676·Q_eq** with a **20% mass-ledger gap** and scale-independent convergent-routing stiffness → reframed as a **core fix** (PIDS installs along convergence lines) with a research plan (see §5e). `html/tilted_v__canonical__2026-06-10.html` |
 
 ## 5a. Overland (B3) — deferred: ParFlow standalone-overland limitation
 **Decision 2026-06-09:** the standalone overland comparison is **deferred**. Overland will be
@@ -209,9 +210,51 @@ under vertical refinement). Falsifiable corroboration, confirmed: **runoff onset
 rate + S_surf panel. A **timing** delta — the integrated partition and mass balance (machine-precision in both)
 agree.
 
-**Other formulation deltas in play:** ParFlow flat grid + `TopoSlopes` vs the in-house geometrically tilted
-mesh; no Vogel/Ippisch air-entry cap; tiny `SpecificStorage` vs no-Ss; cell-centred FV (16×6×8) vs P1 FEM
-(17×7×9 nodes); ParFlow `cum_rain`=0.750 vs in-house 0.748 (adaptive-step hyetograph integration).
+**Other formulation deltas in play:** both models use a FLAT grid — ParFlow `TopoSlopes` vs the in-house
+`set_topography` z_b field (the bed tilt enters only the overland routing operator in both; *corrected
+2026-06-11 — this line previously claimed a "geometrically tilted" in-house mesh, which was wrong: the
+in-house mesh is a flat box, confirmed in `coupling.py`*); no Vogel/Ippisch air-entry cap; tiny
+`SpecificStorage` vs no-Ss; cell-centred FV (16×6×8) vs P1 FEM (17×7×9 nodes); ParFlow `cum_rain`=0.750
+vs in-house 0.748 (adaptive-step hyetograph integration).
+
+## 5e. Canonical tilted-V catchment (B6, convergent routing) — done 2026-06-10/11: findings + core-fix plan
+Both models run the **canonical known-answer watershed benchmark** (Di Giammarco 1996 / Kollet & Maxwell
+2006; the IH-MIP2 test): two 810×1000 m hillslope planes (cross-slope **5%**) converging to a central
+channel line (valley slope **2%**), Manning n=0.015, rain **3·10⁻⁶ m/s × 90 min** then 90 min recession,
+near-impermeable bed → the analytic equilibrium outlet discharge is the known answer:
+**Q_eq = rain·area = 419,904 m³/day = 4.86 m³/s**. ParFlow deck:
+[`../parflow/cases/tilted_v_catchment.py`](../parflow/cases/tilted_v_catchment.py) (env-parameterized
+scale / wave form / Manning; `PF_SKIPRUN=1` re-extracts from existing `.pfb`); in-house runner:
+`../forward-model/scratch/_tiltedv_spike.py`; harness: `build_comparison_tiltedv.py` +
+`make_comparison_tiltedv_html.py`.
+
+| run | equilibrium plateau | recession | mass books |
+|---|---|---|---|
+| ParFlow `OverlandKinematic` 48×30 | **1.000·Q_eq** | → 0 clean | closes (storage-balance extraction) |
+| ParFlow `OverlandDiffusive` 48×30 | **1.000·Q_eq** | → 0 clean | closes |
+| in-house `CoupledProblem` 24×16×3 | **0.676·Q_eq** | → 0 | **20% ledger gap** at storm end |
+
+**Findings:**
+1. **ParFlow reproduces the known answer exactly** (both wave formulations) — the off-the-shelf model
+   validated on its core watershed turf. Its overland boundary is **free outflow** (the outlet evacuates
+   at ~0 depth at ANY Manning — §5a re-confirmed at watershed scale), so its hydrograph is only
+   recoverable by storage balance; a cold-start surge contaminates the rising limb (the plateau +
+   recession are the clean comparison).
+2. **The in-house engine routes the V** (convergent-routing capability confirmed — water converges to
+   the channel and exits) but exposes **two defects exactly at the convergence line**: (a)
+   **scale-independent stiffness** — dt pins ~1e-4 d at 1.6 km AND at 162 m (B5's planar slope was fast
+   → it is the *convergence*, not the size; 21 min / 769 steps for the canonical run); (b) a **20%
+   mass-ledger gap** (cum rain ≠ cum outflow + Δstorage), so the 0.676·Q_eq plateau is
+   **gap-corrupted, not physics**. Root-cause analysis identifies two *separable* defects — the
+   known-deferred **unstabilized Galerkin advection of the kinematic flux** (the 2026-06-06 sawtooth
+   note in `coupling.py`, now structural on convergent topography) and a **lax SNES step-acceptance**
+   candidate (`snes_stol` unset → stalled line-search states can be booked "converged" with an
+   unbalanced residual) — mechanism confirmation is Phase 0 of the plan.
+3. **Reframe (Arik 2026-06-11): convergent flow is CORE, not edge-case** — PIDS networks are installed
+   along lines of topographic convergence (swales/valley lines), where the M4 features and surface
+   inlets sit. Fix prioritized: **`docs/plans/2026-06-11-overland-convergent-flow-stabilization.md`**
+   (wave-0 acceptance hardening + local conservative limiter; wave-1 **upwind-mobility edge flux** —
+   the same monotone scheme class ParFlow's `OverlandKinematic` uses, read from its source).
 
 ## 6. Change log
 | Date | Change |
@@ -223,4 +266,5 @@ mesh; no Vogel/Ippisch air-entry cap; tiny `SpecificStorage` vs no-Ss; cell-cent
 | 2026-06-09 | **Subsurface non-ponding sweep done** (4 scenarios: dry/mesic × small/typical sub-Ks storms; see §5b). `../parflow/cases/column_sweep.py` (ParFlow, storm-only constant rain) + `build_comparison_sweep.py` (in-house) → 4 `.nc` + 4 self-contained HTMLs. Agreement RMS Δθ 0.002–0.005, front-localized maxima; both mass-conservative. Diagnosed + fixed two ParFlow setup traps en route: FluxConst forcing q>Ks (or a wet IC) → surface-pressure blowup (ponding needs the surface store, deferred §5a); and a storm/recession time cycle that never switched off (→ storm-only constant rain). |
 | 2026-06-09 | **Coupled comparison done (B4, ponding)** — 6 scenarios (normal/extreme rain × dry/normal/wet) matching the in-house Module-3 `CoupledProblem` against ParFlow's native coupled mode (`OverlandFlow` surface store on a flat closed-base 2 m loam column; two-phase storm+recession restart). New `../parflow/cases/coupled_column.py` + `build_comparison_coupled.py` + `make_comparison_coupled_html.py` (adds a surface-depth + infiltration-partition panel) → 6 `.nc` + 6 self-contained HTMLs. RMS Δθ 0.003–0.019 (front-localized; air-entry-K delta more active here as the column saturates), both mass-conservative, peak ponding agrees to ~5–10 mm (see §5c). Resolves the deferred ponding/overland regime (§5a). Key finding: ParFlow's mass-consistent OverlandFlow surface store = `max(ψ_top, 0)` (closes the closed-column θ+pond balance to ≤2.6e-5), NOT the `−DZ/2` extraction used for standalone overland (which breaks it by exactly DZ/2 once ponded). |
 | 2026-06-09 | **B5 (3-D coupled hillslope) scoped** — `B5_coupled_3d_scope.md`: the next stage extends B4 from a flat 1-D ponding column to the in-house 3-D hillslope (5×1×1 m, 5% slope, water table z=0.35, sand vs loam) with lateral overland routing + a groundwater seepage outlet, vs ParFlow's native 3-D coupled mode. Dominant risks pre-identified: the small-Manning overland conveyance (§5a, now active with real lateral routing) and the GHB→ParFlow seepage-BC mapping. Not yet executed. |
+| 2026-06-11 | **B6 (canonical tilted-V catchment) done — findings + core-fix plan** (see §5e). New `../parflow/cases/tilted_v_catchment.py` + `build_comparison_tiltedv.py` + `make_comparison_tiltedv_html.py` + the in-house V runner. ParFlow reproduces the analytic Q_eq=4.86 m³/s **exactly** (kinematic + diffusive); the in-house engine routes the V but exposes a **20% mass-ledger gap** + **scale-independent convergent-routing stiffness** (dt pin ~1e-4 at 1.6 km AND 162 m; plateau 0.676·Q_eq is gap-corrupted). Root-caused to two separable defects (known-deferred unstabilized Galerkin kinematic advection; lax SNES snorm step-acceptance candidate) after reading both our solver and ParFlow's `overlandflow_eval{,_Kin}.c` (upwind FV + positive-part depth + single ledger; ParFlow's own original scheme had a valley-line pathology fixed by the face-centered-slope rewrite — precedent). **Reframed per Arik: PIDS installs along convergence lines → core fix**, research plan `docs/plans/2026-06-11-overland-convergent-flow-stabilization.md` (wave-0 acceptance hardening + local conservative limiter; wave-1 upwind-mobility edge flux; acceptance bars incl. a permanent PIDS-swale fixture). Also corrected §5d's erroneous "geometrically tilted in-house mesh" claim (flat box + z_b field). |
 | 2026-06-10 | **B5 (3-D coupled hillslope) done** (see §5d). New `../parflow/cases/coupled_hillslope_3d.py` (3-D tilted hillslope: `OverlandFlow` top + `DirEquilRefPatch` lateral-GW head face + two-phase restart) + `build_comparison_coupled_3d.py` + `make_comparison_coupled_3d_html.py` → 2 `.nc` + 2 self-contained HTMLs (loam, sand). **Loam (overland) matches to ~1%** (overland 0.479 vs 0.474 m³, infiltration identical, peak ponding 0.72 vs 0.73 mm; the small-Manning sheet forms correctly — the B3 standalone ~0-depth failure does NOT recur when coupled). **Sand (lateral GW)**: the in-house finite kr-weighted GHB has no native ParFlow analog; the constant-head `DirEquilRefPatch` face over-drains ~4.8× (0.248 vs 0.051 m³) → documented as a **BC delta**, a finite-conductance drain-column declined (Arik). Settled two risks: small-Manning conveyance is fine when coupled; the GHB maps to a constant-head face with a known over-drain. Method finding: ParFlow `PrintOverlandSum` is unreliable as an overland volume here → overland/GW split via a **no-GW control run** difference. Characterized an **early-infiltration-transient** delta (Arik-flagged): the in-house sorptive Kirchhoff surface closure (+ air-entry cap) reaches the steady infiltration rate early and runs off sooner, vs ParFlow's coarse-cell buffer-then-choke (runoff onset 0.020 vs 0.070 d); a timing delta — end states + mass balance converge. Added an infiltration-rate + S_surf panel to the comparison HTML. |
