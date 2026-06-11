@@ -244,7 +244,20 @@ cell-scale Kirchhoff conductance, or a blended formulation) — design on eviden
 × R_out ∈ {3,5,10}r_w; then Ref B; then drain. Target: rel-L2 ≤ `EMBEDDED_TOL` (0.10), and
 **non-degrading**: rel-L2(n=32) ≤ rel-L2(n=8) + 0.02.
 
-**Checkpoints / honest off-ramps (two retractions happened here — these are mandatory):**
+**REGIME COURSE-CORRECTION (measured + analyzed 2026-06-10, supersedes parts of the above):**
+- r_0 = 0.1986·h < r_w throughout the capacity-matched R=3/5/10 r_w boxes at n≥4 — the NEGATIVE-log
+  bridge. Steady algebra is consistent (series resistances compose to the exact ln(R/r_w)), but the
+  TRANSIENT is structurally unstable: at handover (Φ_Γ far below the consistent manifold) the BE
+  fixed point is REPELLING → runaway backflow. Predicted analytically; do not ship a naive
+  negative-WI exchange.
+- The PIDS deployment regime is h/r_w ≈ 10–40 (field grids vs 5 cm features) — positive WI. Three
+  constraints (positive WI: h > 5.03 r_w; small clock fraction: I_fill/I_max ≈ 4h²/R² ≤ ~0.2;
+  capacity matching L = sqrt(π(R²−r_w²))) ⇒ **R ≥ ~31 r_w**. The deployment-regime gate axis is
+  therefore **R = 40 r_w (LOAM disperse, full depletion ~70 d) with boxes n ∈ {12..18}**
+  (h/r_w 9.3→6.2, r_0/r_w 1.84→1.22, clock fraction 21→9.6%). n=22 hits the r_0 = r_w degeneracy.
+- The small-R refs (3/5/10 r_w) remain the gate for the RESOLVED-WALL regime (h ≲ 2 r_w), where the
+  well-model is the wrong tool: that regime needs an immersed/distributed-footprint exchange or a
+  capped bridge — a SEPARATE design task, attempted only after the positive regime is validated.
 - After the first n∈{8,16} pass: if tracking fails, diagnose mechanism FIRST (log ψ_Γ vs the
   reference Φ at r_0; WI conductance vs the resolved cell conductance; reservoir trajectory) — use
   superpowers:systematic-debugging, not parameter-fiddling. Documented fallbacks: the r_0≈r_w

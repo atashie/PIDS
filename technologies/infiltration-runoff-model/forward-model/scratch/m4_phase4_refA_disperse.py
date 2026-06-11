@@ -47,20 +47,25 @@ CELL = 0.5 / 400.0                 # 1b's converged radial cell size (n=400 on t
 N_SAMP = 32
 
 SOIL_NAMES = ("LOAM", "SAND", "SILT")          # CLAY stays flag-excluded (Phase-3 decision)
-R_FACTORS = (3, 5, 10)
+# R=40 r_w (LOAM only) = the DEPLOYMENT-REGIME axis (added 2026-06-10): positive-WI (h > 5 r_w) +
+# small clock fraction (4h^2/R^2 <= 0.2) + capacity matching force R >= ~31 r_w; the small-R boxes
+# sit in the resolved-wall regime where the well-model is the wrong tool (see the plan's regime
+# course-correction). SILT/SAND at R40 would need ~1-yr / trivial windows -- LOAM carries this axis.
+R_BY_SOIL = {"LOAM": (3, 5, 10, 40), "SAND": (3, 5, 10), "SILT": (3, 5, 10)}
 # WINDOW DESIGN (measured, 2026-06-10 -- the first two runs taught this): the cumulative I(t) lags the
 # flux divergence, so a window stopping at ~90% depletion lets the offline clock PASS (relL2 0.5-2%!);
 # the discrimination lives in the DEEP BEND + PLATEAU (windows past full depletion gave clock relL2
 # 33-43%). So 3/5 r_w are FULL-DEPLETION discriminators: final >= 97% of I_max AND the 90% crossing in
 # the first 3/4 of the window (the bend occupies the late window, not a long flat tail). 10 r_w is the
 # PARTIAL-depletion control (clock ~right there -> catches an embedded scheme that over-corrects).
-FULL_R = (3, 5)
+FULL_R = (3, 5, 40)
 T90_FRAC_MAX = 0.75
 CONTROL_BAND = (0.30, 0.70)
 # t_end [day] first guesses (auto-tuned, max 3 attempts): LOAM from the plan; SAND/SILT scaled by the
-# Phase-1b per-soil window ratio (SAND 3e-3/6e-2, SILT 4e-1/6e-2)
+# Phase-1b per-soil window ratio (SAND 3e-3/6e-2, SILT 4e-1/6e-2); LOAM R40 from the Green-Ampt
+# estimate t_full ~ (dtheta*r_w/S)^2 * zeta_max*ln(2*zeta_max) ~ 54 d
 T_END = {
-    "LOAM": {3: 0.12, 5: 0.6, 10: 3.0},
+    "LOAM": {3: 0.12, 5: 0.6, 10: 3.0, 40: 70.0},
     "SAND": {3: 6e-3, 5: 3e-2, 10: 0.15},
     "SILT": {3: 0.8, 5: 4.0, 10: 20.0},
 }
@@ -113,7 +118,7 @@ if __name__ == "__main__":
         t_start = (dth * 0.1 * R_W / S_an) ** 2          # 1b's early-start rule (front ~0.1 r_w)
         saved[f"{name}_S"], saved[f"{name}_dtheta"] = np.array(S_an), np.array(dth)
         print(f"\n{'-'*88}\n{name}: S_an={S_an:.5f} m/day^0.5,  dtheta={dth:.4f}")
-        for k in R_FACTORS:
+        for k in R_BY_SOIL[name]:
             r_out = k * R_W
             i_max = dth * (r_out**2 - R_W**2) / (2.0 * R_W)
             t_end = T_END[name][k]
