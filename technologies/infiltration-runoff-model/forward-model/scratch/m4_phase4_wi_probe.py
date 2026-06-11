@@ -244,6 +244,33 @@ if __name__ == "__main__":
                   flush=True)
             prof = " ".join(f"{a/b:.3f}" for a, b in zip(out["I"][::4], I_ref[::4]))
             print(f"        emb/ref profile (every 4th): {prof}", flush=True)
+    elif which == "v2b":
+        # the HISTORY leg at deployment scale: v2 vs Ref B-40 (the host-control make-or-break)
+        refB = np.load("scratch/m4_phase4_refB40_disperse.npz")
+        t, I_ref = refB["LOAM_t"], refB["LOAM_I"]
+        band = tuple(refB["LOAM_band"])
+        pulse = (float(refB["LOAM_t_pulse"][0]), float(refB["LOAM_t_pulse"][1]),
+                 float(refB["LOAM_V_pulse_per_wall_area"]) * R_W * 2 * np.pi)
+        print(f"RATE-CLOCK+WI v2 vs Ref B-40 (pulse {pulse[0]}-{pulse[1]} d, band {band}):")
+        for n in (8, 12):
+            out = run_embedded(RateClockWIScheme("disperse"), "LOAM", 40 * R_W, n, t,
+                               pulse=pulse, pulse_band=band)
+            if out is None:
+                print(f"  n={n}: DT COLLAPSE", flush=True)
+                continue
+            print(f"  n={n:2d}: relL2={rel_l2(out['I'], I_ref):.1%}  "
+                  f"end I/ref={out['I'][-1]/I_ref[-1]:.3f}", flush=True)
+            prof = " ".join(f"{a/b:.3f}" for a, b in zip(out["I"][::4], I_ref[::4]))
+            print(f"        emb/ref (every 4th): {prof}", flush=True)
+    elif which == "v2diag":
+        # the deep-bend dip: full per-sample profile at n=12
+        t, I_ref = refA["LOAM_R40_t"], refA["LOAM_R40_I"]
+        sch = RateClockWIScheme("disperse")
+        out = run_embedded(sch, "LOAM", 40 * R_W, 12, t)
+        print(f"handover t={sch.t_handover:.3f} d")
+        print("    t [d]      emb/ref")
+        for i in range(16, len(t)):
+            print(f"  {t[i]:9.3e}   {out['I'][i]/I_ref[i]:6.3f}")
     elif which == "diag":
         # deviation PROFILE at n=12, tau release: where does the 17% live?
         t, I_ref = refA["LOAM_R40_t"], refA["LOAM_R40_I"]

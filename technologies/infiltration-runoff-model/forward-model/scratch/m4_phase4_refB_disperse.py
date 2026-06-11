@@ -49,11 +49,13 @@ CELL = 0.5 / 400.0
 SOIL_NAME = "LOAM"                   # Ref B is a discrimination instrument; one soil suffices
 
 
-def run_refB(soil, t_grid, t1, t2, s_rate, *, sealed=False, label=""):
+def run_refB(soil, t_grid, t1, t2, s_rate, *, r_out=None, band=None, sealed=False, label=""):
     """Closed-domain radial disperse + the band source. sealed=True drops the wall Dirichlet entirely
     (the source-bookkeeping control). Returns (I_wall(t), max band psi during pulse, gain(t))."""
-    n = max(int(round((R_OUT - R_W) / CELL)), 40)
-    msh = dmesh.create_interval(COMM, n, [R_W, R_OUT])
+    r_out = R_OUT if r_out is None else r_out
+    band = BAND if band is None else band
+    n = max(int(round((r_out - R_W) / CELL)), 40)
+    msh = dmesh.create_interval(COMM, n, [R_W, r_out])
     r = ufl.SpatialCoordinate(msh)[0]
     V = fem.functionspace(msh, ("Lagrange", 1))
     psi = fem.Function(V); psi_n = fem.Function(V)
@@ -65,7 +67,7 @@ def run_refB(soil, t_grid, t1, t2, s_rate, *, sealed=False, label=""):
     dxq = ufl.dx(metadata={"quadrature_degree": 8})
     theta, theta_n, K = soil.theta_ufl(psi), soil.theta_ufl(psi_n), soil.K_ufl(psi)
     x = ufl.SpatialCoordinate(msh)[0]
-    band_ind = ufl.conditional(ufl.And(ufl.ge(x, BAND[0]), ufl.le(x, BAND[1])), 1.0, 0.0)
+    band_ind = ufl.conditional(ufl.And(ufl.ge(x, band[0]), ufl.le(x, band[1])), 1.0, 0.0)
     F = (((theta - theta_n) / dt_c) * v * r * dxs
          + K * ufl.dot(ufl.grad(psi), ufl.grad(v)) * r * dxq
          - s_c * band_ind * v * r * dxq)
@@ -78,8 +80,8 @@ def run_refB(soil, t_grid, t1, t2, s_rate, *, sealed=False, label=""):
     th_i = float(soil.theta(PSI_I))
     stored = fem.form((theta - th_i) * r * dxs)
     xc = V.tabulate_dof_coordinates()[:, 0]
-    in_band = (xc >= BAND[0]) & (xc <= BAND[1])
-    B = (BAND[1] ** 2 - BAND[0] ** 2) / 2.0               # exact band weight integral (per radian)
+    in_band = (xc >= band[0]) & (xc <= band[1])
+    B = (band[1] ** 2 - band[0] ** 2) / 2.0               # exact band weight integral (per radian)
 
     # march on the union of sample times and the pulse switch points so no step crosses a toggle
     marks = np.unique(np.concatenate([t_grid, [t1, t2]]))
@@ -103,7 +105,51 @@ def run_refB(soil, t_grid, t1, t2, s_rate, *, sealed=False, label=""):
     return np.array(I_wall), psi_band_max, np.array(gains)
 
 
+def _main_r40():
+    """Ref B at the DEPLOYMENT scale (R_out = 40 r_w = 2 m): re-wetting pulse band [24, 32] r_w
+    (ahead of the front, which crosses ~19-21 r_w during the firing window t = [7, 10.5] d), volume
+    = 30% of band capacity. The history leg of the deployment-regime gate (the small-R Ref B sits in
+    the resolved-wall regime the WI scheme refuses)."""
+    soil = dz.SOILS["LOAM"]
+    refA = np.load("scratch/m4_phase4_refA_disperse.npz")
+    tA, IA = refA["LOAM_R40_t"], refA["LOAM_R40_I"]
+    S_an, dth = float(refA["LOAM_S"]), float(refA["LOAM_dtheta"])
+    i_max = float(refA["LOAM_R40_Imax"])
+    r_out, band = 40 * R_W, (24 * R_W, 32 * R_W)
+    t1, t2, t_end = 7.0, 10.5, float(tA[-1])
+    Bw = (band[1] ** 2 - band[0] ** 2) / 2.0
+    t_grid = np.geomspace(tA[0], t_end, N_SAMP)
+    s_rate = PULSE_FILL * dth / (t2 - t1)
+    V_pulse = s_rate * Bw * (t2 - t1)
+    print(f"Ref B-40: pulse [t1,t2]=[{t1},{t2}] d, band=[{band[0]:.2f},{band[1]:.2f}] m, "
+          f"V/wall_area={V_pulse/R_W:.3f} m ({V_pulse/R_W/i_max:.1%} of I_max)")
+    I_B, band_max, _ = run_refB(soil, t_grid, t1, t2, s_rate, r_out=r_out, band=band,
+                                label="LOAM RefB-40")
+    assert band_max <= -0.01, f"band re-saturated (psi_max={band_max:+.3f})"
+    assert np.all(np.diff(I_B) >= -1e-12 * i_max)
+    pre = t_grid < t1
+    devA = np.abs(I_B[pre] - np.interp(t_grid[pre], tA, IA)) / np.interp(t_grid[pre], tA, IA)
+    assert devA.max() < 0.005, f"pre-pulse mismatch vs Ref A(40r_w): {devA.max():.2%}"
+    IA_end = float(np.interp(t_grid[-1], tA, IA))
+    gap = (IA_end - I_B[-1]) / IA_end
+    clk = sorptive_clock(t_grid, S_an, dth, R_W, F_cylindrical)
+    print(f"   pre-pulse dev={devA.max():.2%}  band psi_max={band_max:+.3f}  "
+          f"end I_B={I_B[-1]:.4e} vs RefA {IA_end:.4e} -> gap={gap:.1%}")
+    print(f"   OFFLINE-CLOCK relL2={rel_l2(clk, I_B):.1%}  "
+          f"CLAMPED relL2={rel_l2(np.minimum(clk, i_max), I_B):.1%}")
+    np.savez("scratch/m4_phase4_refB40_disperse.npz",
+             LOAM_t=t_grid, LOAM_I=I_B, LOAM_t_pulse=np.array([t1, t2]),
+             LOAM_V_pulse_per_wall_area=np.array(V_pulse / R_W),
+             LOAM_band=np.array(band), LOAM_Imax=np.array(i_max),
+             LOAM_S=np.array(S_an), LOAM_dtheta=np.array(dth), r_w=np.array(R_W))
+    print("Saved -> scratch/m4_phase4_refB40_disperse.npz")
+
+
 if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "r40":
+        _main_r40()
+        raise SystemExit(0)
     soil = dz.SOILS[SOIL_NAME]
     refA = np.load("scratch/m4_phase4_refA_disperse.npz")
     tA, IA = refA[f"{SOIL_NAME}_R5_t"], refA[f"{SOIL_NAME}_R5_I"]

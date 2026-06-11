@@ -70,8 +70,9 @@ def _vertex_dx():
 
 
 def run_embedded(scheme, soil_name, R_out, n, t_grid, direction="disperse",
-                 pulse=None, nx=4, label=""):
-    """March the closed-box embedded problem over t_grid. pulse = (t1, t2, V_per_length) or None.
+                 pulse=None, pulse_band=(3 * R_W, 4 * R_W), nx=4, label=""):
+    """March the closed-box embedded problem over t_grid. pulse = (t1, t2, V_per_length) or None;
+    pulse_band = the annular band radii around the feature line (must match the reference's).
     Returns dict(t, I, ledger...) or None on dt collapse."""
     assert n % 2 == 0, "n must be even (feature line on the vertex lattice)"
     soil = SOILS[soil_name]
@@ -98,7 +99,7 @@ def run_embedded(scheme, soil_name, R_out, n, t_grid, direction="disperse",
     K = soil.K_ufl(psi)
     x = ufl.SpatialCoordinate(msh)
     rho = ufl.sqrt((x[1] - L / 2) ** 2 + (x[2] - L / 2) ** 2)
-    band = ufl.conditional(ufl.And(ufl.ge(rho, 3 * R_W), ufl.le(rho, 4 * R_W)), 1.0, 0.0)
+    band = ufl.conditional(ufl.And(ufl.ge(rho, pulse_band[0]), ufl.le(rho, pulse_band[1])), 1.0, 0.0)
     rel_c = fem.Constant(msh, PETSc.ScalarType(0.0))      # reservoir release per unit length [m^2/day]
     F = (((th - thn) / dt_c) * w * dxs
          + K * ufl.dot(ufl.grad(psi), ufl.grad(w)) * dxq
@@ -233,6 +234,24 @@ if __name__ == "__main__":
         if out is not None:
             print(f"smoke: relL2 vs RefA(3r_w) = {rel_l2(out['I'], I_ref):.1%}  "
                   f"(end I={out['I'][-1]:.4e} vs ref {I_ref[-1]:.4e}, I_max={float(refA['LOAM_R3_Imax']):.4e})")
+    elif which == "baseline40":
+        # the retracted dual-scale on the DEPLOYMENT legs (apples-to-apples with the WI scheme)
+        refB40 = np.load("scratch/m4_phase4_refB40_disperse.npz")
+        t, I_ref = refA["LOAM_R40_t"], refA["LOAM_R40_I"]
+        for n in (8, 12):
+            out = run_embedded(DualScaleScheme("disperse"), "LOAM", 40 * R_W, n, t)
+            if out is not None:
+                print(f"  dual-scale RefA(40r_w) n={n:2d}: relL2={rel_l2(out['I'], I_ref):.1%}  "
+                      f"end I/I_max={out['I'][-1]/float(refA['LOAM_R40_Imax']):.2f}", flush=True)
+        t, I_ref = refB40["LOAM_t"], refB40["LOAM_I"]
+        band = tuple(refB40["LOAM_band"])
+        pulse = (float(refB40["LOAM_t_pulse"][0]), float(refB40["LOAM_t_pulse"][1]),
+                 float(refB40["LOAM_V_pulse_per_wall_area"]) * R_W * 2 * np.pi)
+        for n in (8, 12):
+            out = run_embedded(DualScaleScheme("disperse"), "LOAM", 40 * R_W, n, t,
+                               pulse=pulse, pulse_band=band)
+            if out is not None:
+                print(f"  dual-scale RefB-40 n={n:2d}: relL2={rel_l2(out['I'], I_ref):.1%}", flush=True)
     elif which == "baseline":
         # the RETRACTED dual-scale through the discriminating gate: the failure-baseline record
         # (measured 2026-06-10 n=8 LOAM R3: 27.8%, end I 61% past capacity -- passive accumulator)
