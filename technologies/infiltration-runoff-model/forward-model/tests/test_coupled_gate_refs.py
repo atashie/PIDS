@@ -103,6 +103,23 @@ def test_design_regression_clamped_clock_passes_refA_alone(refs):
             assert e <= 0.05, f"{s} R{k}: clamped clock now fails Ref A ({e:.1%})? -- re-derive the kill-map"
 
 
+def test_deployment_legs_R40(refs):
+    """The DEPLOYMENT-REGIME axis (LOAM R=40 r_w + Ref B-40; added 2026-06-10 after the regime
+    course-correction): raw clock fails both (26.6% / 34.1% measured); the clamped clock's numbers
+    are documented (4.3% / 9.8% -- killed by the drain legs as before)."""
+    a, _, _ = refs
+    S, dth = float(a["LOAM_S"]), float(a["LOAM_dtheta"])
+    t, I, imax = a["LOAM_R40_t"], a["LOAM_R40_I"], float(a["LOAM_R40_Imax"])
+    clk = _clock(t, S, dth, F_cylindrical)
+    assert rel_l2(clk, I) >= 0.20
+    assert rel_l2(np.minimum(clk, imax), I) <= 0.07
+    b40 = np.load("tests/data/m4_phase4_refB40_disperse.npz")
+    t, I = b40["LOAM_t"], b40["LOAM_I"]
+    clk = _clock(t, S, dth, F_cylindrical)
+    assert rel_l2(clk, I) >= 0.25
+    assert rel_l2(np.minimum(clk, float(b40["LOAM_Imax"])), I) <= 0.12
+
+
 def test_refB_kills_the_raw_clock_and_documents_the_clamp_gap(refs):
     a, b, _ = refs
     t, I = b["LOAM_t"], b["LOAM_I"]
