@@ -53,11 +53,70 @@ def test_resolved_wall_regime_is_refused():
         WellIndexExchange().setup(feat, LOAM, {"t0": 1e-4})
 
 
-def test_drain_direction_is_refused():
-    """The drain sub-grid closure for closed domains is OPEN research (no a-priori form fits:
-    throttle 98%, cyl+S_des 42%, cyl+S_sorp 109% vs refD40) -- the production class refuses it."""
-    with pytest.raises(NotImplementedError, match="drain"):
-        WellIndexExchange(direction="drain")
+def test_drain_requires_catchment_radius():
+    """The drain mode is the PSS depletion closure (2026-06-12): it needs the closed/catchment
+    radius R_out (a physical geometry input, ln(R/r_w)-3/4); setup without it must refuse."""
+    feat = _feat(2)
+    with pytest.raises(ValueError, match="R_out"):
+        WellIndexExchange(direction="drain").setup(feat, LOAM, {"t0": 1e-4})
+
+
+def test_drain_rate_zero_when_bulk_at_wall_head():
+    """The drain drive vanishes when the host bulk mean reaches the live wall head: the prescribed
+    extraction must hard-zero (capacity safety: the scheme cannot overdraw a depleted host)."""
+    from dolfinx import fem
+    feat = _feat(2)
+    x = WellIndexExchange(direction="drain").setup(feat, LOAM, {"t0": 1e-4, "R_out": 2.0})
+    feat.Hf.x.array[:] = -1.0
+    feat.Hf.x.scatter_forward()
+    psi = fem.Function(feat.V)
+    for host in (-1.0, -1.5):                              # bulk at the wall head; bulk below it
+        psi.x.array[:] = host
+        assert x.pre_step(feat, psi, 0.0) == 0.0
+
+
+def test_drain_prescribed_rate_is_the_pss_law():
+    """The drain pre_step returns the PSS depletion rate as a NEGATIVE ridge source (host sink):
+    -2*pi*[Phi(psi_bar) - Phi(Hf_bar)]/(ln(R/r_w) - 3/4) * length -- every factor derived."""
+    from dolfinx import fem
+    feat = _feat(2)
+    R_out = 2.0
+    x = WellIndexExchange(direction="drain").setup(feat, LOAM, {"t0": 1e-4, "R_out": R_out})
+    feat.Hf.x.array[:] = -1.0
+    feat.Hf.x.scatter_forward()
+    psi = fem.Function(feat.V)
+    psi.x.array[:] = -0.03
+    rate = x.pre_step(feat, psi, 0.0)
+    geo = np.log(R_out / R_W_DEFAULT) - 0.75
+    want = -float(LOAM.kirchhoff(-1.0, -0.03)) / (R_W_DEFAULT * geo) * feat._perimeter * feat.length
+    assert rate < 0.0, "drain must be a host sink (negative ridge source)"
+    assert abs(rate - want) < 1e-12 * abs(want)
+    x.post_step(feat, psi, 0.0, 0.5)                       # accounting: I_total positive, ledger form
+    assert x.I_total(feat) > 0.0
+    assert abs(x.I_total(feat) * feat._perimeter * feat.length - abs(rate) * 0.5) < 1e-12
+
+
+@pytest.mark.parametrize("n", [8])
+def test_drain_gate_refD40_closed_box(n):
+    """THE drain deployment gate leg, production class through the closed-box harness: the embedded
+    I(t) tracks the resolved refD40 (LOAM, R=40 r_w, psi_i=-0.03, 20-d window) within the
+    pre-registered EMBEDDED_TOL while the FIXED-DRIVE twin (no host read -- the same law with the
+    drive frozen at psi_i, exactly reproducible offline for a prescribed-rate scheme) fails by
+    >= BASELINE_KILL: the host read is load-bearing (probe: embedded 7.4/6.9% at n=8/12,
+    twin 74.2%). (~4 min; prior failures: WI-bridge drain 10.9/16.8% degrading, throttle 98%.)"""
+    from scratch.m4_phase4_embedded_harness import run_embedded
+    ref = np.load("scratch/m4_phase4_refD40_drain.npz")
+    t, I_ref = ref["LOAM_t"], ref["LOAM_I"]
+    out = run_embedded(WellIndexExchange(direction="drain"), "LOAM", 40 * R_W_DEFAULT, n, t,
+                       direction="drain")
+    assert out is not None, "embedded closed-box drain run did not complete"
+    e = rel_l2(out["I"], I_ref)
+    assert e <= 0.10, f"drain gate failed: relL2={e:.1%}"
+    geo = np.log(40.0) - 0.75
+    rate_fixed = float(LOAM.kirchhoff(-1.0, -0.03)) / (R_W_DEFAULT * geo)
+    I_twin = np.minimum(rate_fixed * (t - t[0]), float(ref["LOAM_Imax"]))
+    assert rel_l2(I_twin, I_ref) >= 0.20, \
+        "discrimination twin lost: the fixed-drive PSS clock passes this leg"
 
 
 def test_nonzero_wall_head_refused():

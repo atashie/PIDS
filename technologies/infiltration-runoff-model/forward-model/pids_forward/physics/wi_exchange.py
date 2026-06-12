@@ -39,16 +39,27 @@ THE SCHEME (no free constants -- every number is measured or derived):
 * All uptake is host-ward immediately -- no sub-grid reservoir; the only ledger remainder is the
   t0 seed S*sqrt(t0) (water already in the ground at seeding, ~0.01% of a deployment capacity).
 
+THE DRAIN DIRECTION (closed/deployment domains, 2026-06-12): the PSS DEPLETION closure -- the
+front-similarity machinery does NOT apply (the desat front stays sub-cell and the closed
+near-saturated bulk leaves the similarity regime within ~a day; prior failures: open-fitted
+throttle 98%, cyl-GA family 35-81%, the WI bridge 10.9/16.8% degrading). The validated mechanism
+(3.3-3.9% on refD40 + two PRE-REGISTERED fresh refs, SAND R40 + LOAM R20 deep-depletion, zero
+knobs -- scratch/m4_phase4_drain_desorptivity.py + m4_phase4_drain_fresh_refs.py) is quasi-steady
+closed-reservoir Kirchhoff depletion. Embedded form: a prescribed-rate ridge SINK
+      rate = 2*pi*[Phi(mean psi_host) - Phi(mean H_f)] / (ln(R_out/r_w) - 3/4)  per unit length,
+driven by the LIVE volumetric-mean host state (the PSS average the derived Dietz -3/4 is defined
+against) and the live wall head. The host read is LOAD-BEARING: the depletion bend exists only
+because the host mean falls (fixed-drive twin fails refD40 at 74%; embedded scheme 7.4/6.9% at
+n=8/12, non-degrading). R_out = the closed/catchment equivalent radius, a physical geometry input
+(ctx["R_out"], required). Omega stays 0 in drain mode (pure prescription; capacity-safe: the rate
+hard-zeros as the bulk mean reaches the wall head).
+
 SCOPE GUARDS (refusals, not silent degradation):
-* DISPERSE ONLY. The drain direction's sub-grid closure for closed/deployment domains is OPEN
-  research: the desaturation front stays sub-cell for whole deployment windows and NO a-priori form
-  fits the resolved closed drain (open-fitted throttle 98% rel-L2, cyl+S_des 42% under, cyl+S_sorp
-  109% over vs the refD40 reference) -- see scratch/m4_phase4_wi_probe.py (drain status) and the
-  pids-drain-usecase memory. Refused with NotImplementedError.
-* POSITIVE-WI regime only (r_0 > 1.1 r_w, i.e. h > ~5.5 r_w -- field grids around a 5 cm feature).
-  For finer meshes the bridge is negative-log and the BE transient has a REPELLING fixed point at
-  handover (runaway backflow, analyzed 2026-06-10) -- a resolved-wall coupling is a separate design
-  task. Refused with ValueError.
+* POSITIVE-WI regime only for DISPERSE (r_0 > 1.1 r_w, i.e. h > ~5.5 r_w -- field grids around a
+  5 cm feature). For finer meshes the bridge is negative-log and the BE transient has a REPELLING
+  fixed point at handover (runaway backflow, analyzed 2026-06-10) -- a resolved-wall coupling is a
+  separate design task. Refused with ValueError.
+* DRAIN requires ctx["R_out"] (the PSS geometry); refused with ValueError without it.
 
 USAGE (the step contract, harness-compatible -- scratch/m4_phase4_embedded_harness.py is the
 reference driver): the host residual must include BOTH feat.sorptive_into_host(w, psi) (the WI-era
@@ -65,23 +76,35 @@ from .sorptive_closure import F_cylindrical, R0_OVER_H_P1, R_W_DEFAULT
 
 
 class WellIndexExchange:
-    """Disperse wall exchange: sub-grid rate-clock era + constant-WI Kirchhoff era (host-controlled
-    in the WI era; the clock era is a prescribed-rate closure -- see the module docstring)."""
+    """Embedded wall exchange. DISPERSE: sub-grid rate-clock era + constant-WI Kirchhoff era
+    (host-controlled in the WI era; the clock era is a prescribed-rate closure). DRAIN: the PSS
+    depletion closure as a live-host-driven prescribed-rate ridge sink -- see the module docstring."""
 
     def __init__(self, direction: str = "disperse"):
-        if direction != "disperse":
-            raise NotImplementedError(
-                "WellIndexExchange is DISPERSE-only: the drain sub-grid closure for closed domains "
-                "is open research (no a-priori form fits the resolved closed drain; throttle 98%, "
-                "cyl 42-109% off -- see scratch/m4_phase4_wi_probe.py and pids-drain-usecase).")
+        if direction not in ("disperse", "drain"):
+            raise ValueError(f"direction must be 'disperse' or 'drain' (got {direction!r})")
         self.direction = direction
 
     # -- lifecycle -------------------------------------------------------------
     def setup(self, feat, soil, ctx):
-        """Bind to an EmbeddedFeature (after configure_sorptive). ctx: t0 (required, the seeding
-        contact age, > 0); h (optional -- auto-measured as the nearest off-ridge vertex distance)."""
+        """Bind to an EmbeddedFeature (after configure_sorptive). DISPERSE ctx: t0 (required, the
+        seeding contact age, > 0); h (optional -- auto-measured as the nearest off-ridge vertex
+        distance). DRAIN ctx: R_out (required, the closed/catchment equivalent radius)."""
         from scipy.spatial import cKDTree
         self.soil, self.feat = soil, feat
+        if self.direction == "drain":
+            R_out = (ctx or {}).get("R_out") if isinstance(ctx, dict) else None
+            if not R_out:
+                raise ValueError(
+                    "WellIndexExchange(drain): ctx['R_out'] is required -- the PSS depletion "
+                    "closure needs the closed/catchment equivalent radius (ln(R_out/r_w) - 3/4).")
+            self._r_w = feat._r_w
+            self.geo = np.log(float(R_out) / self._r_w) - 0.75
+            self._g = feat._gamma_dofs
+            self._p_len = feat._perimeter * feat.length
+            self.inj = 0.0                              # cumulative EXTRACTED volume [m^3], >= 0
+            self._last_rate = 0.0
+            return self
         self._g = feat._gamma_dofs
         self._r_w = feat._r_w
         xc = feat.V.tabulate_dof_coordinates()
@@ -147,12 +170,26 @@ class WellIndexExchange:
         dIdt = self.S ** 2 / (2.0 * I) * F_cylindrical(I / (self.dth * self._r_w)) * scale
         return dIdt * self._p_len
 
+    def _drain_rate(self, feat, psi) -> float:
+        """Drain prescribed extraction [m^3/day, >= 0]: the PSS depletion law with the LIVE
+        volumetric-mean host drive and the LIVE wall head."""
+        psi_bar = float(psi.x.array.mean())
+        hf_bar = float(feat.Hf.x.array[self._g].mean())
+        if psi_bar <= hf_bar:
+            return 0.0                                     # bulk at/below the wall head: no drive
+        dPhi = float(self.soil.kirchhoff(hf_bar, psi_bar))
+        return dPhi / (self._r_w * self.geo) * self._p_len
+
     def pre_step(self, feat, psi, t) -> float:
-        """Call BEFORE the solve. Sets feat.Omega (the WI-era coefficient) and returns the sub-grid
-        era's prescribed ridge rate [m^3/day] (0 after handover) -- the caller carries it as a ridge
-        source in the host residual."""
+        """Call BEFORE the solve. Sets feat.Omega (the WI-era coefficient; 0 in drain mode) and
+        returns the prescribed ridge rate [m^3/day] (negative = host sink in drain mode; 0 after
+        the disperse handover) -- the caller carries it as a ridge source in the host residual."""
         feat.Omega.x.array[:] = 0.0
         self._last_rate = 0.0
+        if self.direction == "drain":
+            feat.Omega.x.scatter_forward()
+            self._last_rate = self._drain_rate(feat, psi)
+            return -self._last_rate
         if self.in_subgrid_era:
             feat.Omega.x.scatter_forward()
             self._last_rate = self._clock_rate(psi)
@@ -163,6 +200,9 @@ class WellIndexExchange:
 
     def post_step(self, feat, psi, t, dt):
         """Call AFTER an accepted solve: account the step's exchange and handle handover."""
+        if self.direction == "drain":
+            self.inj += self._last_rate * dt               # extracted magnitude, >= 0
+            return
         if self.in_subgrid_era:
             self.inj += self._last_rate * dt               # exactly what the caller injected
             if self._I() >= self.I_fill:
@@ -174,8 +214,13 @@ class WellIndexExchange:
     # -- observables -------------------------------------------------------------
     def I_total(self, feat=None) -> float:
         """Cumulative uptake per unit wall area [m] (the gate observable)."""
+        if self.direction == "drain":
+            return self.inj / self._p_len
         return self._I()
 
     def reservoir(self, feat=None, injected=None) -> float:
-        """Sub-grid-held water [m^3]: only the t0 seed (everything else goes host-ward live)."""
+        """Sub-grid-held water [m^3]: the t0 seed for disperse (everything else goes host-ward
+        live); 0 for drain (pure live prescription, no seed)."""
+        if self.direction == "drain":
+            return 0.0
         return self.seed_I * self._p_len
