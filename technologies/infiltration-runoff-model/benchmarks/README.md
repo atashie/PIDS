@@ -228,37 +228,48 @@ scale / wave form / Manning; `PF_SKIPRUN=1` re-extracts from existing `.pfb`); i
 `../forward-model/scratch/_tiltedv_spike.py`; harness: `build_comparison_tiltedv.py` +
 `make_comparison_tiltedv_html.py`.
 
-| run | equilibrium plateau | recession | mass books |
+| run | equilibrium plateau | recession | mass books (ENGINE per-step ledger) |
 |---|---|---|---|
 | ParFlow `OverlandKinematic` 48×30 | **1.000·Q_eq** | → 0 clean | closes (storage-balance extraction) |
 | ParFlow `OverlandDiffusive` 48×30 | **1.000·Q_eq** | → 0 clean | closes |
-| in-house `CoupledProblem` 24×16×3 | **0.676·Q_eq** | → 0 | **20% ledger gap** at storm end |
+| in-house `CoupledProblem` 24×16×3 *(P0-corrected 2026-06-11)* | **~1.0·Q_eq** (0.997–0.998 across controller settings) | → 0 | **closes to ≤2e-12·cum rain**; `clip_mass_adjust=0`; stalls = explicit rejected steps |
+| in-house field-scale 162 m, n=0.015 *(P0)* | **0.876·Q_eq** — honest books, Defect-A-degraded *solution* (clip ~1.3 cm vs ~3 mm sheet; true physics would equilibrate: t_conc ~0.002 d ≪ storm) | → 0 clean | closes to −8.6e-12·cum rain |
 
-**Findings:**
+**Findings (P0-corrected 2026-06-11 — the original finding-2 numbers are RETRACTED, plan §8):**
 1. **ParFlow reproduces the known answer exactly** (both wave formulations) — the off-the-shelf model
    validated on its core watershed turf. Its overland boundary is **free outflow** (the outlet evacuates
    at ~0 depth at ANY Manning — §5a re-confirmed at watershed scale), so its hydrograph is only
    recoverable by storage balance; a cold-start surge contaminates the rising limb (the plateau +
    recession are the clean comparison).
-2. **The in-house engine routes the V** (convergent-routing capability confirmed — water converges to
-   the channel and exits) but exposes **two defects exactly at the convergence line**: (a)
-   **scale-independent stiffness** — dt pins ~1e-4 d at 1.6 km AND at 162 m (B5's planar slope was fast
-   → it is the *convergence*, not the size; 21 min / 769 steps for the canonical run); (b) a **20%
-   mass-ledger gap** (cum rain ≠ cum outflow + Δstorage), so the 0.676·Q_eq plateau is
-   **gap-corrupted, not physics**. Root-cause analysis identifies two *separable* defects — the
-   known-deferred **unstabilized Galerkin advection of the kinematic flux** (the 2026-06-06 sawtooth
-   note in `coupling.py`, now structural on convergent topography) and a **lax SNES step-acceptance**
-   candidate (`snes_stol` unset → stalled line-search states can be booked "converged" with an
-   unbalanced residual) — mechanism confirmation is Phase 0 of the plan.
+2. **The in-house engine routes the V to the known answer with closed books.** The originally published
+   "0.676·Q_eq plateau / 20% mass-ledger gap" was **not reproducible from the committed deck** (P0
+   re-ran it instrumented, both dt-controller settings: plateau 0.997–0.998·Q_eq, engine ledger
+   ≤2e-12·cum rain, the limiter's degenerate branch never fires; the published npz recorded NET soil
+   *drying* (−26 m³) under sustained ponded rain — opposite in sign to the committed-deck rerun
+   (+47 m³), no sustaining mechanism in the committed exchange → a corrupted mid-session run was
+   published without a committed-deck reproduction; original preserved as
+   `tiltedv_inhouse_s1_pre_p0_corrupt.npz`). What IS real at the convergence line: (a)
+   **scale-independent stiffness** with its mechanism now **measured** — the wet/dry sawtooth
+   (known-deferred unstabilized Galerkin advection) clips fire EVERY plateau step and the global-rescale
+   limiter's non-local payback perturbs the whole surface (outlet flux shaved 21.5%/step standalone),
+   which Newton re-equilibrates each step → dt pins ~5e-5–1e-4 d; (b) at the **PIDS field scale** the
+   sawtooth is order-of-the-signal (1.3 cm clips vs ~3 mm equilibrium sheet) and degrades the honest
+   plateau to 0.876·Q_eq → the planned upwind flux is **accuracy-critical for the swale regime**, not
+   just a robustness fix; (c) **step-acceptance hardening landed (P0/O5)**: stalled line-search verdicts
+   (`SNORM_RELATIVE`, observed booking |F| up to 3e-3) are bookable only at the residual floor
+   (`stall_accept_fnorm=1e-5`), else honestly rejected; `snes_stol` pinned, `last_reason`/`last_fnorm`
+   audit trail, Tier-1 `test_step_acceptance.py`, suite 135 green.
 3. **Reframe (Arik 2026-06-11): convergent flow is CORE, not edge-case** — PIDS networks are installed
    along lines of topographic convergence (swales/valley lines), where the M4 features and surface
    inlets sit. Fix prioritized: **`docs/plans/2026-06-11-overland-convergent-flow-stabilization.md`**
-   (wave-0 acceptance hardening + local conservative limiter; wave-1 **upwind-mobility edge flux** —
-   the same monotone scheme class ParFlow's `OverlandKinematic` uses, read from its source).
+   (wave-0 acceptance hardening — DONE P0; wave-1 **upwind-mobility edge flux** — the same monotone
+   scheme class ParFlow's `OverlandKinematic` uses, read from its source; O4 local limiter deferred —
+   not implicated in any books violation, and O1 removes the undershoots at the source).
 
 ## 6. Change log
 | Date | Change |
 |---|---|
+| 2026-06-11 | **B6 P0 (convergent-flow plan Phase 0) — the published in-house B6 numbers RETRACTED + corrected.** Instrumented committed-deck re-runs (per-accepted-step engine ledger, SNES reason/`|F|` audit): canonical V plateau **0.997–0.998·Q_eq** with books ≤2e-12·cum rain under BOTH dt-controller settings — the published "0.676·Q_eq / 20% ledger gap" is **not reproducible** (the published npz held soil drying under infiltration-only exchange → corrupted mid-session run, published without a committed-deck reproduction; preserved as `tiltedv_inhouse_s1_pre_p0_corrupt.npz`; limiter degenerate-branch attribution dead — it never fires). Stiffness mechanism **measured**: sawtooth clips fire every plateau step → global-rescale limiter shaves the outlet region 21.5%/step (standalone 48×30) → Newton re-equilibrates each step → the dt-pin; at field scale (162 m) clips (1.3 cm) exceed the equilibrium sheet (~3 mm) → honest plateau 0.876·Q_eq → upwind flux is accuracy-critical for the PIDS swale regime. **O5 acceptance hardening landed** (`stall_accept_fnorm` gate on `SNORM_RELATIVE`, `snes_stol` pinned, audit attrs, Tier-1 tests; suite 135 green; O4 deferred — books close without it). Harness + HTML now report the ENGINE ledger (the 40-pt trapz number labeled as sampling). Plan §8 = the mechanism note. |
 | 2026-06-08 | Folder created for side-by-side benchmark artifacts (summary data + interactive HTMLs). Generator + first case (subsurface column) to follow. |
 | 2026-06-08 | HTML layout revised: θ(z) and ψ(z) now overlay both models on shared axes, each with a dedicated error panel Δ(z)=in-house−ParFlow (animated on the slider). |
 | 2026-06-08 | First case built: subsurface 1-D column. `build_comparison_column.py` runs the in-house model on the matched setup + loads ParFlow profiles → `data/subsurface__column_1d__2026-06-08.nc`; `make_comparison_html.py` → `html/subsurface__column_1d__2026-06-08.html` (self-contained, offline-verified). Accuracy-only. Agreement: RMS Δθ=9.1e-3 / max 0.050; RMS Δψ=0.054 m / max 0.34 m; both engines mass-conservative; differences localized at the wetting front (FV-vs-FEM + air-entry-K deltas). |

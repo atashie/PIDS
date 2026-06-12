@@ -1,12 +1,16 @@
 # Overland convergent-flow stabilization — research plan
 
-**Date:** 2026-06-11 · **Status:** PLAN (no code yet) · **Trigger:** benchmark B6 (canonical tilted-V catchment)
+**Date:** 2026-06-11 · **Status:** P0 DONE 2026-06-11 (§8: the §1 in-house plateau/ledger numbers are
+RETRACTED — not reproducible from the committed deck; the stiffness finding stands with its mechanism
+measured; O5 landed + tested; O4 deferred; O1 remains the production fix) · **Trigger:** benchmark B6
+(canonical tilted-V catchment)
 **Priority (Arik 2026-06-11):** PIDS networks are installed along **lines of topographic convergence** (swales,
 valley lines, drainage ways). Convergent overland flow is therefore the **core operating regime** of the
 product — the M4 embedded features and `add_surface_inlet` grates sit exactly where surface water
 concentrates. The B6 failure modes are a core-fix engineering target, **not** an out-of-envelope curiosity.
 
-## 1. What B6 measured (the trigger, all numbers reproduced this week)
+## 1. What B6 measured (the trigger — **P0 2026-06-11: the in-house plateau/ledger rows below are
+RETRACTED**, not reproducible from the committed deck, see §8; the stiffness observation stands)
 
 Canonical tilted-V (Di Giammarco 1996 / Kollet & Maxwell 2006; IH-MIP2 benchmark): two 810×1000 m
 hillslope planes (cross-slope 5%) converging to a central channel line (valley slope 2%), rain
@@ -41,7 +45,8 @@ convergent topography it is not cosmetic.** The current global-rescale limiter c
 hillslope undershoots by removing water from *everywhere else* (the channel) — non-local and
 solution-corrupting even when it conserves, and it has a degenerate dry-everything branch.
 
-### Defect B — lax step acceptance can book non-physical states (NEW finding, UNCONFIRMED — P0 confirms)
+### Defect B — lax step acceptance can book non-physical states (P0 2026-06-11: the MECHANISM is
+confirmed and hardened — O5 landed; the 20%-gap attribution itself is retracted, §8)
 `CoupledProblem.step()` accepts any `snes.getConvergedReason() > 0`. `snes_stol` is **not set** →
 PETSc default 1e-8 → **`SNES_CONVERGED_SNORM_RELATIVE` is live**: a stalled back-tracking line search
 (tiny Newton steps on the stiff V) can be reported "converged" with a **large unbalanced residual** —
@@ -136,7 +141,83 @@ path stays for MMS/regression archaeology; the upwind path gets its own (order-1
   FEM; the goal is correct + efficient *convergence-line* behaviour at field scale (the swale), with the
   canonical km V as the stress validator, not a watershed-product pivot.
 
-## 8. Artifacts
+## 8. P0 results (2026-06-11) — diagnosis, attribution, wave-0 outcome
+
+### 8.1 The §1 in-house numbers are RETRACTED (not reproducible from the committed deck)
+Instrumented re-runs of the canonical V (24×16×3, committed deck + engine at `df61ff4`; per-accepted-step
+ENGINE ledger `gap_k = ΔW_k − dt·(rain·A − Q_out) − dclip_k`, storage in the residual-consistent measures,
+fluxes booked at the solved state; runner `scratch/_tiltedv_diag.py`):
+
+| run (storm window) | accepted / rejected | dt pin | plateau | engine ledger gap |
+|---|---|---|---|---|
+| spike-default controller | 1096 / 1 | 5.3e-5 d | **0.997·Q_eq** | **+5.4e-8 m³ = 2.1e-12·cum_rain** |
+| aggressive controller (the published run's cadence) | 563 / 16 | 1.1e-4 d | **0.998·Q_eq** | **≈0 (same order)** |
+
+`clip_mass_adjust = 0` in both — the limiter's degenerate branch NEVER fires on the V. The published npz
+(preserved as `~/parflow-runs/tilted_v/summaries/tiltedv_inhouse_s1_pre_p0_corrupt.npz`) additionally
+records `soil_dw = −26 m³` at storm end — NET soil-storage LOSS under sustained ponded rain on suction
+soil, opposite in sign to the committed-deck rerun (+47 m³) and with no sustaining mechanism in the
+committed exchange (no GHB, no bottom outlet; the NCP infiltrates under a pond over suction soil —
+nodal exfiltration is possible only transiently where ψ_top > d). Conclusion: the published 0.676·Q_eq
+plateau and "20.0% mass-ledger gap" came from a corrupted mid-session run state and were published
+without a committed-deck reproduction. B5/B6 engine lineage
+verified untouched (`63145e2 == ea3f466 == df61ff4` on `pids_forward/`), so this is not a code-version
+ambiguity. The B6 README §5e, harness DELTAS, and HTML metrics are corrected accordingly.
+
+### 8.2 Defect-B attribution (the §2 candidates)
+- **B1 (acceptance quality) — mechanism real, hardened.** Even the healthy re-runs BOOKED reason-4
+  (`CONVERGED_SNORM_RELATIVE`, stalled line search) verdicts: 12 / 15 accepted steps with |F| up to
+  3.3e-3 vs the rtol-tested median ~2e-7. At this resolution their booked-mass error measured ≤1e-6 m³
+  total — but the verdict certifies nothing about balance, so it stays a latent leak path. **O5 landed**
+  (§8.4).
+- **B2 (limiter degenerate branch) — dead on the V.** Never fires (either scale, either controller);
+  the earlier B6 HTML attribution of the leak to this branch was hypothesis stated as fact, now corrected.
+- **B3 (limiter↔NCP staleness) — no ledger effect.** The books pair solved-state fluxes with
+  limiter-conserved storage; the coupled per-step residue measures ≤3e-7 m³/step (noise-level, zero-sum).
+- **Harness sampling artifact:** the published "leak" was computed from a 40-point trapezoid
+  reconstruction of a hydrograph with a 3.3×Q_eq wave-arrival spike; that reconstruction carries a
+  few-% residue even for a perfect run. The harness now reports the engine ledger and labels the trapz
+  number as sampling.
+
+### 8.3 Defect A confirmed — and its mechanism is also the dt-pin (standalone 2-D reproducer)
+`scratch/_v2d_overland_diag.py` (standalone Module-2 `OverlandProblem`, 2-D V 48×30, ~30 s/run, no
+Richards/NCP): plateau **0.999·Q_eq**, external books −0.08% of cum rain (all of it = front-window
+booking-convention residue + a 0.24% outlet-form quadrature mismatch — Module-2-only; the coupled ridge
+outlet shares one measure between residual and booking). But the wet/dry SAWTOOTH clips fire on
+**430/430 plateau steps** (~3.2 cm; up to 25.7 cm at wave arrival), and the global rescale then shaves
+the whole positive surface — measured **post/solved outlet-flux ratio 0.785 every plateau step** (three
+independent assemblies agree: booked form, degree-20 form, residual row-sum). Newton spends ~6
+iterations re-equilibrating that non-local perturbation every step, so the controller never grows dt:
+**the "scale-independent stiffness" of §1 IS the limiter↔Newton fight**, not km-scale conditioning.
+**Field-scale severity (the PIDS regime):** at 162 m (6.75-m cells, n=0.015) the equilibrium outlet
+sheet is ~3 mm while clips reach 1.3 cm — Defect A is order-of-the-signal; with machine-closed books
+the plateau still degrades to **0.876·Q_eq** (a SOLUTION error, not a leak: t_conc ~0.002 d ≪ the
+storm, so the true physics equilibrates at 1.0). O1 is therefore *accuracy-critical for the swale
+regime*, not just a robustness/dt fix.
+
+### 8.4 Wave-0 outcome
+- **O5 (landed + tested):** `snes_stol` pinned explicitly (1e-8) in both solvers' defaults; `step()`
+  books reason-4 stagnation ONLY below an absolute bar `stall_accept_fnorm = 1e-5` (measured legitimate
+  floor population ≤1.2e-6 across the Tier-1 MMS/near-flat cases vs dirty-stall population ≥1e-5..3e-3;
+  a blanket `stol=0` turned floor states into max-it grinds + dt death spirals — measured, rejected);
+  dirty stalls restore state and reject so the caller cuts dt; `last_reason`/`last_fnorm` recorded as
+  the audit trail. Tier-1 `tests/test_step_acceptance.py`; full suite green (135).
+- **O4 (deferred):** not implicated in any books violation (B2 dead; books close without it). Its
+  remaining crime is the §8.3 churn, which O1 removes at the source (no undershoots → limiter no-op);
+  building local redistribution now would scaffold what P1 obsoletes.
+- **P0 gate:** canonical + field-scale committed-spike re-runs against the fixed engine close the
+  engine ledger to ≤1e-11·cum_rain with every violation an explicit rejected step (field-scale:
+  −8.6e-12, 3 rejections, clean recession; canonical: see §8.1 diagnostics — spike-verbatim rerun
+  numbers in the regenerated B6 artifacts).
+
+### 8.5 Consequences for the plan
+P1 (O1 upwind-mobility edge flux) is unchanged and **upgraded in priority rationale**: it is the
+accuracy fix for the PIDS field scale (§8.3), the dt-pin fix (limiter goes no-op), and the monotonicity
+fix. P0's conservation hotfix turned out to be mostly *verification* — the committed engine's books were
+already structurally sound; what P0 actually bought is (a) the acceptance hardening that closes the
+latent B1 path, (b) the measured mechanism that re-aims P1, and (c) the corrected public record.
+
+## 9. Artifacts
 - This plan; B6 deck `parflow/cases/tilted_v_catchment.py`; harness `benchmarks/build_comparison_tiltedv.py`
   + `make_comparison_tiltedv_html.py`; in-house runner `forward-model/scratch/_tiltedv_spike.py` (to be
   promoted out of scratch in P2/P3); ParFlow reference summaries in `~/parflow-runs/tilted_v/summaries/`.

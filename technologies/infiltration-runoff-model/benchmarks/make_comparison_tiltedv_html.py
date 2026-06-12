@@ -117,9 +117,13 @@ def build(nc_path: str, html_path: str) -> str:
         f"&nbsp;analytic Q_eq = {_fmt(_attr(ds,'Q_eq_m3day'))} m³/d = <b>{_fmt(_attr(ds,'Q_eq_m3s'))} m³/s</b>",
         "<b>--- equilibrium plateau (late storm) ---</b>",
         f"&nbsp;ParFlow:  {_fmt(_attr(ds,'plateau_parflow_over_Qeq'))} Q_eq  <i>(reproduces known answer)</i>",
-        f"&nbsp;in-house: {_fmt(_attr(ds,'plateau_inhouse_over_Qeq'))} Q_eq  "
-        f"<i>(LEAK-corrupted: {_fmt(100*_attr(ds,'inhouse_mass_leak_frac'))}% mass lost)</i>",
+        f"&nbsp;in-house: {_fmt(_attr(ds,'plateau_inhouse_over_Qeq'))} Q_eq  <i>(reproduces known answer)</i>",
         f"&nbsp;(cold-start peaks: PF {_fmt(_attr(ds,'peak_parflow_over_Qeq'))}×, IH {_fmt(_attr(ds,'peak_inhouse_over_Qeq'))}×)",
+        "<b>--- in-house mass books (P0-corrected) ---</b>",
+        f"&nbsp;engine ledger gap: {_fmt(100*_attr(ds,'inhouse_ledger_gap_engine_frac'))}% of cum rain "
+        f"<i>(per-accepted-step books)</i>",
+        f"&nbsp;40-pt trapz residue: {_fmt(100*_attr(ds,'inhouse_trapz_residue_frac'))}% "
+        f"<i>(hydrograph sampling, not mass loss)</i>",
         "<b>--- in-house cost (envelope) ---</b>",
         f"&nbsp;{_fmt(_attr(ds,'inhouse_run_minutes'))} min, {_attr(ds,'inhouse_steps')} steps, mesh {_attr(ds,'inhouse_mesh')}",
         f"&nbsp;ParFlow grid {_attr(ds,'parflow_grid')}",

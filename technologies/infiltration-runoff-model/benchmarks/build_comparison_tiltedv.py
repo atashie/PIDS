@@ -14,12 +14,18 @@ Inputs (npz, in $HOME/parflow-runs/tilted_v/summaries/):
   * in-house: tiltedv_inhouse_s1.npz  (diffusion-wave CoupledProblem; outlet by the Manning NORMAL-DEPTH
     add_outflow_bc -> outflow_rate() is direct). A documented outlet-BC formulation delta; both -> Q_eq.
 
-B6 ENVELOPE FINDINGS carried into the metrics/deltas:
+B6 ENVELOPE FINDINGS carried into the metrics/deltas (P0-CORRECTED 2026-06-11, see the
+stabilization plan SS9 -- the original "0.676 Q_eq plateau / 20% mass-ledger gap" was NOT
+reproducible from the committed deck and is RETRACTED):
   - ParFlow reproduces the known answer (Q -> Q_eq = 4.86 m^3/s exactly) + clean recession.
-  - The in-house engine ROUTES the tilted-V but the CONVERGENT channel routing makes the coupled overland
-    solve stiff at ANY scale (dt pins ~1e-4, ~1-1.5 hr/run on a 24x16x3 mesh -- NOT a km-scale effect;
-    B5's single planar slope was fast). A characterized field-scale-FEM-vs-watershed envelope limit.
-  - Both show a cold-start transient (the pre-saturated catchment ponds before steady routing).
+  - The in-house engine ALSO reaches the known answer (plateau ~1.0 Q_eq) with the ENGINE-EXACT
+    per-step ledger closed to ~roundoff (the npz carries cum_rain/cum_out/ext_gap from the
+    accepted-step books; the 40-point trapz reconstruction below differs by a few % -- SAMPLING
+    of the wave-arrival spike, not mass loss).
+  - What remains real on the convergent V: scale-independent STIFFNESS (dt pins ~5e-5..1e-4 d;
+    measured mechanism = wet/dry sawtooth undershoots fire the global-rescale positivity limiter
+    every step and Newton re-equilibrates the perturbation -- the P1 upwind flux removes the
+    undershoots at the source), plus a cold-start transient in both models.
 
 Run (pids-fem): python build_comparison_tiltedv.py
 """
@@ -44,14 +50,23 @@ DELTAS = (
     "(2) WAVE -- both diffusion-wave here (in-house diffusion-wave; ParFlow OverlandDiffusive). "
     "(3) COLD START -- the pre-saturated catchment ponds transiently before steady routing (in-house "
     "wave-arrival overshoot; ParFlow storage-balance spike) -> the rising limb is transient-contaminated; "
-    "the EQUILIBRIUM plateau + recession + Q_eq are the clean comparison. "
-    "(4) IN-HOUSE ENVELOPE -- two limits found on this steep convergent watershed: (a) the convergent "
-    "channel routing makes the coupled overland solve stiff at ANY scale (dt pins ~1e-4, ~20 min/run on "
-    "24x16x3; B5's single slope was fast -> it's the convergence, not km scale); (b) MASS CONSERVATION -- "
-    "on the steep V the diffusion-wave undershoots d and the overland positivity LIMITER hits its "
-    "degenerate dry-the-cell branch, LEAKING ~20-30% of the input, so the in-house plateaus at ~0.68 Q_eq "
-    "(leak-corrupted, NOT physics). The in-house is a field-scale drainage FEM; steep km-watershed routing "
-    "is outside its robustness envelope. ParFlow (purpose-built kinematic-wave watershed router) handles it."
+    "the EQUILIBRIUM plateau + recession + Q_eq are the clean comparison. The in-house CUMULATIVE-outflow "
+    "trace here is the 40-point trapz reconstruction -- it under/over-samples that spike by a few %; the "
+    "ENGINE per-accepted-step ledger (metrics) is the honest mass statement. "
+    "(4) IN-HOUSE ENVELOPE (P0-corrected 2026-06-11) -- the earlier B6 text attributed a 20% mass-ledger "
+    "gap to the positivity limiter's degenerate branch and a 0.676 Q_eq plateau; P0 of the stabilization "
+    "plan could NOT reproduce either from the committed deck (engine books close to ~1e-12 of cum rain "
+    "under BOTH dt-controller settings; plateau ~1.0 Q_eq; the published npz recorded NET soil DRYING "
+    "(-26 m^3) under sustained ponded rain, opposite in sign to the committed-deck rerun (+47 m^3) with "
+    "no sustaining mechanism in the committed exchange -> a corrupted mid-session run was published "
+    "without a committed-deck reproduction; RETRACTED, original preserved as "
+    "tiltedv_inhouse_s1_pre_p0_corrupt.npz). What REMAINS real on the convergent V: (a) scale-"
+    "independent STIFFNESS -- dt pins ~5e-5..1e-4 d at 1.6 km AND 162 m (measured mechanism: wet/dry "
+    "sawtooth undershoots fire the global-rescale limiter EVERY step and Newton re-equilibrates the "
+    "non-local perturbation each step; the planned P1 upwind-mobility flux removes the undershoots at "
+    "the source); (b) step-acceptance hardening landed (stagnation verdicts bookable only at the "
+    "residual floor -- dirty stalled-line-search states, |F| up to ~3e-3 observed here, are now honest "
+    "rejections). ParFlow (purpose-built kinematic watershed router) needs neither limiter nor rejection."
 )
 
 
@@ -80,21 +95,28 @@ def main():
     pl = (t > 0.5 * storm) & (t <= storm)
     plat_pf = float(np.mean(q_pf[pl])); plat_ih = float(np.mean(q_ih[pl]))
 
-    # in-house MASS-BALANCE check (cum_rain = cum_out + surf storage + soil storage + LEAK). On the steep
-    # convergent V the diffusion-wave undershoots d and the overland POSITIVITY LIMITER hits its degenerate
-    # "dry the cell" branch -> mass loss; the 0.68 Q_eq plateau is ~20-30% mass-leak-corrupted, not physics.
+    # in-house MASS BOOKS. The honest statement is the ENGINE per-accepted-step ledger saved in the
+    # npz (cum_rain_engine = cum_out_engine + dw_engine + ext_gap_engine, ext_gap ~ roundoff after the
+    # P0 acceptance hardening). The 40-point trapz reconstruction (cum_rain - trapz(q) - dstorage at
+    # storm end) is ALSO reported -- its few-% residue is SAMPLING of the wave-arrival spike, not mass
+    # loss (P0-corrected 2026-06-11; the earlier 20%-leak attribution is retracted).
     surf_ih = np.interp(t, ih["times"], ih["surface_water"])
     soil_ih = np.interp(t, ih["times"], ih["soil_dw"])
     i_se = int(np.argmin(np.abs(t - storm)))
     leak_se = float(cum_rain[i_se] - cum_ih[i_se] - surf_ih[i_se] - soil_ih[i_se])
-    inhouse_leak_frac = leak_se / max(cum_rain[i_se], 1e-9)
+    inhouse_trapz_residue_frac = leak_se / max(cum_rain[i_se], 1e-9)
+    cr_eng = float(ih.get("cum_rain_engine", np.array(np.nan)))
+    inhouse_ledger_gap_engine_frac = float(ih.get("ext_gap_engine", np.array(np.nan))) / max(cr_eng, 1e-9)
 
     m = dict(
         Q_eq_m3day=Q_eq, Q_eq_m3s=Q_eq / 86400.0,
         plateau_parflow_m3day=plat_pf, plateau_inhouse_m3day=plat_ih,
         plateau_parflow_over_Qeq=plat_pf / Q_eq, plateau_inhouse_over_Qeq=plat_ih / Q_eq,
         peak_parflow_over_Qeq=float(np.max(q_pf) / Q_eq), peak_inhouse_over_Qeq=float(np.max(q_ih) / Q_eq),
-        inhouse_mass_leak_frac=inhouse_leak_frac,
+        inhouse_ledger_gap_engine_frac=inhouse_ledger_gap_engine_frac,
+        inhouse_trapz_residue_frac=inhouse_trapz_residue_frac,
+        inhouse_clip_mass_adjust_m3=float(ih.get("clip_mass_adjust", np.array(np.nan))),
+        inhouse_rejected_steps=int(ih.get("n_rej", np.array(-1))),
         inhouse_run_minutes=float(ih.get("run_s", np.array(0.0))) / 60.0,
         inhouse_steps=int(ih.get("n_step", np.array(0))),
         inhouse_mesh=f"{int(ih['NX'])}x{int(ih['NY'])}x{int(ih['NZ'])}",
@@ -126,11 +148,13 @@ def main():
     out_html = os.path.join(HERE, "html", f"tilted_v__canonical__{DATE}.html")
     build_html(out_nc, out_html)
 
-    print("=== B6 tilted-V: in-house vs ParFlow vs Q_eq ===")
+    print("=== B6 tilted-V: in-house vs ParFlow vs Q_eq (P0-corrected) ===")
     print(f"  Q_eq = {Q_eq:.0f} m^3/day (~{Q_eq/86400:.3f} m^3/s)")
     print(f"  equilibrium plateau (late storm):  ParFlow {plat_pf/Q_eq:.3f} Q_eq   in-house {plat_ih/Q_eq:.3f} Q_eq")
-    print(f"  in-house MASS LEAK at storm-end: {inhouse_leak_frac*100:.1f}% (positivity-limiter on the steep V "
-          f"-> plateau is leak-corrupted)")
+    print(f"  in-house ENGINE ledger gap: {inhouse_ledger_gap_engine_frac*100:+.2e}% of cum rain "
+          f"(clip_mass_adjust={m['inhouse_clip_mass_adjust_m3']:.3f} m^3, {m['inhouse_rejected_steps']} rejected steps)")
+    print(f"  in-house 40-pt trapz reconstruction residue at storm-end: {inhouse_trapz_residue_frac*100:+.1f}% "
+          f"(hydrograph SAMPLING, not mass loss)")
     print(f"  in-house run: {m['inhouse_run_minutes']:.1f} min, {m['inhouse_steps']} steps, mesh {m['inhouse_mesh']}")
     print(f"  -> WROTE {os.path.relpath(out_nc, HERE)}  +  {os.path.relpath(out_html, HERE)}")
 

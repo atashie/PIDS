@@ -85,6 +85,8 @@ def main():
     t_run = time.time()
     dt = 1e-5
     n_step = 0
+    n_rej = 0
+    cum_rain_exact = 0.0  # engine-exact rain booking (rain.value * h per ACCEPTED step)
     print(f"{'t[day]':>8} {'Q_out[m3/d]':>12} {'Q/Q_eq':>7} {'surf_W':>10} {'soil_dW':>10} {'iters':>5} {'dt':>9}")
     w0_soil = prob.soil_water()
     t_hist, q_hist, surf_hist, soil_hist = [0.0], [0.0], [float(prob.surface_water())], [0.0]  # hydrograph
@@ -97,8 +99,10 @@ def main():
             n_step += 1
             if converged:
                 t += h
+                cum_rain_exact += h * float(rain.value) * AREA
                 dt = min(dt * (1.5 if it <= GROW_AT else 0.7 if it >= SHRINK_AT else 1.0), DT_MAX)
             else:
+                n_rej += 1
                 dt *= 0.5
                 if dt < 1e-11:
                     print(f"  !! dt collapse at t={t:.6g} -- CONDITIONING/SCALE FAILURE", flush=True)
@@ -110,12 +114,23 @@ def main():
               f"{prob.soil_water()-w0_soil:10.1f} {int(it):5d} {dt:9.2e}", flush=True)
     run_s = time.time() - t_run
     qf = prob.outflow_rate()
+    # ENGINE-EXACT ledger (per accepted step, NOT the 40-point trapz the harness reconstructs --
+    # which mis-samples the wave-arrival spike): every accepted step is residual-tested, so
+    # cum_rain = cum_outflow + dW + ext_gap must close to ~roundoff (P0 acceptance hardening).
+    dW_eng = (prob.soil_water() - w0_soil) + prob.surface_water()
+    ext_gap_eng = cum_rain_exact - prob.cum_outflow - dW_eng
+    print(f"  [mass] ENGINE ledger: cum_rain={cum_rain_exact:.1f}  cum_out={prob.cum_outflow:.1f}  "
+          f"dW={dW_eng:.1f}  ext_gap={ext_gap_eng:+.3e} m^3 "
+          f"({100.0*ext_gap_eng/max(cum_rain_exact,1e-9):+.2e}% of cum rain)", flush=True)
     print(f"  [mass] clip_mass_adjust={getattr(prob, 'clip_mass_adjust', float('nan')):.1f} m^3  "
-          f"max_clip={getattr(prob, 'max_clip_seen', float('nan')):.4f} m", flush=True)
+          f"max_clip={getattr(prob, 'max_clip_seen', float('nan')):.4f} m  rejected_steps={n_rej}", flush=True)
     out = os.environ.get("OUT", f"scratch/tiltedv_inhouse_s{SCALE:g}.npz")
     np.savez(out, times=np.array(t_hist), q_out=np.array(q_hist), surface_water=np.array(surf_hist),
              soil_dw=np.array(soil_hist), Q_eq=Q_EQ, LX=LX, LY=LY, NX=NX, NY=NY, NZ=NZ, scale=SCALE,
-             n_man=N_MAN, Ks=KS, storm=STORM, t_end=T_END, sx=SX, sy=SY, rain=RAIN, run_s=run_s, n_step=n_step)
+             n_man=N_MAN, Ks=KS, storm=STORM, t_end=T_END, sx=SX, sy=SY, rain=RAIN, run_s=run_s, n_step=n_step,
+             n_rej=n_rej, cum_rain_engine=cum_rain_exact, cum_out_engine=prob.cum_outflow,
+             dw_engine=dW_eng, ext_gap_engine=ext_gap_eng, clip_mass_adjust=prob.clip_mass_adjust,
+             max_clip=prob.max_clip_seen)
     print(f"\n[done] {n_step} steps  run={run_s:.1f}s ({run_s/max(n_step,1)*1000:.0f} ms/step)  "
           f"final Q={qf:.0f} ({qf/Q_EQ:.2f} Q_eq)  peak approached Q_eq: {'YES' if qf/Q_EQ > 0.5 else 'NO/PARTIAL'}  "
           f"-> WROTE {out}", flush=True)
