@@ -130,7 +130,10 @@ def main():
              n_man=N_MAN, Ks=KS, storm=STORM, t_end=T_END, sx=SX, sy=SY, rain=RAIN, run_s=run_s, n_step=n_step,
              n_rej=n_rej, cum_rain_engine=cum_rain_exact, cum_out_engine=prob.cum_outflow,
              dw_engine=dW_eng, ext_gap_engine=ext_gap_eng, clip_mass_adjust=prob.clip_mass_adjust,
-             max_clip=prob.max_clip_seen)
+             max_clip=prob.max_clip_seen,
+             # FULL run provenance (P0 lesson: the unrecorded controller knobs were exactly the
+             # ambiguity that made the retracted 2026-06-10 run irreproducible) --
+             grow_at=GROW_AT, shrink_at=SHRINK_AT, dt_max=DT_MAX, comm_size=MPI.COMM_WORLD.size)
     print(f"\n[done] {n_step} steps  run={run_s:.1f}s ({run_s/max(n_step,1)*1000:.0f} ms/step)  "
           f"final Q={qf:.0f} ({qf/Q_EQ:.2f} Q_eq)  peak approached Q_eq: {'YES' if qf/Q_EQ > 0.5 else 'NO/PARTIAL'}  "
           f"-> WROTE {out}", flush=True)

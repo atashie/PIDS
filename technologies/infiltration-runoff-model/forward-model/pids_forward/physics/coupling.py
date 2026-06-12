@@ -253,10 +253,12 @@ class CoupledProblem:
         self.cum_outflow = 0.0    # cumulative outflow volume ∫ outflow dt over accepted steps
         self.last_reason = 0      # SNES converged reason of the last step() solve (audit trail)
         self.last_fnorm = np.nan  # |F| at that solve's exit: what residual the books accepted
-        self.stall_accept_fnorm = 1e-5  # reason-4 (stagnation) bookable only if |F| <= this
-        # ABSOLUTE bar: admits the measured legitimate-floor population (<= ~1.2e-6, Tier-1
-        # MMS/near-flat) with margin, rejects the stiff-V stalled-line-search population
-        # (|F| ~ 1e-5..3e-3, B6 P0). Override per problem if its residual floor differs.
+        self.stall_accept_fnorm = 3e-6  # reason-4 (stagnation) bookable only if |F| <= this
+        # ABSOLUTE bar = the geometric mean of the two measured populations: legitimate floors
+        # <= ~1.2e-6 (Tier-1 MMS/near-flat) vs dirty stalled line searches >= ~1e-5..3e-3 (B6
+        # P0 convergent V) -- ~2.5x margin to each. The bar is in assembled-residual units
+        # (mesh/area dependent): override per problem if its floor differs; mis-set it LOW and
+        # the failure is a loud dt_min error, never silent booking.
         self._drains: list = []          # (drain_facets, conductance, external_head) per add_drainage_bc
         self._drainage_forms: list = []  # compiled q_n*ds GHB forms (subsurface Darcy/head drainage)
         self.last_drainage = 0.0  # net subsurface drainage at the SOLVED state (+ = out)
@@ -547,11 +549,22 @@ class CoupledProblem:
     def step(self, dt: float):
         """Advance one monolithic backward-Euler Newton step. Returns (converged, iters)."""
         self.dt.value = dt
+        lam_save = self.lam.x.array.copy()  # λ has no _n shadow; stash for honest rejection restore
         self._ensure_problem()
         self._problem.solve()
         snes = self._problem.solver
         self.last_reason = int(snes.getConvergedReason())
         self.last_fnorm = float(snes.getFunctionNorm())
+        if self.last_reason == 4:
+            # PETSc's failed-line-search SNORM exit can return BEFORE the cached norm is updated
+            # (snes->norm then belongs to the PREVIOUS iterate while x sits at the failed trial
+            # point) -- recompute ||F|| at the RETURNED iterate so the floor gate below never
+            # books on a stale norm. Rare path; one extra residual evaluation.
+            x = snes.getSolution()
+            r = x.duplicate()
+            snes.computeFunction(x, r)
+            self.last_fnorm = float(r.norm())
+            r.destroy()
         # bookable = residual-tested (reasons 2/3), or stagnation AT the residual floor: reason 4
         # only certifies the iterate stopped moving. With a numerically tiny leftover residual that
         # is the legitimate floor exit; far from balance it is a stalled line search whose booking
@@ -582,6 +595,10 @@ class CoupledProblem:
             self.psi.x.scatter_forward()
             self.d.x.array[:] = self.d_n.x.array
             self.d.x.scatter_forward()
+            # λ too: leaving the stalled multiplier would seed the retry's Newton with a wrong
+            # NCP active-set guess and leak the dirty value into exchange_flux() diagnostics.
+            self.lam.x.array[:] = lam_save
+            self.lam.x.scatter_forward()
         return converged, iters
 
     def advance(self, t_end, dt, *, dt_min=1e-9, dt_max=None, grow=1.5, cut=0.5,

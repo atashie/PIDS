@@ -160,7 +160,8 @@ def main():
     np.savez(out, **a, cum_rain=cum_rain, cum_out=cum_out, dW_total=dW_total, ext_gap=ext_gap,
              clip_mass_adjust=prob.clip_mass_adjust, n_acc=n_acc, n_rej=n_rej, run_s=run_s,
              NX=NX, NY=NY, NZ=NZ, Q_eq=Q_EQ, storm=STORM, t_end=T_END, stol0=int(STOL0),
-             Ks=KS, scale=SCALE)
+             Ks=KS, scale=SCALE,
+             grow_at=GROW_AT, shrink_at=SHRINK_AT, dt_max=DT_MAX, comm_size=MPI.COMM_WORLD.size)
     print(f"[done] -> {out}", flush=True)
 
 

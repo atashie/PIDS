@@ -154,15 +154,25 @@ fluxes booked at the solved state; runner `scratch/_tiltedv_diag.py`):
 | aggressive controller (the published run's cadence) | 563 / 16 | 1.1e-4 d | **0.998·Q_eq** | **≈0 (same order)** |
 
 `clip_mass_adjust = 0` in both — the limiter's degenerate branch NEVER fires on the V. The published npz
-(preserved as `~/parflow-runs/tilted_v/summaries/tiltedv_inhouse_s1_pre_p0_corrupt.npz`) additionally
-records `soil_dw = −26 m³` at storm end — NET soil-storage LOSS under sustained ponded rain on suction
-soil, opposite in sign to the committed-deck rerun (+47 m³) and with no sustaining mechanism in the
-committed exchange (no GHB, no bottom outlet; the NCP infiltrates under a pond over suction soil —
-nodal exfiltration is possible only transiently where ψ_top > d). Conclusion: the published 0.676·Q_eq
-plateau and "20.0% mass-ledger gap" came from a corrupted mid-session run state and were published
-without a committed-deck reproduction. B5/B6 engine lineage
-verified untouched (`63145e2 == ea3f466 == df61ff4` on `pids_forward/`), so this is not a code-version
-ambiguity. The B6 README §5e, harness DELTAS, and HTML metrics are corrected accordingly.
+(preserved as `~/parflow-runs/tilted_v/summaries/tiltedv_inhouse_s1_pre_p0_corrupt.npz`, sha256
+`4d51616baa434806bc70f7157361bf9e566e2c782b9ea0fe36a2524a5285f93e`) additionally records
+`soil_dw = −26 m³` at storm end — NET soil-storage LOSS under sustained ponded rain on suction soil,
+opposite in sign to the committed-deck rerun (+47 m³). A CONVERGED committed-deck solution has no
+sustaining mechanism for that (no GHB, no bottom outlet; the NCP infiltrates under a pond over suction
+soil — nodal exfiltration only transiently where ψ_top > d); booked UNBALANCED iterates are not so
+constrained, so the −26 m³ evidences corrupted booked states without by itself identifying the channel.
+**Provenance narrowing (checked 2026-06-11):** every parameter the old npz schema records (Ks, n_man,
+scale, storm, t_end, mesh, rain, slopes, extents) MATCHES the deck defaults, and the engine lineage is
+verified untouched (`63145e2 == ea3f466 == df61ff4` on `pids_forward/`). What the old schema did NOT
+record: the dt-controller knobs (GROW_AT/SHRINK_AT/DT_MAX), the launch comm size, and any uncommitted
+in-session code state. The published cadence (769 attempts, full window) was not reproduced by either
+tested controller, so a hotter unrecorded controller exercising the then-open B1 acceptance hole —
+entirely on the committed deck — and a divergent in-session code state are BOTH live explanations.
+Conclusion (the defensible statement): the published numbers are **not reproducible from the committed
+deck under any tested configuration and are RETRACTED; the provenance of the published run is unknown**
+(candidates above; either way the B1 hole is now closed by O5). The new runner npz schema records the
+controller knobs + comm size so this ambiguity cannot recur. The B6 README §5e, harness DELTAS, and
+HTML metrics are corrected accordingly.
 
 ### 8.2 Defect-B attribution (the §2 candidates)
 - **B1 (acceptance quality) — mechanism real, hardened.** Even the healthy re-runs BOOKED reason-4
@@ -179,36 +189,63 @@ ambiguity. The B6 README §5e, harness DELTAS, and HTML metrics are corrected ac
   few-% residue even for a perfect run. The harness now reports the engine ledger and labels the trapz
   number as sampling.
 
-### 8.3 Defect A confirmed — and its mechanism is also the dt-pin (standalone 2-D reproducer)
+### 8.3 Defect A confirmed — the never-settling sawtooth state (standalone 2-D reproducer + controls)
 `scratch/_v2d_overland_diag.py` (standalone Module-2 `OverlandProblem`, 2-D V 48×30, ~30 s/run, no
 Richards/NCP): plateau **0.999·Q_eq**, external books −0.08% of cum rain (all of it = front-window
 booking-convention residue + a 0.24% outlet-form quadrature mismatch — Module-2-only; the coupled ridge
-outlet shares one measure between residual and booking). But the wet/dry SAWTOOTH clips fire on
+outlet shares one measure between residual and booking). The wet/dry SAWTOOTH clips fire on
 **430/430 plateau steps** (~3.2 cm; up to 25.7 cm at wave arrival), and the global rescale then shaves
 the whole positive surface — measured **post/solved outlet-flux ratio 0.785 every plateau step** (three
-independent assemblies agree: booked form, degree-20 form, residual row-sum). Newton spends ~6
-iterations re-equilibrating that non-local perturbation every step, so the controller never grows dt:
-**the "scale-independent stiffness" of §1 IS the limiter↔Newton fight**, not km-scale conditioning.
-**Field-scale severity (the PIDS regime):** at 162 m (6.75-m cells, n=0.015) the equilibrium outlet
-sheet is ~3 mm while clips reach 1.3 cm — Defect A is order-of-the-signal; with machine-closed books
-the plateau still degrades to **0.876·Q_eq** (a SOLUTION error, not a leak: t_conc ~0.002 d ≪ the
-storm, so the true physics equilibrates at 1.0). O1 is therefore *accuracy-critical for the swale
-regime*, not just a robustness/dt fix.
+independent assemblies agree: booked form, degree-20 form, residual row-sum): non-local solution
+corruption, channel water teleported to the front ring every step.
+
+**The dt-pin, after the causal control (`scratch/_v2d_limiter_control.py`, adversarial-review F9):**
+the first-pass claim "the pin IS the limiter↔Newton fight" was REFUTED in its strong form. From the
+same plateau state: limiter ON = it=4/step; limiter BYPASSED = it does NOT drop (4) and 10/12 steps
+then FAIL outright (the unclipped negatives poison the next solve — the limiter is LOAD-BEARING for
+solvability, exactly its design intent); dt DOUBLED with limiter ON = it=5, fully robust (the coupled
+aggressive controller likewise ran 2× dt at it≈11). So the pin = the adaptive controller's GROW_AT
+threshold meeting a PERSISTENT per-step cost of ~4–6+ Newton iterations — a throughput cost, not a
+hard wall, and tunable (a looser GROW_AT trades iterations for dt). The persistent cost itself is
+Defect-A-rooted: the sawtooth-and-clip state NEVER SETTLES (a true discrete steady state would
+converge in 1–2 iterations and dt would grow freely), so every plateau step re-solves a perturbed
+nonlinear problem. O1 removes the sawtooth → the limiter goes no-op → steady states actually settle.
+
+**Field-scale severity (the PIDS regime):** at 162 m with 24×16 cells (6.75 m) the equilibrium outlet
+sheet is ~3 mm while clips reach 1.3 cm — the sawtooth is order-of-the-signal, and the coupled run's
+plateau degrades to **0.876·Q_eq with machine-closed books** (a SOLUTION error, not a leak:
+kinematic t_conc ≈ 450 s hillslope + channel ≈ 0.005–0.01 d, order-of-magnitude, ≪ the 0.0625 d
+storm — the true physics equilibrates at 1.0). **Resolution control (review F10):** the standalone V
+at the same scale converges with h — plateau **1.010·Q_eq at 48×30** (3.4-m cells) and **0.998·Q_eq
+at 96×60**, books tightening (−1.03% → +0.24%) and max clip halving (3.2 → 1.8 cm) — the degradation
+is under-resolution of the mm-sheet by the oscillatory Galerkin scheme (coupled-vs-standalone
+contribution not isolated; the P1 convergence study + P3 swale fixture do that properly; the
+standalone field-scale books residue is the limiter-rebooking effect, largest exactly where
+clip ≫ sheet). O1 is therefore *accuracy-critical for the swale regime*, not just a robustness/dt fix.
 
 ### 8.4 Wave-0 outcome
-- **O5 (landed + tested):** `snes_stol` pinned explicitly (1e-8) in both solvers' defaults; `step()`
-  books reason-4 stagnation ONLY below an absolute bar `stall_accept_fnorm = 1e-5` (measured legitimate
-  floor population ≤1.2e-6 across the Tier-1 MMS/near-flat cases vs dirty-stall population ≥1e-5..3e-3;
-  a blanket `stol=0` turned floor states into max-it grinds + dt death spirals — measured, rejected);
-  dirty stalls restore state and reject so the caller cuts dt; `last_reason`/`last_fnorm` recorded as
-  the audit trail. Tier-1 `tests/test_step_acceptance.py`; full suite green (135).
-- **O4 (deferred):** not implicated in any books violation (B2 dead; books close without it). Its
-  remaining crime is the §8.3 churn, which O1 removes at the source (no undershoots → limiter no-op);
-  building local redistribution now would scaffold what P1 obsoletes.
-- **P0 gate:** canonical + field-scale committed-spike re-runs against the fixed engine close the
-  engine ledger to ≤1e-11·cum_rain with every violation an explicit rejected step (field-scale:
-  −8.6e-12, 3 rejections, clean recession; canonical: see §8.1 diagnostics — spike-verbatim rerun
-  numbers in the regenerated B6 artifacts).
+- **O5 (landed + tested, hardened by adversarial review):** `snes_stol` pinned explicitly (1e-8) in
+  both solvers' defaults; `step()` books reason-4 stagnation ONLY below an absolute bar
+  `stall_accept_fnorm = 3e-6` — the geometric mean of the measured populations (legitimate floors
+  ≤1.2e-6 across the Tier-1 MMS/near-flat cases vs dirty stalls ≥1e-5..3e-3, ~2.5× margin each way;
+  the bar is in assembled-residual units, override per problem; mis-set LOW it fails loudly at dt_min,
+  never silently). A blanket `stol=0` was tried first and measured to grind floor states through
+  max-it into dt death spirals — rejected. On reason-4 exits the norm is RECOMPUTED at the returned
+  iterate (PETSc's failed-line-search exit can cache the previous iterate's norm — review F2). Dirty
+  stalls restore the FULL state (ψ, d, AND the λ multiplier — review F3) and reject so the caller
+  cuts dt; `last_reason`/`last_fnorm` recorded as the audit trail. Tier-1
+  `tests/test_step_acceptance.py` incl. the floor-ACCEPT side (near-flat reason-4 at |F|≈3.6e-10
+  must book — review F5); full suite green.
+- **O4 (deferred):** not implicated in any books violation (B2 dead; books close without it) — and the
+  F9 control shows the limiter is LOAD-BEARING (bypass ⇒ Newton fails), so "replace the global rescale"
+  is riskier than first framed; O1 removes the undershoots that make any limiter necessary.
+- **P0 gate:** committed-spike re-runs against the fixed engine close the engine ledger with every
+  violation an explicit rejected step (field-scale full window: −8.6e-12·cum_rain, 3 rejections, clean
+  recession; canonical storm-window diagnostics: ≤2.1e-12 both controllers; canonical full-window
+  spike-verbatim numbers in the regenerated B6 artifacts).
+- **Merge note (review F6):** this branch forks `df61ff4` and does NOT contain main's `8a891c2`
+  (per-sink drain/inlet accounting inside `step()`); the merge MUST land those per-sink increments
+  INSIDE the hardened acceptance gate or O5 silently regresses for sinks.
 
 ### 8.5 Consequences for the plan
 P1 (O1 upwind-mobility edge flux) is unchanged and **upgraded in priority rationale**: it is the

@@ -39,8 +39,10 @@ from dolfinx.fem import petsc as fpetsc
 
 from pids_forward.physics.overland import OverlandProblem, SECONDS_PER_DAY
 
-# canonical tilted-V (Di Giammarco 1996 / Kollet-Maxwell 2006), same numbers as _tiltedv_spike.py
-LX, LY = 1620.0, 1000.0
+# canonical tilted-V (Di Giammarco 1996 / Kollet-Maxwell 2006), same numbers as _tiltedv_spike.py;
+# SCALE=0.1 gives the 162 m field-scale variant (same shape), as in the spike.
+SCALE = float(os.environ.get("SCALE", "1.0"))
+LX, LY = 1620.0 * SCALE, 1000.0 * SCALE
 XC = LX / 2.0
 SX, SY = 0.05, 0.02
 N_MAN = 0.015
@@ -221,10 +223,12 @@ def main():
               f"{a['dt'][i]*a['rowsum'][i]:+10.3e} {a['gap'][i]-a['dt'][i]*a['rowsum'][i]:+10.3e}",
               flush=True)
 
-    out = os.environ.get("OUT", f"scratch/v2d_diag_{NX}x{NY}{'_stol0' if STOL0 else ''}.npz")
+    out = os.environ.get("OUT", f"scratch/v2d_diag_{NX}x{NY}"
+                                f"{f'_s{SCALE:g}' if SCALE != 1.0 else ''}{'_stol0' if STOL0 else ''}.npz")
     np.savez(out, **a, cum_rain=cum_rain, cum_out=cum_out, dW_total=dW_total, ext_gap=ext_gap,
              clip_mass_adjust=prob.clip_mass_adjust, n_acc=n_acc, n_rej=n_rej, run_s=run_s,
-             NX=NX, NY=NY, Q_eq=Q_EQ, storm=STORM, t_end=T_END, stol0=int(STOL0))
+             NX=NX, NY=NY, Q_eq=Q_EQ, storm=STORM, t_end=T_END, stol0=int(STOL0), scale=SCALE,
+             grow_at=GROW_AT, shrink_at=SHRINK_AT, dt_max=DT_MAX, comm_size=MPI.COMM_WORLD.size)
     print(f"[done] -> {out}", flush=True)
 
 

@@ -36,7 +36,7 @@ import os
 import numpy as np
 import xarray as xr
 
-DATE = "2026-06-10"
+DATE = "2026-06-11"  # the P0-correction date (the 2026-06-10 artifact embedded the retracted numbers)
 HERE = os.path.dirname(os.path.abspath(__file__))
 PF_DIR = os.path.expanduser("~/parflow-runs/tilted_v/summaries")
 N_COMMON = 121
@@ -53,20 +53,26 @@ DELTAS = (
     "the EQUILIBRIUM plateau + recession + Q_eq are the clean comparison. The in-house CUMULATIVE-outflow "
     "trace here is the 40-point trapz reconstruction -- it under/over-samples that spike by a few %; the "
     "ENGINE per-accepted-step ledger (metrics) is the honest mass statement. "
-    "(4) IN-HOUSE ENVELOPE (P0-corrected 2026-06-11) -- the earlier B6 text attributed a 20% mass-ledger "
-    "gap to the positivity limiter's degenerate branch and a 0.676 Q_eq plateau; P0 of the stabilization "
-    "plan could NOT reproduce either from the committed deck (engine books close to ~1e-12 of cum rain "
-    "under BOTH dt-controller settings; plateau ~1.0 Q_eq; the published npz recorded NET soil DRYING "
-    "(-26 m^3) under sustained ponded rain, opposite in sign to the committed-deck rerun (+47 m^3) with "
-    "no sustaining mechanism in the committed exchange -> a corrupted mid-session run was published "
-    "without a committed-deck reproduction; RETRACTED, original preserved as "
-    "tiltedv_inhouse_s1_pre_p0_corrupt.npz). What REMAINS real on the convergent V: (a) scale-"
-    "independent STIFFNESS -- dt pins ~5e-5..1e-4 d at 1.6 km AND 162 m (measured mechanism: wet/dry "
-    "sawtooth undershoots fire the global-rescale limiter EVERY step and Newton re-equilibrates the "
-    "non-local perturbation each step; the planned P1 upwind-mobility flux removes the undershoots at "
-    "the source); (b) step-acceptance hardening landed (stagnation verdicts bookable only at the "
-    "residual floor -- dirty stalled-line-search states, |F| up to ~3e-3 observed here, are now honest "
-    "rejections). ParFlow (purpose-built kinematic watershed router) needs neither limiter nor rejection."
+    "(4) IN-HOUSE ENVELOPE (P0-corrected 2026-06-11, adversarially reviewed) -- the earlier B6 text "
+    "attributed a 20% mass-ledger gap to the positivity limiter's degenerate branch and a 0.676 Q_eq "
+    "plateau; P0 of the stabilization plan could NOT reproduce either from the committed deck (engine "
+    "storm-window books ~1e-12 of cum rain under BOTH dt-controller settings, full-window spike runs "
+    "<=1e-11; plateau ~1.0 Q_eq; the published npz recorded NET soil DRYING (-26 m^3) under sustained "
+    "ponded rain, sign-opposite to the committed-deck rerun (+47 m^3) = corrupted booked states; "
+    "RETRACTED -- provenance unknown: all npz-recorded params match deck defaults, the unrecorded "
+    "variables are controller knobs / comm size / in-session code; original preserved as "
+    "tiltedv_inhouse_s1_pre_p0_corrupt.npz; runner npz now records the knobs). What REMAINS real on "
+    "the convergent V: (a) scale-independent STIFFNESS -- dt pins ~5e-5..1e-4 d at 1.6 km AND 162 m: "
+    "the wet/dry sawtooth-and-clip state never settles, so every step costs ~4-6+ Newton iterations "
+    "and the controller's growth threshold pins dt (causal control: bypassing the limiter does NOT "
+    "drop iterations and Newton then fails -- the limiter is load-bearing; 2x dt costs +1 iteration, "
+    "a throughput cost not a wall; the planned P1 upwind-mobility flux removes the sawtooth at the "
+    "source); (b) FIELD-SCALE ACCURACY -- at 162 m the clips (~1.3 cm) exceed the ~3 mm equilibrium "
+    "sheet: coupled 24x16 plateau 0.876 Q_eq with closed books, healing to 1.01 at 48x30 standalone "
+    "-> the upwind flux is accuracy-critical for the PIDS swale regime; (c) step-acceptance hardening "
+    "landed (stagnation verdicts bookable only at the residual floor -- dirty stalled-line-search "
+    "states, |F| up to ~3e-3 observed here, are now honest rejections). ParFlow (purpose-built "
+    "kinematic watershed router) needs neither limiter nor rejection."
 )
 
 

@@ -171,11 +171,12 @@ class OverlandProblem:
         self.last_outflow = 0.0  # outflow discharge at the SOLVED state (pre-limiter), for accounting
         self.last_reason = 0      # SNES converged reason of the last step() solve (audit trail)
         self.last_fnorm = np.nan  # |F| at that solve's exit: what residual the books accepted
-        self.stall_accept_fnorm = 1e-5  # reason-4 (stagnation) bookable only if |F| <= this
-        # ABSOLUTE bar: admits the measured legitimate-floor population (<= ~1.2e-6 across the
-        # Tier-1 MMS/near-flat cases) with margin, rejects the stiff-V stalled-line-search
-        # population (|F| ~ 1e-5..3e-3, B6 P0). Override per problem if its residual floor
-        # differs (units = the assembled residual's).
+        self.stall_accept_fnorm = 3e-6  # reason-4 (stagnation) bookable only if |F| <= this
+        # ABSOLUTE bar = the geometric mean of the two measured populations: legitimate floors
+        # <= ~1.2e-6 (Tier-1 MMS/near-flat) vs dirty stalled line searches >= ~1e-5..3e-3 (B6
+        # P0 convergent V) -- ~2.5x margin to each. The bar is in assembled-residual units
+        # (mesh/area dependent): override per problem if its floor differs; mis-set it LOW and
+        # the failure is a loud dt_min error, never silent booking.
         self.clip_mass_adjust = 0.0  # cumulative UNAVOIDABLE mass change from the limiter
         # (0 in the normal rescale branch; > 0 only when a degenerate non-positive-total state
         # is dried -- should stay ~0 in well-behaved runs; a growing value signals trouble)
@@ -317,6 +318,16 @@ class OverlandProblem:
         snes = self._problem.solver
         self.last_reason = int(snes.getConvergedReason())
         self.last_fnorm = float(snes.getFunctionNorm())
+        if self.last_reason == 4:
+            # PETSc's failed-line-search SNORM exit can return BEFORE the cached norm is updated
+            # (snes->norm then belongs to the PREVIOUS iterate while x sits at the failed trial
+            # point) -- recompute ||F|| at the RETURNED iterate so the floor gate below never
+            # books on a stale norm. Rare path; one extra residual evaluation.
+            x = snes.getSolution()
+            r = x.duplicate()
+            snes.computeFunction(x, r)
+            self.last_fnorm = float(r.norm())
+            r.destroy()
         # bookable = residual-tested (reasons 2/3), or stagnation AT the residual floor: reason 4
         # only certifies the iterate stopped moving. With a numerically tiny leftover residual that
         # is the legitimate floor exit (near-flat/MMS); far from balance it is a stalled line

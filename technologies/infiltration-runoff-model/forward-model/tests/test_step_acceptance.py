@@ -9,8 +9,10 @@ above atol; measured <= ~1.2e-6 across this suite) but certifies NOTHING about b
 stalled line search far from the root also returns 4 (measured |F| ~ 1e-5..3e-3 on the stiff
 convergent V, and 2.4e+3 in the fixture below). So
 
-  (a) ``step()`` books reason 4 ONLY when |F| <= ``stall_accept_fnorm`` (absolute bar, 1e-5
-      default): floor stagnation books, dirty stalls become honest rejections (dt cut + retry),
+  (a) ``step()`` books reason 4 ONLY when |F| <= ``stall_accept_fnorm`` (absolute bar, 3e-6 =
+      the populations' geometric mean): floor stagnation books, dirty stalls become honest
+      rejections (dt cut + retry); on reason 4 the norm is RECOMPUTED at the returned iterate
+      (PETSc's failed-line-search exit can cache the previous iterate's norm),
   (b) both solvers pin ``snes_stol: 1e-8`` explicitly (prompt stagnation verdicts; stol=0 would
       grind floor states through max-it into dt death spirals),
   (c) ``step()`` records ``last_reason`` / ``last_fnorm`` so any run can audit WHAT it accepted.
@@ -67,9 +69,9 @@ def test_acceptance_contract_defaults():
     """
     assert OverlandProblem._DEFAULT_PETSC_OPTIONS["snes_stol"] == 1e-8
     assert CoupledProblem._DEFAULT_PETSC_OPTIONS["snes_stol"] == 1e-8
-    assert _overland_blob().stall_accept_fnorm == 1e-5
+    assert _overland_blob().stall_accept_fnorm == 3e-6
     msh = dmesh.create_interval(MPI.COMM_WORLD, 10, [0.0, 1.0])
-    assert CoupledProblem(msh, SOIL).stall_accept_fnorm == 1e-5
+    assert CoupledProblem(msh, SOIL).stall_accept_fnorm == 3e-6
 
 
 def test_overland_step_records_reason_and_fnorm():
@@ -116,6 +118,9 @@ def test_coupled_snorm_stall_is_rejected_not_booked():
     d_before = prob.d_n.x.array.copy()
     cum_out_before = prob.cum_outflow
 
+    lam_before = prob.lam.x.array.copy()
+    cum_drain_before = prob.cum_drainage
+
     converged, _ = prob.step(1e-3)
 
     assert prob.last_reason == 4
@@ -123,4 +128,28 @@ def test_coupled_snorm_stall_is_rejected_not_booked():
     assert not converged
     assert np.array_equal(prob.psi.x.array, psi_before)
     assert np.array_equal(prob.d.x.array, d_before)
+    # the FULL state restores -- λ too: a stalled NCP multiplier left in place would seed the
+    # retry's Newton with a wrong active-set guess and leak into exchange_flux() diagnostics.
+    assert np.array_equal(prob.lam.x.array, lam_before)
     assert prob.cum_outflow == cum_out_before  # nothing booked on the rejected step
+    assert prob.cum_drainage == cum_drain_before
+
+
+def test_floor_stagnation_books():
+    """The ACCEPT side of the reason-4 gate: stagnation AT the residual floor must book.
+
+    A near-flat surface from a uniform-depth start is already (numerically) at its solution;
+    the residual floor sits above atol, rtol cannot fire from a floor-magnitude fnorm0, so the
+    default test exits CONVERGED_SNORM_RELATIVE with a tiny |F| (measured ~3.6e-10). Rejecting
+    it would dt-death-spiral every near-steady run -- the measured failure of blanket stol=0.
+    """
+    msh = dmesh.create_interval(MPI.COMM_WORLD, 50, [0.0, 10.0])
+    prob = OverlandProblem(msh, n_man=N_MAN)
+    prob.set_topography(lambda x: 1e-6 * x[0])
+    prob.set_initial_condition(lambda x: 0.1 + 0.0 * x[0])
+
+    converged, _ = prob.step(1e-3)
+
+    assert prob.last_reason == 4                          # stagnation verdict...
+    assert prob.last_fnorm <= prob.stall_accept_fnorm     # ...at the residual floor
+    assert converged                                      # -> bookable
