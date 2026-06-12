@@ -195,6 +195,23 @@ def test_subgrid_era_reduces_to_the_validated_clock():
     assert rel_l2(np.array(I), clk) < 0.01
 
 
+def test_dualscale_kill_baseline_regression():
+    """The RETRACTED dual-scale baseline must keep FAILING the gate (kill-map regression,
+    follow-up #5 of the 2026-06-12 list): the frozen DualScaleScheme reimplementation in the
+    harness (behavior-identity verified against the excised production code, 27.8% on LOAM R3
+    n=8) must fail the depleting-reservoir leg by >= BASELINE_KILL. If this ever PASSES, STOP:
+    the gate no longer discriminates passive accumulators (the harness docstring's warning,
+    asserted instead of remembered). (~1-2 min FEM smoke.)"""
+    from scratch.m4_phase4_embedded_harness import run_embedded, DualScaleScheme
+    refA = np.load("tests/data/m4_phase4_refA_disperse.npz")
+    t, I_ref = refA["LOAM_R3_t"], refA["LOAM_R3_I"]
+    out = run_embedded(DualScaleScheme("disperse"), "LOAM", 3 * R_W_DEFAULT, 8, t)
+    assert out is not None, "dual-scale baseline run did not complete"
+    e = rel_l2(out["I"], I_ref)
+    assert e >= 0.20, \
+        f"the retracted dual-scale baseline PASSES the gate ({e:.1%}) -- discrimination lost, STOP"
+
+
 @pytest.mark.parametrize("n", [8])
 def test_gate_refA40_closed_box(n):
     """THE discriminating gate, production class through the closed-box harness: the embedded I(t)
