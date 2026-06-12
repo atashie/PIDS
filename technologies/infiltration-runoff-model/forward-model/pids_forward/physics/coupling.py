@@ -65,6 +65,14 @@ class CoupledProblem:
         "snes_linesearch_type": "bt",
         "snes_rtol": 1e-10,
         "snes_atol": 1e-12,
+        # stol pinned explicitly (PETSc default): CONVERGED_SNORM_RELATIVE (4) is the STAGNATION
+        # verdict -- the iterate stopped moving. Legitimate at the residual floor (states whose
+        # assembly floor sits above atol; stol=0 turns those into max-it grinds + dt death
+        # spirals), but it certifies NOTHING about balance: a stalled line search far from the
+        # root also returns 4, and booking it injects the unbalanced residual into the mass
+        # budget (B6 convergent-V P0). step() books reason 4 only below the absolute bar
+        # ``stall_accept_fnorm``; dirty stalls become honest rejections (dt cut).
+        "snes_stol": 1e-8,
         "snes_max_it": 50,
         "ksp_type": "preonly",
         "pc_type": "lu",
@@ -243,6 +251,12 @@ class CoupledProblem:
         # (oldtotal<=0) drying branch; 0 in the normal conservative-rescale branch
         self.last_outflow = 0.0   # outlet discharge at the SOLVED state (pre-limiter), for accounting
         self.cum_outflow = 0.0    # cumulative outflow volume ∫ outflow dt over accepted steps
+        self.last_reason = 0      # SNES converged reason of the last step() solve (audit trail)
+        self.last_fnorm = np.nan  # |F| at that solve's exit: what residual the books accepted
+        self.stall_accept_fnorm = 1e-5  # reason-4 (stagnation) bookable only if |F| <= this
+        # ABSOLUTE bar: admits the measured legitimate-floor population (<= ~1.2e-6, Tier-1
+        # MMS/near-flat) with margin, rejects the stiff-V stalled-line-search population
+        # (|F| ~ 1e-5..3e-3, B6 P0). Override per problem if its residual floor differs.
         self._drains: list = []          # (drain_facets, conductance, external_head) per add_drainage_bc
         self._drainage_forms: list = []  # compiled q_n*ds GHB forms (subsurface Darcy/head drainage)
         self.last_drainage = 0.0  # net subsurface drainage at the SOLVED state (+ = out)
@@ -536,7 +550,15 @@ class CoupledProblem:
         self._ensure_problem()
         self._problem.solve()
         snes = self._problem.solver
-        converged = snes.getConvergedReason() > 0
+        self.last_reason = int(snes.getConvergedReason())
+        self.last_fnorm = float(snes.getFunctionNorm())
+        # bookable = residual-tested (reasons 2/3), or stagnation AT the residual floor: reason 4
+        # only certifies the iterate stopped moving. With a numerically tiny leftover residual that
+        # is the legitimate floor exit; far from balance it is a stalled line search whose booking
+        # injects the unbalanced residual into the mass budget (B6 P0) -- those must be honest
+        # rejections so the caller cuts dt.
+        converged = self.last_reason > 0 and (
+            self.last_reason != 4 or self.last_fnorm <= self.stall_accept_fnorm)
         iters = int(snes.getIterationNumber())
         if converged:
             # Record the outlet discharge at the SOLVED state (before the limiter rescales d): this
