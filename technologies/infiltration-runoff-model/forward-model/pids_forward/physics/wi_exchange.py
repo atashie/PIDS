@@ -1,14 +1,22 @@
-"""Host-controlled sub-grid wall exchange via the measured discrete well index (Module 4 §E, Phase 4).
+"""Sub-grid wall exchange via the measured discrete well index (Module 4 §E, Phase 4).
 
-PRODUCTION form of the Phase-4 "rate-clock + WI" scheme, the first coupling to PASS the
-discriminating coupled-embedding gate (evolving-far-field references the offline clock fails by
-construction): LOAM disperse deployment legs RefA-40 = 2.2-5.7% rel-L2 across n (offline clock
-26.6%, the retracted dual-scale 13-16%), RefB-40 host-history = 5.0-5.4% landing EXACTLY on the
-pulse-shifted asymptote with no knowledge of the pulse (clock 34.1%), over-correction control =
-2.1-6.0% (clock right there by design). Prototype + evidence: scratch/m4_phase4_wi_probe.py,
-scratch/m4_phase4_embedded_harness.py, tests/test_coupled_gate_refs.py. NOTE: "coupled" status is
-prototype-validated; the Phase-4 protocol's adversarial review is the remaining gate before the
-claim is final.
+PRODUCTION form of the Phase-4 "rate-clock + WI" scheme. ADVERSARIALLY REVIEWED 2026-06-11
+(validation/sanity/m4_phase4_coupled_review__2026-06-11.md -- the binding wording): in the tested
+homogeneous-isotropic LOAM disperse deployment regime (R=40 r_w, positive-WI meshes n=6..12) the
+scheme tracks independent closed-domain references at 2.2-5.7% rel-L2 (offline clock 26.6%, the
+retracted dual-scale 13-39% across its measured legs) and tracks a host-history perturbation
+(RefB-40 = 5.0-5.4%, landing on the pulse-shifted asymptote with no pulse knowledge; clock 34.1%);
+over-correction control = 2.1-6.0% (clock rightly 1.0% there; the error sign is the mid-curve
+over-delivery, not over-throttling). HOST CONTROL IS ESTABLISHED FOR THE WI ERA (>=80-91% of
+cumulative I at n=8-12, carrying ALL discriminating signal -- the RefB-40 pulse lands after
+handover); the sub-grid era is a PRESCRIBED-RATE CLOSURE whose host read is a second-order
+correction (<=~2% on the committed legs, mechanism-present but not gate-exercised). The ~5%
+residual is an UNATTRIBUTED WI-ERA SYSTEMATIC (mid-curve +3-5%, deep-bend -9%) within the
+pre-registered tolerance -- it is NOT the offline F closure's large-zeta bias (measured -0.9..-1.5%,
+wrong sign and era; review attack f). The disperse evidence does not by itself exclude passive
+capacity-aware schemes (their killers are the drain legs this class refuses). Prototype + evidence:
+scratch/m4_phase4_wi_probe.py, scratch/m4_phase4_embedded_harness.py,
+tests/test_coupled_gate_refs.py.
 
 THE SCHEME (no free constants -- every number is measured or derived):
 * Post-handover the wall exchange is the constant-coefficient Kirchhoff bridge
@@ -22,9 +30,12 @@ THE SCHEME (no free constants -- every number is measured or derived):
   prescribes the flux as a RATE source on the ridge (a prescribed rate has no dPhi feedback to
   collapse -- the v1 prototype's potential-driven handover stalled at emb/ref = 0.556), the lattice
   builds its own consistent response, and handover at I_fill = dtheta*((2h)^2 - r_w^2)/(2 r_w) is
-  seamless. The clock is HOST-CONTROLLED through its drive: the Kirchhoff drop to the FRONT RING
-  (off-ridge vertices one cell ahead of R_f -- it moves with the front; it is NOT the retracted
-  fixed shell, which reduced to the offline clock and failed the gate at 13-39%).
+  seamless. (front=2h is the Task-5 far-field fidelity radius, a pre-scheme measurement; it is
+  validated as a fidelity radius, not as a transient-handover optimum.) The clock-era rate carries
+  a live Kirchhoff scale read from the FRONT RING (off-ridge vertices one cell ahead of R_f; it
+  moves with the front, hard-zeros if the ring reaches the wall head) -- a saturation safeguard and
+  second-order correction; no committed leg discriminates it from a constant drive (review attack
+  a), so no clock-era host-control claim rests on it.
 * All uptake is host-ward immediately -- no sub-grid reservoir; the only ledger remainder is the
   t0 seed S*sqrt(t0) (water already in the ground at seeding, ~0.01% of a deployment capacity).
 
@@ -54,7 +65,8 @@ from .sorptive_closure import F_cylindrical, R0_OVER_H_P1, R_W_DEFAULT
 
 
 class WellIndexExchange:
-    """Disperse host-controlled wall exchange: sub-grid rate-clock era + constant-WI Kirchhoff era."""
+    """Disperse wall exchange: sub-grid rate-clock era + constant-WI Kirchhoff era (host-controlled
+    in the WI era; the clock era is a prescribed-rate closure -- see the module docstring)."""
 
     def __init__(self, direction: str = "disperse"):
         if direction != "disperse":
@@ -74,7 +86,8 @@ class WellIndexExchange:
         self._r_w = feat._r_w
         xc = feat.V.tabulate_dof_coordinates()
         gco = xc[self._g]
-        # perpendicular distance of every dof to the feature line (general -- no box assumption)
+        # nearest-Gamma-VERTEX distance of every dof (exact perpendicular distance for the straight,
+        # vertex-resolved ridges validated so far; an approximation for curved/coarse Gamma)
         self._rho = cKDTree(gco).query(xc, k=1)[0]
         off = self._rho > 1e-12
         h = ctx.get("h") if isinstance(ctx, dict) else None
@@ -88,7 +101,13 @@ class WellIndexExchange:
         self.WI = 2.0 * np.pi / np.log(self.r0 / self._r_w)
         self.S, self.dth = feat.S_disp, feat.dth_disp
         self.dPhi_ref = feat.dPhi_ref_disp
-        self.h_f_ref = 0.0                                  # the configure_sorptive wall head
+        wall = float(getattr(feat, "psi_wall_sorp", 0.0))
+        if wall != 0.0:
+            raise ValueError(
+                f"WellIndexExchange: non-zero sorptive wall head refused (psi_wall={wall}); the "
+                f"gate evidence is saturated-wall (psi_wall=0) only -- the clock-era Kirchhoff "
+                f"scaling is unvalidated elsewhere (2026-06-11 review).")
+        self.h_f_ref = wall                                 # the configure_sorptive wall head
         two_h = 2.0 * self.h
         self.I_fill = self.dth * (two_h ** 2 - self._r_w ** 2) / (2.0 * self._r_w)
         self.seed_I = 0.0
@@ -122,8 +141,9 @@ class WellIndexExchange:
         ring = (self._rho >= R_f + 0.5 * self.h) & (self._rho <= R_f + 1.5 * self.h)
         psi_far = float(psi.x.array[ring].mean()) if np.any(ring) else \
             float(psi.x.array[self._rho > 1e-12].mean())
-        lo, hi = min(psi_far, self.h_f_ref), max(psi_far, self.h_f_ref)
-        scale = self.soil.kirchhoff(lo, hi) / self.dPhi_ref
+        if psi_far >= self.h_f_ref:
+            return 0.0                                      # ring at/above the wall head: no drive
+        scale = self.soil.kirchhoff(psi_far, self.h_f_ref) / self.dPhi_ref
         dIdt = self.S ** 2 / (2.0 * I) * F_cylindrical(I / (self.dth * self._r_w)) * scale
         return dIdt * self._p_len
 

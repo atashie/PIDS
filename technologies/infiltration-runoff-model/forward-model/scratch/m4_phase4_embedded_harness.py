@@ -28,10 +28,12 @@ lagged per step -- every candidate scheme expresses itself through Omega + its i
 
 MASS LEDGER (asserted every sample, the closed-box advantage):
     host theta-gain  ==  injected (cum. assembled exchange flux * dt)  +  pulse (cum. source)
-to <= 1e-8 relative (BE + lagged-Omega consistency: the exchange form is assembled at the converged
+to <= 1e-6 relative (BE + lagged-Omega consistency: the exchange form is assembled at the converged
 end-of-step state, exactly what the residual imposed). The scheme-level identity
     I_total * perimeter * length == injected + reservoir
-is the scheme's OWN bookkeeping, asserted to <= 1e-6 relative (clock substepping accuracy).
+is the scheme's OWN bookkeeping, asserted to <= 1e-4 relative (clock substepping accuracy).
+(Tolerances here match the code's asserts -- 2026-06-11 review fixed this docstring, which
+previously overstated them as 1e-8/1e-6; the asserts themselves were never loosened.)
 
 SINGULARITY NOTE (drain): the all-saturated all-Neumann start has C=0 everywhere and no anchor; with
 Omega=0 and no forcing the residual at the initial guess is ZERO, so SNES accepts without factoring

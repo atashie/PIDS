@@ -166,6 +166,7 @@ class EmbeddedFeature:
         self._r_w = float(r_w)
         self._perimeter = 2.0 * np.pi * self._r_w if perimeter is None else float(perimeter)
         self._C_disp, self._C_drain = float(C_disp), float(C_drain)
+        self.psi_i_sorp, self.psi_wall_sorp = float(psi_i), float(psi_wall)
         self.S_disp = parlange_sorptivity(soil, psi_i, psi_wall)
         self.dth_disp = abs(float(soil.theta(psi_wall) - soil.theta(psi_i)))
         self.dPhi_ref_disp = float(soil.kirchhoff(psi_i, psi_wall))

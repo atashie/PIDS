@@ -5,8 +5,12 @@ prototype that passed the deployment-regime discriminating gate (RefA-40 2.2-5.7
 5.0-5.4%, control 2.1-6.0%; offline clock 27-34%, retracted dual-scale 13-39%). SCOPE: disperse,
 positive-WI deployment regime (h > ~5.5 r_w); the drain direction is REFUSED (its sub-grid closure
 for closed domains is open research -- see scratch/m4_phase4_wi_probe.py header) and the
-resolved-wall regime is REFUSED (negative-log bridge = transiently unstable). Coupled wording is
-prototype-validated; adversarial review pending (the Phase-4 protocol gate before any claim).
+resolved-wall regime is REFUSED (negative-log bridge = transiently unstable). ADVERSARIALLY
+REVIEWED 2026-06-11 (validation/sanity/m4_phase4_coupled_review__2026-06-11.md): host control is
+established for the WI era; the clock era is a prescribed-rate closure; within this disperse-only
+scope the capacity-clamped clock passive is killed by NO leg (its killers are the refused drain
+legs) -- the gate discriminates v2 from the RAW clock and the dual-scale, not from capacity-aware
+passives.
 """
 import numpy as np
 import pytest
@@ -24,11 +28,11 @@ LOAM = VanGenuchten(theta_r=0.078, theta_s=0.43, alpha=3.6, n=1.56, Ks=0.25)
 _ON_FEAT = lambda x: np.isclose(x[1], 0.5) & np.isclose(x[2], 0.5)
 
 
-def _feat(n):
+def _feat(n, psi_wall=0.0):
     msh = dmesh.create_box(COMM, [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], [n, n, n])
     feat = EmbeddedFeature(msh, _ON_FEAT, tangent=(1.0, 0.0, 0.0),
                            K_feat=1.0, area=np.pi * R_W_DEFAULT ** 2, porosity=0.4)
-    feat.configure_sorptive(LOAM, psi_i=-1.0, psi_wall=0.0)
+    feat.configure_sorptive(LOAM, psi_i=-1.0, psi_wall=psi_wall)
     return feat
 
 
@@ -54,6 +58,27 @@ def test_drain_direction_is_refused():
     throttle 98%, cyl+S_des 42%, cyl+S_sorp 109% vs refD40) -- the production class refuses it."""
     with pytest.raises(NotImplementedError, match="drain"):
         WellIndexExchange(direction="drain")
+
+
+def test_nonzero_wall_head_refused():
+    """The gate evidence is saturated-wall (psi_wall=0) only; the class must refuse a feature
+    configured with any other wall head rather than silently scaling the clock era against the
+    wrong Kirchhoff reference (2026-06-11 adversarial review)."""
+    feat = _feat(2, psi_wall=-0.1)
+    with pytest.raises(ValueError, match="wall head"):
+        WellIndexExchange().setup(feat, LOAM, {"t0": 1e-4})
+
+
+def test_clock_rate_zero_when_ring_at_wall_head():
+    """The disperse drive vanishes when the front ring sits at/above the wall head: the clock-era
+    rate must hard-zero, not inject on a magnitude-only Kirchhoff drop (2026-06-11 review)."""
+    from dolfinx import fem
+    feat = _feat(2)
+    x = WellIndexExchange().setup(feat, LOAM, {"t0": 1e-4})
+    psi = fem.Function(feat.V)
+    for host in (0.0, 0.5):                                # saturated to the wall head; ponded above
+        psi.x.array[:] = host
+        assert x.pre_step(feat, psi, 0.0) == 0.0 and x.in_subgrid_era
 
 
 def test_subgrid_era_reduces_to_the_validated_clock():

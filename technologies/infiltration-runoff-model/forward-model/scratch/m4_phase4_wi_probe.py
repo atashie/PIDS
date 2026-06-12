@@ -156,11 +156,13 @@ class RateClockWIScheme:
     immediately (the harness ledger sees reservoir = the tiny t0 seed only, S*sqrt(t0) ~ 0.01% of
     I_max, water that was already in the ground at t0).
 
-    HOST CONTROL in the clock era: the clock rate is scaled by the live Kirchhoff drop between H_f
-    and the FRONT RING -- the vertices one cell ahead of the Green-Ampt front R_f(I) (the soil the
-    front is about to invade, the GA drive by construction). Closed-box depletion or a Ref-B pulse
-    raises that ring and throttles the clock; the ring MOVES with the front (it is not the retracted
-    fixed shell) and exists only during the sub-grid era."""
+    The clock era's FRONT-RING read (vertices one cell ahead of the Green-Ampt front R_f(I)): the
+    rate is scaled by the live Kirchhoff drop between H_f and the ring -- a saturation safeguard
+    and second-order correction (<=~2% on the committed legs; 2026-06-11 review attack a measured
+    that NO committed leg discriminates it from a constant drive -- the RefB pulse lands after
+    handover, so no clock-era host-control claim rests on this read). The ring MOVES with the front
+    (unlike the retracted fixed shell) and exists only during the sub-grid era; host control is
+    established for the WI era, which carries all discriminating signal."""
 
     def __init__(self, direction="disperse"):
         self.direction = direction
