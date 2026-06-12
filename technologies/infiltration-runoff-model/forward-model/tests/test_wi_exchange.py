@@ -152,6 +152,51 @@ def test_drain_history_gate_refD40C_continuous_recharge(n):
         "discrimination twin lost: the recharge-blind water-balance PSS clock passes this leg"
 
 
+@pytest.mark.parametrize("soil", ["SAND", "SILT"])
+def test_gate_R40_soil_generality_closed_box(soil):
+    """SOIL GENERALITY of the disperse deployment gate (follow-up #2a, 2026-06-12): the
+    production exchange -- no soil-specific constants anywhere; S/dtheta/Kirchhoff all derived
+    from the constitutive -- passes the NEW SAND and SILT R40 full-depletion legs while the raw
+    offline clock fails them (SAND 39.4%, SILT 214.5%). Pre-registered <= EMBEDDED_TOL at
+    n=8/12; probe measured SAND 2.4/1.9%, SILT 2.7/4.0% (SILT's n=8->12 rise = the known WI-era
+    systematic growing with the WI-era share, the LOAM-review adjudication, not mesh
+    degradation). (~2-3 min each.)"""
+    from scratch.m4_phase4_embedded_harness import run_embedded
+    a40 = np.load("tests/data/m4_phase4_refA40_sand_silt.npz")
+    t, I_ref = a40[f"{soil}_R40_t"], a40[f"{soil}_R40_I"]
+    out = run_embedded(WellIndexExchange(), soil, 40 * R_W_DEFAULT, 8, t)
+    assert out is not None, f"embedded closed-box {soil} run did not complete"
+    e = rel_l2(out["I"], I_ref)
+    assert e <= 0.10, f"{soil} R40 gate failed: relL2={e:.1%}"
+    clk = sorptive_clock(t, float(a40[f"{soil}_S"]), float(a40[f"{soil}_dtheta"]),
+                         R_W_DEFAULT, F_cylindrical)
+    assert rel_l2(clk, I_ref) >= 0.20, "discrimination twin lost: the offline clock passes"
+
+
+@pytest.mark.parametrize("n", [8])
+def test_drain_gate_sandR40_closed_box(n):
+    """SOIL GENERALITY of the drain deployment gate (follow-up #2b, 2026-06-12): the production
+    PSS depletion drain passes the SAND R40 leg against the 2026-06-12 PRE-REGISTERED fresh-ref
+    resolved curve (scratch/m4_phase4_drain_fresh_refs.npz, ~20% depletion window; the offline
+    PSS predicted it at 3.4% BEFORE that reference existed) while the fixed-drive twin (drive
+    frozen at psi_i -- no host read) fails at 82.1%. Probe: 8.8/8.3% at n=8/12, non-degrading;
+    end bias +10.2/9.6% = the documented dof-mean drive bias (follow-up #4), larger on SAND than
+    LOAM but inside EMBEDDED_TOL. (~2 min.)"""
+    from scratch.m4_phase4_embedded_harness import run_embedded, SOILS
+    fresh = np.load("scratch/m4_phase4_drain_fresh_refs.npz")
+    t, I_ref = fresh["SAND_R40_t"], fresh["SAND_R40_I"]
+    out = run_embedded(WellIndexExchange(direction="drain"), "SAND", 40 * R_W_DEFAULT, n, t,
+                       direction="drain")
+    assert out is not None, "embedded closed-box SAND drain run did not complete"
+    e = rel_l2(out["I"], I_ref)
+    assert e <= 0.10, f"SAND drain gate failed: relL2={e:.1%}"
+    geo = np.log(40.0) - 0.75
+    rate_fixed = float(SOILS["SAND"].kirchhoff(-1.0, -0.03)) / (R_W_DEFAULT * geo)
+    I_twin = np.minimum(rate_fixed * (t - t[0]), float(fresh["SAND_R40_Imax"]))
+    assert rel_l2(I_twin, I_ref) >= 0.20, \
+        "discrimination twin lost: the fixed-drive PSS clock passes this leg"
+
+
 def test_nonzero_wall_head_refused():
     """The gate evidence is saturated-wall (psi_wall=0) only; the class must refuse a feature
     configured with any other wall head rather than silently scaling the clock era against the

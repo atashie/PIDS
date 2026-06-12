@@ -120,6 +120,29 @@ def test_deployment_legs_R40(refs):
     assert rel_l2(np.minimum(clk, float(b40["LOAM_Imax"])), I) <= 0.12
 
 
+def test_deployment_legs_R40_sand_silt():
+    """The SOIL-GENERALITY deployment legs (SAND + SILT at R=40 r_w; follow-up #2a of the
+    2026-06-12 list): the same full-depletion structure as the LOAM R40 leg, generated
+    ADDITIVELY (scratch/m4_phase4_refA40_sand_silt.py -- the committed LOAM fixtures are never
+    regenerated). Measured 2026-06-12: raw clock fails 39.4% (SAND; its 3.5-d first-guess window
+    left the bend too late-window at clock 19.5% sub-bar, so the window was extended to 14 d --
+    t90 mid-window, the retune rule's design target -- BEFORE the embedded scheme was scored on
+    the final leg) and 214.5% (SILT, 470-d window); the clamped clock documents the known
+    refA-alone evasion (0.7% / 4.1%; killed by the drain legs as ever); early windows match the
+    signed-off Phase-1b infinite-domain fixture at 0.15% / 0.37%."""
+    a40 = np.load("tests/data/m4_phase4_refA40_sand_silt.npz")
+    for s, clamp_doc in (("SAND", 0.04), ("SILT", 0.07)):
+        S, dth = float(a40[f"{s}_S"]), float(a40[f"{s}_dtheta"])
+        t, I, imax = a40[f"{s}_R40_t"], a40[f"{s}_R40_I"], float(a40[f"{s}_R40_Imax"])
+        assert np.all(np.diff(t) > 0) and np.all(np.diff(I) >= -1e-12 * imax)
+        assert I[-1] <= imax * (1 + 1e-9)
+        assert abs(imax - dth * ((40 * R_W) ** 2 - R_W ** 2) / (2 * R_W)) < 1e-12
+        clk = _clock(t, S, dth, F_cylindrical)
+        assert rel_l2(clk, I) >= 0.20, f"{s} R40: raw-clock discrimination lost"
+        assert rel_l2(np.minimum(clk, imax), I) <= clamp_doc, \
+            f"{s} R40: clamped-clock evasion shifted -- re-derive the kill-map"
+
+
 def test_refB_kills_the_raw_clock_and_documents_the_clamp_gap(refs):
     a, b, _ = refs
     t, I = b["LOAM_t"], b["LOAM_I"]
