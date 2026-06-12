@@ -198,29 +198,74 @@ def run_embedded(scheme, soil_name, R_out, n, t_grid, direction="disperse",
                 h=h, L=L, perimeter=feat._perimeter, length=feat.length)
 
 
-# ---- baseline scheme: the RETRACTED dual-scale (production EXPERIMENTAL machinery) ----------------
+# ---- baseline scheme: the RETRACTED dual-scale (FROZEN reimplementation) --------------------------
 class DualScaleScheme:
-    """The retracted Phase-3 dual-scale embedding, driven through the EXPERIMENTAL EmbeddedFeature
-    machinery exactly as committed (shell psi_cell read + storage gate + lagged well index). Expected
-    to FAIL the Phase-4 gate (that failure is the gate's discrimination evidence); if it PASSES,
-    STOP -- the gate does not discriminate."""
+    """The retracted Phase-3 dual-scale embedding -- a FROZEN, self-contained reimplementation of the
+    machinery EXCISED from production feature.py on 2026-06-12 (the adversarial-review decision; the
+    excised source is in git history at 74d89b7: _setup_shell/_psi_cell/seed_clock/update_well_index/
+    advance_clock). Preserved here verbatim-in-behavior because it is the gate's measured FAILURE
+    baseline (13-39%, the kill-map's discrimination evidence); if it ever PASSES, STOP -- the gate
+    does not discriminate."""
 
     def __init__(self, direction="disperse"):
         self.direction = direction
 
     def setup(self, feat, soil, ctx):
-        feat.seed_clock(ctx["t0"])
-        self._g = feat._gamma_dofs
+        from scipy.spatial import cKDTree
+        self.soil, self._g = soil, feat._gamma_dofs
+        xc = feat.V.tabulate_dof_coordinates()
+        off = np.setdiff1d(np.arange(xc.shape[0], dtype=np.int32), self._g).astype(np.int32)
+        d = cKDTree(xc[self._g]).query(xc[off], k=1)[0]
+        h = float(d.min())
+        sel = (d > 0.9 * h) & (d < 2.1 * h)                # the off-ridge shell ring (~1 cell out)
+        if not np.any(sel):
+            sel = d < 2.5 * h
+        self._shell = off[sel]
+        r_eq = float(d[sel].mean())
+        self._I_fill = max(feat.dth_disp * (r_eq ** 2 - feat._r_w ** 2) / (2.0 * feat._r_w), 0.0)
+        t0 = float(ctx["t0"])
+        if t0 <= 0.0:
+            raise ValueError("dual-scale seed needs t0 > 0")
+        self.Id = np.full(self._g.size, feat.S_disp * np.sqrt(t0))   # per-face accumulators
+        self.Ir = np.full(self._g.size, feat.S_drain * np.sqrt(t0))
+
+    def _psi_cell(self, psi):
+        return float(psi.x.array[self._shell].mean()) if self._shell.size else \
+            float(psi.x.array.mean())
 
     def pre_step(self, feat, psi, t):
-        feat.update_well_index(psi)
+        from pids_forward.physics.sorptive_closure import F_cylindrical, F_throttle, throttle_params
+        hfg, pc = feat.Hf.x.array[self._g], self._psi_cell(psi)
+        z0, k = throttle_params(feat.dth_drain)
+        Idc, Irc = np.maximum(self.Id, 1e-30), np.maximum(self.Ir, 1e-30)
+        om_d = feat._C_disp * feat.S_disp ** 2 * F_cylindrical(Idc / (feat.dth_disp * feat._r_w)) \
+            / (2.0 * Idc * feat.dPhi_ref_disp)
+        om_r = feat._C_drain * feat.S_drain ** 2 * F_throttle(Irc / (feat.dth_drain * feat._r_w), z0, k) \
+            / (2.0 * Irc * feat.dPhi_ref_drain)
+        om_d = np.where(self.Id >= self._I_fill, om_d, 0.0)          # the retracted storage gate
+        om_r = np.where(self.Ir >= self._I_fill, om_r, 0.0)
+        feat.Omega.x.array[:] = 0.0
+        feat.Omega.x.array[self._g] = np.where(hfg > pc, om_d, om_r)
+        feat.Omega.x.scatter_forward()
 
-    def post_step(self, feat, psi, t, dt):
-        feat.advance_clock(psi, dt)
+    def post_step(self, feat, psi, t, dt, nsub=400):
+        from pids_forward.physics.sorptive_closure import F_cylindrical, F_throttle, throttle_params
+        hfg, pc = feat.Hf.x.array[self._g], self._psi_cell(psi)      # the off-ridge far-field drive
+        disperse = hfg > pc
+        dPhi_mag = self.soil.kirchhoff(np.minimum(pc, hfg), np.maximum(pc, hfg))
+        scale_d = np.where(disperse, dPhi_mag / feat.dPhi_ref_disp, 0.0)
+        scale_r = np.where(~disperse, dPhi_mag / feat.dPhi_ref_drain, 0.0)
+        z0, k = throttle_params(feat.dth_drain)
+        h = dt / nsub
+        for _ in range(nsub):
+            Idc, Irc = np.maximum(self.Id, 1e-300), np.maximum(self.Ir, 1e-300)
+            self.Id = self.Id + h * (feat._C_disp * feat.S_disp ** 2 / (2.0 * Idc)
+                                     * F_cylindrical(Idc / (feat.dth_disp * feat._r_w)) * scale_d)
+            self.Ir = self.Ir + h * (feat._C_drain * feat.S_drain ** 2 / (2.0 * Irc)
+                                     * F_throttle(Irc / (feat.dth_drain * feat._r_w), z0, k) * scale_r)
 
     def I_total(self, feat):
-        I = feat.I_disp if self.direction == "disperse" else feat.I_drain
-        return float(I.x.array[self._g].mean())
+        return float((self.Id if self.direction == "disperse" else self.Ir).mean())
 
     def reservoir(self, feat, injected):
         # the dual-scale has NO explicit reservoir; it may only declare the implicit gap, which makes

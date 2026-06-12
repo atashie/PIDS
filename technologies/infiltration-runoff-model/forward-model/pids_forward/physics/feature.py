@@ -27,11 +27,8 @@ from mpi4py import MPI
 from petsc4py import PETSc
 
 from .sorptive_closure import (
-    F_cylindrical,
-    F_throttle,
     des_sorp_ratio,
     parlange_sorptivity,
-    throttle_params,
     R_W_DEFAULT,
 )
 
@@ -144,24 +141,23 @@ class EmbeddedFeature:
         feature term on the SAME dΓ, so the coupling conserves water to machine precision (structural)."""
         return -self.sigma * (self.Hf - psi) * w * self.dGamma
 
-    # -- Phase-3 sorptive-exchange CLOSURE (the gate-validated sorptivity clock) -----------------------
-    # Upgrades the constant-σ wall exchange to q = Ω(I)·[Φ(H_f)−Φ(ψ)] (the Kirchhoff form): a per-face
-    # cumulative-uptake state advances a sorptivity clock, with a DIRECTION SWITCH -- DISPERSE (H_f>ψ) uses
-    # the a-priori cylindrical Green-Ampt branch (F_cylindrical + Parlange S), DRAIN (ψ>H_f) the semi-
-    # empirical sub-√t throttle branch (F_throttle + a desorptivity). SEPARATE I_disp/I_drain accumulators
-    # (Arik 2026-06-09: no reset on reversal). Validated by tests/test_sorptive_closure_gate.py (the full-
-    # curve C-004 gate) + tests/test_feature_sorptive.py (the machinery reduces to the validated clock).
+    # -- Phase-3 sorptive-exchange closure SCALARS + the Kirchhoff exchange forms ----------------------
+    # configure_sorptive derives the a-priori closure scalars (Parlange S, Δθ, ΔΦ_ref at the configured
+    # state pair) and creates the lagged ``Omega`` coefficient consumed by the sorptive exchange forms
+    # below. The DRIVER of Omega is external: the validated production driver is
+    # ``wi_exchange.WellIndexExchange`` (Phase-4, disperse deployment regime); the offline closures
+    # themselves live in ``sorptive_closure.py`` (tests/test_sorptive_closure_gate.py).
     def configure_sorptive(self, soil, *, psi_i=-1.0, psi_wall=0.0, des_sorp=None,
-                           r_w=R_W_DEFAULT, perimeter=None, r_eq=None, C_disp=1.0, C_drain=1.0):
-        """Switch the wall exchange to the Phase-3 sorptivity clock. ``soil`` is a VanGenuchten-like object
-        (provides ``theta``/``K``/``kirchhoff``/``kirchhoff_ufl``). Reference (de)sorptivity, storable
-        contrast Δθ and Kirchhoff drop ΔΦ are evaluated at the antecedent soil head ``psi_i`` and the wall
-        head ``psi_wall`` (gate scenario: disperse dry soil psi_i=−1, saturated wall psi_wall=0; the drain
-        mirror uses the same |ΔΦ| magnitude). DISPERSE = a-priori (cyl Green-Ampt + Parlange S). DRAIN =
-        semi-empirical (throttle + a ``des_sorp``·S desorptivity; pass ``des_sorp`` to override the ratio
-        default). The closure flux is per unit WALL AREA, so the per-length ridge exchange carries the wall
-        ``perimeter`` (default circular ``2π·r_w``). Creates the SEPARATE per-face states
-        ``I_disp``/``I_drain`` and the lagged ``Omega``."""
+                           r_w=R_W_DEFAULT, perimeter=None, C_disp=1.0, C_drain=1.0):
+        """Derive the sorptive-closure scalars and create the lagged ``Omega``. ``soil`` is a
+        VanGenuchten-like object (provides ``theta``/``K``/``kirchhoff``/``kirchhoff_ufl``). Reference
+        (de)sorptivity, storable contrast Δθ and Kirchhoff drop ΔΦ are evaluated at the antecedent soil
+        head ``psi_i`` and the wall head ``psi_wall`` (gate scenario: disperse dry soil psi_i=−1,
+        saturated wall psi_wall=0; the drain mirror uses the same |ΔΦ| magnitude). DISPERSE = a-priori
+        (cyl Green-Ampt + Parlange S). DRAIN = semi-empirical OPEN-domain only (``des_sorp``·S; the
+        closed-domain drain closure is the Phase-4 PSS depletion form). The closure flux is per unit
+        WALL AREA, so the per-length ridge exchange carries the wall ``perimeter`` (default circular
+        ``2π·r_w``)."""
         self._soil = soil
         self._r_w = float(r_w)
         self._perimeter = 2.0 * np.pi * self._r_w if perimeter is None else float(perimeter)
@@ -174,89 +170,15 @@ class EmbeddedFeature:
         self.S_drain = self._des_ratio * self.S_disp
         self.dth_drain = self.dth_disp
         self.dPhi_ref_drain = self.dPhi_ref_disp
-        self.I_disp = fem.Function(self.V, name="I_disp")
-        self.I_drain = fem.Function(self.V, name="I_drain")
         self.Omega = fem.Function(self.V, name="Omega")
-        self._setup_shell(r_eq)
         return self
 
-    # -- EXPERIMENTAL coupling machinery (off-Γ shell + sub-grid gate) -- NOT validated for coupled fidelity.
-    # WARNING (adversarial review + Codex, 2026-06-09): this "dual-scale" coupling was OVER-CLAIMED. The
-    # off-Γ shell ψ_cell drive + storage gate do NOT give a genuine host-controlled coupled embedding: the
-    # clock I(t) is driven from a far shell (~ the fixed far field), so the embedded uptake is essentially
-    # the OFFLINE clock and the host is a passive accumulator -- the original coupled "acceptance test" was
-    # VACUOUS (gate never opened) and non-general (SILT diverges with refinement). The shell band and the
-    # gate threshold are also benchmark-tuned, not geometry-invariant. The VALIDATED scope of this primitive
-    # is (a) the OFFLINE full-curve gate on the closure (tests/test_sorptive_closure_gate.py) and (b) the
-    # structural properties below (reduces-to-clock, sign-paired conservation, separate accumulators) --
-    # NOT coupled fidelity. A genuine coupled embedding (uptake responsive to the host near-field) needs a
-    # reference with an EVOLVING far field + a host-impedance-sensitivity test + a closed global mass balance
-    # (source − Δstorage − boundary flux) + the drain direction -- deferred Phase-4 research. Honest interim
-    # alternative explored: "far-field clock + conservative DISTRIBUTED deposition" (scratch/
-    # _zdistributed_embed_probe.py: ≤3.5% all soils, host conserves, no over-saturation) -- a deposition
-    # model, NOT host-controlled coupling. See [[pids-module4-starting-note]].
-    def _setup_shell(self, r_eq):
-        from scipy.spatial import cKDTree
-        xc = self.V.tabulate_dof_coordinates()
-        gco = xc[self._gamma_dofs]
-        off = np.setdiff1d(np.arange(xc.shape[0], dtype=np.int32), self._gamma_dofs).astype(np.int32)
-        # distance of each off-Γ dof to the feature (nearest Γ dof) ~ perpendicular radial distance.
-        # KDTree query is O(N log N) / O(N) memory -- the dense (N_off, N_gamma, 3) broadcast OOMs at field
-        # scale (~5 GB for 1e6 dofs x 200 faces; Codex review 2026-06-09).
-        d = cKDTree(gco).query(xc[off], k=1)[0] if (off.size and gco.size) else np.empty(0)
-        h = float(np.min(d)) if d.size else self._r_w        # local host cell size ~ nearest off-Γ dof
-        if r_eq is None:
-            sel = (d > 0.9 * h) & (d < 2.1 * h)
-            if not np.any(sel):
-                sel = d < 2.5 * h                            # widen if the first ring is empty
-            self._r_eq = float(d[sel].mean()) if np.any(sel) else float(2.0 * self._r_w)
-        else:
-            self._r_eq = float(r_eq)
-            sel = np.abs(d - self._r_eq) < h
-            if not np.any(sel) and d.size:
-                sel = np.zeros(d.size, dtype=bool); sel[np.argsort(np.abs(d - self._r_eq))[:8]] = True
-        self._shell_dofs = off[sel] if d.size else np.empty(0, dtype=np.int32)
-        self._I_fill = max(self.dth_disp * (self._r_eq**2 - self._r_w**2) / (2.0 * self._r_w), 0.0)
-
-    def _psi_cell(self, psi):
-        """Far-field ψ on the off-Γ shell (the clock drive reference); global host mean if the shell is empty."""
-        return float(psi.x.array[self._shell_dofs].mean() if self._shell_dofs.size else psi.x.array.mean())
-
-    def seed_clock(self, t_seed):
-        """Seed both per-face accumulators to the planar early limb ``S·sqrt(t_seed)`` (the antecedent
-        contact age) -- avoids the 1/I singularity at I=0; off-Γ stays 0. ``t_seed`` must be > 0 (t_seed=0
-        seeds I=0 and the next advance divides by zero -> NaN)."""
-        if float(t_seed) <= 0.0:
-            raise ValueError(f"seed_clock needs t_seed > 0 (got {t_seed}); t_seed=0 seeds I=0 -> 1/I NaN.")
-        self._t_seed = float(t_seed)
-        for Ifun, S in ((self.I_disp, self.S_disp), (self.I_drain, self.S_drain)):
-            Ifun.x.array[:] = 0.0
-            Ifun.x.array[self._gamma_dofs] = S * np.sqrt(t_seed)
-            Ifun.x.scatter_forward()
-
-    def _omega_branch(self, I, S, dPhi_ref, dth, F, C):
-        Ipos = np.maximum(I, 1e-30)
-        return C * S * S * F(Ipos / (dth * self._r_w)) / (2.0 * Ipos * dPhi_ref)
-
-    def update_well_index(self, psi):
-        """Refresh the LAGGED well-index coefficient ``Omega`` on Γ. Direction is set by the far-field
-        ψ_cell (H_f>ψ_cell → cylindrical disperse branch, else throttle drain branch); ``Omega`` is GATED
-        to 0 until that direction's sub-grid annulus fills (``I >= I_fill``) -- during the sub-grid sorption
-        phase the host receives NO source (the uptake is held in the I-clock reservoir). Call once at the
-        start of a step; the residual then treats ``Omega`` as a frozen coefficient (the on-Γ Kirchhoff
-        difference still self-limits as ψ(Γ) saturates)."""
-        g = self._gamma_dofs
-        hfg, psi_cell = self.Hf.x.array[g], self._psi_cell(psi)
-        z0, k = throttle_params(self.dth_drain)
-        om_d = self._omega_branch(self.I_disp.x.array[g], self.S_disp, self.dPhi_ref_disp,
-                                  self.dth_disp, F_cylindrical, self._C_disp)
-        om_r = self._omega_branch(self.I_drain.x.array[g], self.S_drain, self.dPhi_ref_drain,
-                                  self.dth_drain, lambda z: F_throttle(z, z0, k), self._C_drain)
-        om_d = np.where(self.I_disp.x.array[g] >= self._I_fill, om_d, 0.0)   # storage gate
-        om_r = np.where(self.I_drain.x.array[g] >= self._I_fill, om_r, 0.0)
-        self.Omega.x.array[:] = 0.0
-        self.Omega.x.array[g] = np.where(hfg > psi_cell, om_d, om_r)
-        self.Omega.x.scatter_forward()
+    # EXCISED 2026-06-12 (the Phase-4 adversarial-review decision, Arik-approved): the EXPERIMENTAL
+    # dual-scale machinery (_setup_shell/_psi_cell/seed_clock/update_well_index/advance_clock and the
+    # I_disp/I_drain per-face accumulators) -- the retracted Phase-3 coupled embedding, measured failing
+    # the Phase-4 gate at 13-39% vs the production WellIndexExchange's 2.2-5.7%. A FROZEN self-contained
+    # reimplementation survives as the gate's failure baseline in scratch/m4_phase4_embedded_harness.py
+    # (DualScaleScheme); record: validation/sanity/m4_phase4_coupled_review__2026-06-11.md.
 
     def sorptive_into_feature(self, v, psi):
         """Sorptive wall exchange, FEATURE block: ``∫_Γ p·Ω·[Φ(H_f)−Φ(ψ)]·v dΓ`` (the Kirchhoff flux q per
@@ -275,34 +197,6 @@ class EmbeddedFeature:
         return self.mesh.comm.allreduce(fem.assemble_scalar(
             fem.form(self._perimeter * self.Omega * self._soil.kirchhoff_ufl(psi, self.Hf) * self.dGamma)),
             op=MPI.SUM)
-
-    def advance_clock(self, psi, dt, nsub=400):
-        """Advance the per-face state(s) over ``dt`` (post-step), integrating the clock
-        ``dI/dt = (S²/2I)·F(ζ)·(|ΔΦ_live|/ΔΦ_ref)`` with the END-of-step driving potential
-        ``ΔΦ_live = Φ(H_f)−Φ(ψ)`` (a partial/evolving head drop scales the flux). Each face feeds only its
-        ACTIVE accumulator (disperse: H_f>ψ → I_disp; drain → I_drain); the inactive one is frozen.
-        ``nsub`` sub-steps the 1/I stiffness over the step."""
-        g = self._gamma_dofs
-        hfg, psi_cell = self.Hf.x.array[g], self._psi_cell(psi)   # drive read from the off-Γ far field
-        disperse = hfg > psi_cell
-        # the driving-potential MAGNITUDE, evaluated low->high so the K-graded Kirchhoff quadrature clusters
-        # at the wet end both ways (kirchhoff is graded toward its upper limit; kirchhoff(0,-1) would under-
-        # resolve the large-K wet end and break the drain<->disperse symmetry of |ΔΦ|).
-        dPhi_mag = self._soil.kirchhoff(np.minimum(psi_cell, hfg), np.maximum(psi_cell, hfg))
-        scale_d = np.where(disperse, dPhi_mag / self.dPhi_ref_disp, 0.0)
-        scale_r = np.where(~disperse, dPhi_mag / self.dPhi_ref_drain, 0.0)
-        z0, k = throttle_params(self.dth_drain)
-        Id, Ir = self.I_disp.x.array[g].copy(), self.I_drain.x.array[g].copy()
-        h = dt / nsub
-        for _ in range(nsub):
-            Idc, Irc = np.maximum(Id, 1e-300), np.maximum(Ir, 1e-300)   # clamp the 1/I (defensive)
-            Id = Id + h * (self._C_disp * self.S_disp ** 2 / (2.0 * Idc)
-                           * F_cylindrical(Idc / (self.dth_disp * self._r_w)) * scale_d)
-            Ir = Ir + h * (self._C_drain * self.S_drain ** 2 / (2.0 * Irc)
-                           * F_throttle(Irc / (self.dth_drain * self._r_w), z0, k) * scale_r)
-        self.I_disp.x.array[g], self.I_drain.x.array[g] = Id, Ir
-        self.I_disp.x.scatter_forward()
-        self.I_drain.x.scatter_forward()
 
     def hf_residual(self, v):
         """The feature's contribution to the ``H_f`` block: conveyance + the off-Γ pin diagonal
