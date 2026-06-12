@@ -108,6 +108,13 @@ class WellIndexExchange:
         """Bind to an EmbeddedFeature (after configure_sorptive). DISPERSE ctx: t0 (required, the
         seeding contact age, > 0); h (optional -- auto-measured as the nearest off-ridge vertex
         distance). DRAIN ctx: R_out (required, the closed/catchment equivalent radius)."""
+        comm_size = getattr(getattr(getattr(feat.V, "mesh", None), "comm", None), "size", 1)
+        if comm_size > 1:
+            raise ValueError(
+                f"WellIndexExchange: parallel mesh refused (comm size {comm_size}); every host "
+                f"read here (dof/theta means, the front-ring mean, the lumped volume weights) "
+                f"is rank-local and would be silently partition-dependent. The gate evidence is "
+                f"serial-only (2026-06-12 Codex review finding 1).")
         from scipy.spatial import cKDTree
         self.soil, self.feat = soil, feat
         if self.direction == "drain":
@@ -224,7 +231,13 @@ class WellIndexExchange:
         rate is the HEUN (trapezoid) value -- the start-state rate is a first-order explicit lag
         (the rate is held over the step while the bulk depletes; measured +4.7% end excess on
         the refD40 mark grid): rate = (r0 + r1)/2, r1 evaluated at th_bar - r0*dt/V_box, the
-        scheme's own mass prediction. Second-order in dt, zero knobs; dt=0 degenerates to r0."""
+        scheme's own mass prediction. Second-order in dt W.R.T. THE SCHEME'S OWN EXTRACTION
+        ONLY (2026-06-12 Codex review finding 2): external host sources (recharge, rain) enter
+        the predictor only through the live theta read at step start, so the rate stays
+        first-order during active external forcing -- by design: the scheme cannot enumerate
+        arbitrary host sources; the live field read is the general mechanism (measured on the
+        refD40-C recharge leg: end 0.996, relL2 2.7%, better than the 1.025 pre-Heun end).
+        Zero knobs; dt=0 degenerates to r0."""
         th_bar = float((self._wvol * self.soil.theta(psi.x.array)).sum())
         hf_bar = float(feat.Hf.x.array[self._g].mean())
         r0 = self._drain_rate_at(th_bar, hf_bar)

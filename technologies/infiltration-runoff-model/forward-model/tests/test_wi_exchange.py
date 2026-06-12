@@ -53,6 +53,25 @@ def test_resolved_wall_regime_is_refused():
         WellIndexExchange().setup(feat, LOAM, {"t0": 1e-4})
 
 
+def test_parallel_comm_refused():
+    """2026-06-12 Codex review finding 1: every host read in this class (dof/theta means, the
+    front-ring mean, the lumped weight vector) is RANK-LOCAL -- partition-dependent and silently
+    wrong on a distributed mesh (pre-existing on main for the dof-mean reads; the branch added
+    the volume weights). All gate evidence is serial. The class must REFUSE a parallel comm
+    (the repo's scope-guard pattern) rather than degrade silently."""
+    class _Comm:
+        size = 2
+    class _Mesh:
+        comm = _Comm()
+    class _V:
+        mesh = _Mesh()
+    class _Feat:
+        V = _V()
+    for direction in ("disperse", "drain"):
+        with pytest.raises(ValueError, match="serial"):
+            WellIndexExchange(direction=direction).setup(_Feat(), LOAM, {"t0": 1e-4, "R_out": 2.0})
+
+
 def test_drain_requires_catchment_radius():
     """The drain mode is the PSS depletion closure (2026-06-12): it needs the closed/catchment
     radius R_out (a physical geometry input, ln(R/r_w)-3/4); setup without it must refuse."""
