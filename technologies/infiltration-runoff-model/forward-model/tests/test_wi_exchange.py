@@ -119,6 +119,39 @@ def test_drain_gate_refD40_closed_box(n):
         "discrimination twin lost: the fixed-drive PSS clock passes this leg"
 
 
+@pytest.mark.parametrize("n", [8])
+def test_drain_history_gate_refD40C_continuous_recharge(n):
+    """THE discriminating drain HISTORY leg (refD40-C, 2026-06-12): CONTINUOUS recharge into the
+    [24,32] r_w band over [3,18] d (V=1.8 m at ~0.85x the band->wall PSS throughput, 30-d horizon
+    -- the band re-drains while being refilled, so the injection is throughput-limited, not
+    storage-capped). Designed because the v1 single deficit-aware pulse (refD40-B) measurably
+    CANNOT discriminate: a one-shot refill is capped at ~one band deficit (~6% of end-I), moved
+    the end state only +2.0%, and the recharge-blind twin passed it at 1.5%. Here the recharge
+    shifts the end state +54.7%, and the production drain -- live volumetric-mean host read, ZERO
+    recharge knowledge (the recharge reaches it only THROUGH the host) -- must track the recharged
+    resolved reference within the pre-registered EMBEDDED_TOL while the recharge-blind
+    water-balance PSS twin (the strongest no-recharge-knowledge competitor: the validated PSS
+    closure tracking its OWN extraction ledger; pre-registered prediction was production ~7%,
+    probe measured 3.0/2.7% at n=8/12, twin 31.8%) fails by >= BASELINE_KILL. (~10 min.)"""
+    from scratch.m4_phase4_embedded_harness import run_embedded
+    from scratch.m4_phase4_drain_desorptivity import bruce_klute_desorptivity, pss_drain
+    ref = np.load("scratch/m4_phase4_refD40C_drain.npz")
+    t, I_ref = ref["LOAM_t"], ref["LOAM_I"]
+    t1, t2 = (float(x) for x in ref["LOAM_t_src"])
+    v_len = float(ref["LOAM_V_per_wall_area"]) * 2.0 * np.pi * R_W_DEFAULT
+    out = run_embedded(WellIndexExchange(direction="drain"), "LOAM", 40 * R_W_DEFAULT, n, t,
+                       direction="drain", pulse=(t1, t2, v_len),
+                       pulse_band=tuple(float(x) for x in ref["LOAM_band"]))
+    assert out is not None, "embedded closed-box recharged drain run did not complete"
+    e = rel_l2(out["I"], I_ref)
+    assert e <= 0.10, f"drain history gate failed: relL2={e:.1%}"
+    S_bk, _, _, _ = bruce_klute_desorptivity(LOAM, -1.0, -0.03)
+    I_twin = pss_drain(t, LOAM, -0.03, -1.0, R_W_DEFAULT, 40 * R_W_DEFAULT,
+                       S_bk * np.sqrt(t[0]), float(t[0]))
+    assert rel_l2(I_twin, I_ref) >= 0.20, \
+        "discrimination twin lost: the recharge-blind water-balance PSS clock passes this leg"
+
+
 def test_nonzero_wall_head_refused():
     """The gate evidence is saturated-wall (psi_wall=0) only; the class must refuse a feature
     configured with any other wall head rather than silently scaling the clock era against the
