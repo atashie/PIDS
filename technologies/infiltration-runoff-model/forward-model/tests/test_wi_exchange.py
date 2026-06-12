@@ -215,6 +215,53 @@ def test_drain_gate_refD40_closed_box(n):
 
 
 @pytest.mark.parametrize("n", [8])
+def test_drain_gate_loamR20_deep_depletion_closed_box(n):
+    """DEEP-DEPLETION drain gate (2026-06-12, the geometry-generality + deepest-bend leg): the
+    production drain tracks the LOAM R20 fresh ref (48% depletion -- the deepest committed
+    bend; the reference was PRE-REGISTERED-predicted by the offline PSS at 3.9% before it
+    existed) within EMBEDDED_TOL while the fixed-drive twin fails at 135.8%. Probe with the
+    theta-mean + Heun drive: 3.8/3.8% at n=8/12, n-INDEPENDENT, end 1.040 = the offline law's
+    own 1.042 on this ref (the embedded discretization adds nothing). (~2 min.)"""
+    from scratch.m4_phase4_embedded_harness import run_embedded
+    fresh = np.load("scratch/m4_phase4_drain_fresh_refs.npz")
+    t, I_ref = fresh["LOAM_R20_t"], fresh["LOAM_R20_I"]
+    out = run_embedded(WellIndexExchange(direction="drain"), "LOAM", 20 * R_W_DEFAULT, n, t,
+                       direction="drain")
+    assert out is not None, "embedded closed-box R20 drain run did not complete"
+    e = rel_l2(out["I"], I_ref)
+    assert e <= 0.10, f"R20 deep-depletion drain gate failed: relL2={e:.1%}"
+    geo = np.log(20.0) - 0.75
+    rate_fixed = float(LOAM.kirchhoff(-1.0, -0.03)) / (R_W_DEFAULT * geo)
+    I_twin = np.minimum(rate_fixed * (t - t[0]), float(fresh["LOAM_R20_Imax"]))
+    assert rel_l2(I_twin, I_ref) >= 0.20, \
+        "discrimination twin lost: the fixed-drive PSS clock passes this leg"
+
+
+@pytest.mark.parametrize("n", [8])
+def test_drain_gate_siltR40_closed_box(n):
+    """SILT drain gate (2026-06-12, completing the drain SOIL TRIAD: LOAM + SAND + SILT all
+    gate-asserted): the production drain tracks the new SILT R40 resolved ref
+    (scratch/m4_phase4_silt_drain_ref.py, fresh-refs taint discipline -- the offline PSS
+    prediction was saved BEFORE the FEM reference and scored 4.1%, the law's FOURTH independent
+    fresh-ref pass) within EMBEDDED_TOL while the fixed-drive twin fails at 53.2%. Probe with
+    the theta-mean + Heun drive: 4.3/4.3% at n=8/12, n-INDEPENDENT, end 1.010 = the offline
+    law exactly. (~2 min.)"""
+    from scratch.m4_phase4_embedded_harness import run_embedded, SOILS
+    ref = np.load("scratch/m4_phase4_silt_drain_ref.npz")
+    t, I_ref = ref["SILT_R40_t"], ref["SILT_R40_I"]
+    out = run_embedded(WellIndexExchange(direction="drain"), "SILT", 40 * R_W_DEFAULT, n, t,
+                       direction="drain")
+    assert out is not None, "embedded closed-box SILT drain run did not complete"
+    e = rel_l2(out["I"], I_ref)
+    assert e <= 0.10, f"SILT drain gate failed: relL2={e:.1%}"
+    geo = np.log(40.0) - 0.75
+    rate_fixed = float(SOILS["SILT"].kirchhoff(-1.0, -0.03)) / (R_W_DEFAULT * geo)
+    I_twin = np.minimum(rate_fixed * (t - t[0]), float(ref["SILT_R40_Imax"]))
+    assert rel_l2(I_twin, I_ref) >= 0.20, \
+        "discrimination twin lost: the fixed-drive PSS clock passes this leg"
+
+
+@pytest.mark.parametrize("n", [8])
 def test_drain_history_gate_refD40C_continuous_recharge(n):
     """THE discriminating drain HISTORY leg (refD40-C, 2026-06-12): CONTINUOUS recharge into the
     [24,32] r_w band over [3,18] d (V=1.8 m at ~0.85x the band->wall PSS throughput, 30-d horizon
