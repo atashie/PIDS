@@ -11,9 +11,15 @@ over-delivery, not over-throttling). HOST CONTROL IS ESTABLISHED FOR THE WI ERA 
 cumulative I at n=8-12, carrying ALL discriminating signal -- the RefB-40 pulse lands after
 handover); the sub-grid era is a PRESCRIBED-RATE CLOSURE whose host read is a second-order
 correction (<=~2% on the committed legs, mechanism-present but not gate-exercised). The ~5%
-residual is an UNATTRIBUTED WI-ERA SYSTEMATIC (mid-curve +3-5%, deep-bend -9%) within the
-pre-registered tolerance -- it is NOT the offline F closure's large-zeta bias (measured -0.9..-1.5%,
-wrong sign and era; review attack f). The disperse evidence does not by itself exclude passive
+residual is a WI-ERA SYSTEMATIC within the pre-registered tolerance, LOCALIZED by the 2026-06-12
+instrumented diagnostic (scratch/m4_phase4_wi_residual_diag.py + the _wi_diag npzs): the
+constant-WI bridge FORM is exonerated (evaluated on the RESOLVED field at r_0 it reproduces the
+resolved wall rate to +0.3..0.6% through the bend, +3.4% deep-bend); the carrier is the LATTICE
+RIDGE STATE sitting WETTER than the resolved field at r_0 (dPhi read -10..-18%, shrinking with n)
+plus a short post-handover spin-up transient (rate -59% for t <= 2*t_h, self-healing -- the v1
+crash mechanism, now bounded); the cumulative mid-curve +3-5% over-delivery is CLOCK-ERA SURPLUS
+carried over handover, not WI-era over-delivery. It is NOT the offline F closure's large-zeta
+bias (measured -0.9..-1.5%, wrong sign and era; review attack f). The disperse evidence does not by itself exclude passive
 capacity-aware schemes (their killers are the drain legs this class refuses). Prototype + evidence:
 scratch/m4_phase4_wi_probe.py, scratch/m4_phase4_embedded_harness.py,
 tests/test_coupled_gate_refs.py.
