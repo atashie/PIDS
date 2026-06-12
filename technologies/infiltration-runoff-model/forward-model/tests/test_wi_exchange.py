@@ -96,14 +96,90 @@ def test_drain_prescribed_rate_is_the_pss_law():
     assert abs(x.I_total(feat) * feat._perimeter * feat.length - abs(rate) * 0.5) < 1e-12
 
 
+def test_drain_drive_is_inverse_retention_of_the_theta_mean():
+    """Follow-up #4 (2026-06-12): the drain drive must be psi(volume-mean theta) -- the
+    closed-box WATER BALANCE the validated PSS closure is defined on (the lumped theta mean is
+    mass-conserving on the discrete field, so it is exact independent of how badly the coarse
+    grid resolves the drawdown cone, and it is recharge-aware: injected water raises the theta
+    field) -- NOT the plain dof-mean psi (biased WET: boundary-vertex over-weighting + the
+    Jensen gap of averaging psi across the cone; measured +8-10% end bias on the drain legs).
+    Non-uniform field: the rate must equal the PSS law on the theta-mean drive (independently
+    recomputed here) and measurably differ from the dof-mean drive."""
+    import ufl
+    from dolfinx import fem
+    feat = _feat(2)
+    R_out = 2.0
+    x = WellIndexExchange(direction="drain").setup(feat, LOAM, {"t0": 1e-4, "R_out": R_out})
+    feat.Hf.x.array[:] = -1.0
+    feat.Hf.x.scatter_forward()
+    psi = fem.Function(feat.V)
+    xc = feat.V.tabulate_dof_coordinates()
+    psi.x.array[:] = -0.03 - 0.4 * xc[:, 0]               # wet-to-dry along the feature axis
+    rate = x.pre_step(feat, psi, 0.0)
+    v = ufl.TestFunction(feat.V)
+    w = fem.assemble_vector(fem.form(v * ufl.dx(
+        metadata={"quadrature_rule": "vertex", "quadrature_degree": 1}))).array
+    th_bar = float((w * LOAM.theta(psi.x.array)).sum() / w.sum())
+    se_vg = (th_bar - LOAM.theta_r) / (LOAM.theta_s - LOAM.theta_r) * LOAM.Sc
+    psi_bar = -((se_vg ** (-1.0 / LOAM.m) - 1.0) ** (1.0 / LOAM.n)) / LOAM.alpha
+    geo = np.log(R_out / R_W_DEFAULT) - 0.75
+    want = -float(LOAM.kirchhoff(-1.0, psi_bar)) / (R_W_DEFAULT * geo) \
+        * feat._perimeter * feat.length
+    assert abs(rate - want) < 1e-9 * abs(want), \
+        f"drain drive is not psi(theta-mean): rate={rate:.6e} want={want:.6e}"
+    dof_drive = -float(LOAM.kirchhoff(-1.0, float(psi.x.array.mean()))) / (R_W_DEFAULT * geo) \
+        * feat._perimeter * feat.length
+    assert abs(rate - dof_drive) > 1e-3 * abs(rate), "test field fails to separate the reads"
+
+
+def test_drain_rate_heun_predictor_with_dt():
+    """Follow-up #4 part 2 (2026-06-12): the prescribed drain rate evaluated at the START state
+    and held over the step is a first-order EXPLICIT LAG -- measured +4.7% end excess on the
+    refD40 mark grid (1 substep/mark; x1.020 law-bias x 1.047 lag = the embedded 1.068 EXACTLY;
+    scratch/_c_lag_check evidence in the commit). With dt known before the solve, pre_step takes
+    an optional dt and returns the HEUN (trapezoid) rate in the scheme's own mass variable:
+    rate = (r0 + r1)/2 with r1 the PSS rate at theta_bar - r0*dt/V_box. dt omitted/0 degenerates
+    to r0 (backward compatible; second-order in dt otherwise, no knobs)."""
+    from dolfinx import fem
+    import ufl
+    feat = _feat(2)
+    R_out = 2.0
+    x = WellIndexExchange(direction="drain").setup(feat, LOAM, {"t0": 1e-4, "R_out": R_out})
+    feat.Hf.x.array[:] = -1.0
+    feat.Hf.x.scatter_forward()
+    psi = fem.Function(feat.V)
+    psi.x.array[:] = -0.03
+    r0 = x.pre_step(feat, psi, 0.0)                       # dt omitted -> the plain PSS rate
+    geo = np.log(R_out / R_W_DEFAULT) - 0.75
+    want0 = -float(LOAM.kirchhoff(-1.0, -0.03)) / (R_W_DEFAULT * geo) \
+        * feat._perimeter * feat.length
+    assert abs(r0 - want0) < 1e-9 * abs(want0)
+    dt = 0.5
+    v = ufl.TestFunction(feat.V)
+    w = fem.assemble_vector(fem.form(v * ufl.dx(
+        metadata={"quadrature_rule": "vertex", "quadrature_degree": 1}))).array
+    th_pred = float(LOAM.theta(-0.03)) - abs(want0) * dt / w.sum()
+    se_vg = (th_pred - LOAM.theta_r) / (LOAM.theta_s - LOAM.theta_r) * LOAM.Sc
+    psi_pred = -((se_vg ** (-1.0 / LOAM.m) - 1.0) ** (1.0 / LOAM.n)) / LOAM.alpha
+    r1 = -float(LOAM.kirchhoff(-1.0, psi_pred)) / (R_W_DEFAULT * geo) \
+        * feat._perimeter * feat.length
+    want_heun = 0.5 * (want0 + r1)
+    rate = x.pre_step(feat, psi, 0.0, dt)
+    assert abs(rate - want_heun) < 1e-9 * abs(want_heun), \
+        f"Heun predictor mismatch: rate={rate:.8e} want={want_heun:.8e}"
+    assert abs(rate) < abs(r0), "the predictor must reduce the start-state rate on depletion"
+
+
 @pytest.mark.parametrize("n", [8])
 def test_drain_gate_refD40_closed_box(n):
     """THE drain deployment gate leg, production class through the closed-box harness: the embedded
     I(t) tracks the resolved refD40 (LOAM, R=40 r_w, psi_i=-0.03, 20-d window) within the
     pre-registered EMBEDDED_TOL while the FIXED-DRIVE twin (no host read -- the same law with the
     drive frozen at psi_i, exactly reproducible offline for a prescribed-rate scheme) fails by
-    >= BASELINE_KILL: the host read is load-bearing (probe: embedded 7.4/6.9% at n=8/12,
-    twin 74.2%). (~4 min; prior failures: WI-bridge drain 10.9/16.8% degrading, throttle 98%.)"""
+    >= BASELINE_KILL: the host read is load-bearing (probe with the theta-mean + Heun drive,
+    follow-up #4: 3.4/3.4% at n=8/12 -- n-INDEPENDENT, end I/ref=1.019 = the offline law's own
+    1.020; the original dof-mean read scored 7.4/6.9% at end 1.085; twin 74.2%). (~4 min; prior
+    failures: WI-bridge drain 10.9/16.8% degrading, throttle 98%.)"""
     from scratch.m4_phase4_embedded_harness import run_embedded
     ref = np.load("scratch/m4_phase4_refD40_drain.npz")
     t, I_ref = ref["LOAM_t"], ref["LOAM_I"]
@@ -132,7 +208,8 @@ def test_drain_history_gate_refD40C_continuous_recharge(n):
     resolved reference within the pre-registered EMBEDDED_TOL while the recharge-blind
     water-balance PSS twin (the strongest no-recharge-knowledge competitor: the validated PSS
     closure tracking its OWN extraction ledger; pre-registered prediction was production ~7%,
-    probe measured 3.0/2.7% at n=8/12, twin 31.8%) fails by >= BASELINE_KILL. (~10 min.)"""
+    probe measured 3.0/2.7% at n=8/12 with the dof-mean drive, 2.7/2.7% end 0.996 with the
+    follow-up-4 theta-mean + Heun drive, twin 31.8%) fails by >= BASELINE_KILL. (~10 min.)"""
     from scratch.m4_phase4_embedded_harness import run_embedded
     from scratch.m4_phase4_drain_desorptivity import bruce_klute_desorptivity, pss_drain
     ref = np.load("scratch/m4_phase4_refD40C_drain.npz")
@@ -179,9 +256,9 @@ def test_drain_gate_sandR40_closed_box(n):
     PSS depletion drain passes the SAND R40 leg against the 2026-06-12 PRE-REGISTERED fresh-ref
     resolved curve (scratch/m4_phase4_drain_fresh_refs.npz, ~20% depletion window; the offline
     PSS predicted it at 3.4% BEFORE that reference existed) while the fixed-drive twin (drive
-    frozen at psi_i -- no host read) fails at 82.1%. Probe: 8.8/8.3% at n=8/12, non-degrading;
-    end bias +10.2/9.6% = the documented dof-mean drive bias (follow-up #4), larger on SAND than
-    LOAM but inside EMBEDDED_TOL. (~2 min.)"""
+    frozen at psi_i -- no host read) fails at 82.1%. Probe with the theta-mean + Heun drive
+    (follow-up #4): 3.5/3.5% at n=8/12, n-INDEPENDENT, end bias +3.0% (the dof-mean read scored
+    8.8/8.3% with end +10.2/9.6%). (~2 min.)"""
     from scratch.m4_phase4_embedded_harness import run_embedded, SOILS
     fresh = np.load("scratch/m4_phase4_drain_fresh_refs.npz")
     t, I_ref = fresh["SAND_R40_t"], fresh["SAND_R40_I"]

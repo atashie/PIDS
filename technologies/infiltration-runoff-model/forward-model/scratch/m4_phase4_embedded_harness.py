@@ -12,10 +12,13 @@ the reference pulse via the assembled discrete band volume.
 SCHEME interface (so the same instrument runs the retracted dual-scale, the bare clock, and the
 Phase-4 WI scheme):
     scheme.setup(feat, soil, ctx)     -- once, after configure_sorptive; ctx has h, L, t0, direction
-    scheme.pre_step(feat, psi, t)     -- set feat.Omega (the lagged host-source coefficient); may
+    scheme.pre_step(feat, psi, t, dt) -- set feat.Omega (the lagged host-source coefficient); may
                                          RETURN a reservoir-release rate [m^3/day] (or None): a
                                          ridge-distributed source the host receives this step
-                                         (negative for drain -- the host LOSES the drained water)
+                                         (negative for drain -- the host LOSES the drained water).
+                                         dt = the step about to be solved (2026-06-12, the Heun
+                                         drain rate); schemes may ignore it (optional for direct
+                                         callers, the harness always passes it)
     scheme.post_step(feat, psi, t, dt)-- advance internal states (clock, reservoir transfers)
     scheme.I_total(feat)              -- cumulative uptake per wall area [m] (the gate observable)
     scheme.reservoir(feat, injected)  -- water currently held in the sub-grid reservoir [m^3]
@@ -150,7 +153,7 @@ def run_embedded(scheme, soil_name, R_out, n, t_grid, direction="disperse",
             dt_c.value = hstep
             active = pulse is not None and (t >= t1 - 1e-15) and (t + hstep <= t2 + 1e-15)
             s_c.value = s_rate if active else 0.0
-            rel = scheme.pre_step(feat, psi, t) or 0.0    # [m^3/day], ridge-distributed
+            rel = scheme.pre_step(feat, psi, t, hstep) or 0.0   # [m^3/day], ridge-distributed
             rel_c.value = rel / feat.length
             prob.solve()
             if prob.solver.getConvergedReason() > 0:
@@ -233,7 +236,7 @@ class DualScaleScheme:
         return float(psi.x.array[self._shell].mean()) if self._shell.size else \
             float(psi.x.array.mean())
 
-    def pre_step(self, feat, psi, t):
+    def pre_step(self, feat, psi, t, dt=None):            # dt ignored: frozen pre-Heun baseline
         from pids_forward.physics.sorptive_closure import F_cylindrical, F_throttle, throttle_params
         hfg, pc = feat.Hf.x.array[self._g], self._psi_cell(psi)
         z0, k = throttle_params(feat.dth_drain)

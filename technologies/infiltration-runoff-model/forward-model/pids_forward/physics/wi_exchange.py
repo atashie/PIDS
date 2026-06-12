@@ -52,11 +52,22 @@ throttle 98%, cyl-GA family 35-81%, the WI bridge 10.9/16.8% degrading). The val
 (3.3-3.9% on refD40 + two PRE-REGISTERED fresh refs, SAND R40 + LOAM R20 deep-depletion, zero
 knobs -- scratch/m4_phase4_drain_desorptivity.py + m4_phase4_drain_fresh_refs.py) is quasi-steady
 closed-reservoir Kirchhoff depletion. Embedded form: a prescribed-rate ridge SINK
-      rate = 2*pi*[Phi(mean psi_host) - Phi(mean H_f)] / (ln(R_out/r_w) - 3/4)  per unit length,
-driven by the LIVE volumetric-mean host state (the PSS average the derived Dietz -3/4 is defined
-against) and the live wall head. The host read is LOAD-BEARING: the depletion bend exists only
-because the host mean falls (fixed-drive twin fails refD40 at 74%; embedded scheme 7.4/6.9% at
-n=8/12, non-degrading). R_out = the closed/catchment equivalent radius, a physical geometry input
+      rate = 2*pi*[Phi(psi_bulk) - Phi(mean H_f)] / (ln(R_out/r_w) - 3/4)  per unit length,
+      psi_bulk = retention^-1( lumped volume-mean theta of the live host field ),
+i.e. the LIVE discrete closed-box WATER BALANCE -- the bulk state the validated PSS law is
+defined on, mass-exact however coarsely the drawdown cone is resolved, and recharge-aware (an
+injected source raises the theta field and the drive responds; the refD40-C property) -- and the
+live wall head. (The original plain dof-mean-psi read was measured +2.3-2.7% hot in dPhi -- the
+follow-up-4 +8-10% end bias, boundary-vertex over-weighting of the wetter far field;
+scratch/m4_phase4_drain_drive_diag.py. The remaining end excess decomposed EXACTLY as the
+law's own +2.0% x the +4.7% first-order explicit lag of the start-state rate held over the
+step; the Heun trapezoid rate in the scheme's own mass variable -- pre_step's optional dt --
+removes the lag.) With the theta-mean + Heun drive the legs score 3.4/3.5/2.7% rel-L2 at end
+bias 1.019/1.030/0.996 (refD40/SAND-R40/refD40-C), n-INDEPENDENT at n=8/12 -- the mass-exact
+read removed the resolution dependence; what remains is the offline PSS closure's own
+documented +2-4%. The host read is LOAD-BEARING: the depletion bend exists only because the
+host bulk falls (fixed-drive twin fails refD40 at 74%; the original dof-mean read scored
+7.4/6.9% at end 1.085). R_out = the closed/catchment equivalent radius, a physical geometry input
 (ctx["R_out"], required). Omega stays 0 in drain mode (pure prescription; capacity-safe: the rate
 hard-zeros as the bulk mean reaches the wall head).
 
@@ -71,8 +82,9 @@ USAGE (the step contract, harness-compatible -- scratch/m4_phase4_embedded_harne
 reference driver): the host residual must include BOTH feat.sorptive_into_host(w, psi) (the WI-era
 exchange; this class drives feat.Omega) AND a ridge source carrying the sub-grid-era prescribed
 rate (per unit length = rate/feat.length, e.g. `-rate_c * w * feat.dGamma` with rate_c set from
-pre_step's return). Per step: rate = pre_step(feat, psi, t) BEFORE the solve; post_step(feat, psi,
-t, dt) AFTER it. Mass identity: I_total*perimeter*length == injected + seed*perimeter*length.
+pre_step's return). Per step: rate = pre_step(feat, psi, t, dt) BEFORE the solve (dt optional;
+passing it gets the lag-free Heun drain rate); post_step(feat, psi, t, dt) AFTER it. Mass
+identity: I_total*perimeter*length == injected + seed*perimeter*length.
 """
 from __future__ import annotations
 
@@ -108,6 +120,19 @@ class WellIndexExchange:
             self.geo = np.log(float(R_out) / self._r_w) - 0.75
             self._g = feat._gamma_dofs
             self._p_len = feat._perimeter * feat.length
+            # lumped vertex volume weights: the drive is psi(volume-mean theta) -- the discrete
+            # closed-box water balance (mass-exact however coarsely the drawdown cone is
+            # resolved, and recharge-aware), which is the bulk state the PSS law is defined on.
+            # The plain dof-mean psi read was measured +2.3-2.7% hot in dPhi (-> the +8-10% end
+            # bias): boundary vertices (over half the dofs at n=8, carrying 1/2-1/8 cell
+            # volumes) over-weight the wetter far field (scratch/m4_phase4_drain_drive_diag.py).
+            import ufl
+            from dolfinx import fem as _fem
+            v = ufl.TestFunction(feat.V)
+            w = _fem.assemble_vector(_fem.form(v * ufl.dx(
+                metadata={"quadrature_rule": "vertex", "quadrature_degree": 1}))).array.copy()
+            self._vol = float(w.sum())                  # the host volume (the Heun mass step)
+            self._wvol = w / self._vol
             self.inj = 0.0                              # cumulative EXTRACTED volume [m^3], >= 0
             self._last_rate = 0.0
             return self
@@ -176,25 +201,49 @@ class WellIndexExchange:
         dIdt = self.S ** 2 / (2.0 * I) * F_cylindrical(I / (self.dth * self._r_w)) * scale
         return dIdt * self._p_len
 
-    def _drain_rate(self, feat, psi) -> float:
-        """Drain prescribed extraction [m^3/day, >= 0]: the PSS depletion law with the LIVE
-        volumetric-mean host drive and the LIVE wall head."""
-        psi_bar = float(psi.x.array.mean())
-        hf_bar = float(feat.Hf.x.array[self._g].mean())
+    def _drain_rate_at(self, th_bar, hf_bar) -> float:
+        """The PSS depletion rate [m^3/day, >= 0] at a given bulk water content th_bar."""
+        # capacity safety in the mass variable (the law's state): bulk at/below the wall-head
+        # water content -> no drive (the 1e-12-porosity pad absorbs the weight-sum rounding)
+        if th_bar <= float(self.soil.theta(hf_bar)) \
+                + 1e-12 * (self.soil.theta_s - self.soil.theta_r):
+            return 0.0
+        se_vg = (th_bar - self.soil.theta_r) / (self.soil.theta_s - self.soil.theta_r) \
+            * self.soil.Sc
+        psi_bar = self.soil.h_s if se_vg >= 1.0 else \
+            -((max(se_vg, 1e-12) ** (-1.0 / self.soil.m) - 1.0) ** (1.0 / self.soil.n)) \
+            / self.soil.alpha                              # closed-form inverse retention
         if psi_bar <= hf_bar:
-            return 0.0                                     # bulk at/below the wall head: no drive
+            return 0.0                                     # residual psi-space safety
         dPhi = float(self.soil.kirchhoff(hf_bar, psi_bar))
         return dPhi / (self._r_w * self.geo) * self._p_len
 
-    def pre_step(self, feat, psi, t) -> float:
+    def _drain_rate(self, feat, psi, dt=0.0) -> float:
+        """Drain prescribed extraction [m^3/day, >= 0]: the PSS depletion law with the LIVE
+        water-balance bulk drive psi(volume-mean theta) and the LIVE wall head. With dt > 0 the
+        rate is the HEUN (trapezoid) value -- the start-state rate is a first-order explicit lag
+        (the rate is held over the step while the bulk depletes; measured +4.7% end excess on
+        the refD40 mark grid): rate = (r0 + r1)/2, r1 evaluated at th_bar - r0*dt/V_box, the
+        scheme's own mass prediction. Second-order in dt, zero knobs; dt=0 degenerates to r0."""
+        th_bar = float((self._wvol * self.soil.theta(psi.x.array)).sum())
+        hf_bar = float(feat.Hf.x.array[self._g].mean())
+        r0 = self._drain_rate_at(th_bar, hf_bar)
+        if dt <= 0.0 or r0 == 0.0:
+            return r0
+        r1 = self._drain_rate_at(th_bar - r0 * dt / self._vol, hf_bar)
+        return 0.5 * (r0 + r1)
+
+    def pre_step(self, feat, psi, t, dt=0.0) -> float:
         """Call BEFORE the solve. Sets feat.Omega (the WI-era coefficient; 0 in drain mode) and
         returns the prescribed ridge rate [m^3/day] (negative = host sink in drain mode; 0 after
-        the disperse handover) -- the caller carries it as a ridge source in the host residual."""
+        the disperse handover) -- the caller carries it as a ridge source in the host residual.
+        Pass the step's dt (known before the solve) to get the lag-free Heun drain rate; dt is
+        ignored by the disperse direction (its clock-era lag is inside the validated clock)."""
         feat.Omega.x.array[:] = 0.0
         self._last_rate = 0.0
         if self.direction == "drain":
             feat.Omega.x.scatter_forward()
-            self._last_rate = self._drain_rate(feat, psi)
+            self._last_rate = self._drain_rate(feat, psi, dt)
             return -self._last_rate
         if self.in_subgrid_era:
             feat.Omega.x.scatter_forward()
