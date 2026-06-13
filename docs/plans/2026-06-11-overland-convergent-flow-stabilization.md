@@ -153,6 +153,11 @@ fluxes booked at the solved state; runner `scratch/_tiltedv_diag.py`):
 | spike-default controller | 1096 / 1 | 5.3e-5 d | **0.997·Q_eq** | **+5.4e-8 m³ = 2.1e-12·cum_rain** |
 | aggressive controller (the published run's cadence) | 563 / 16 | 1.1e-4 d | **0.998·Q_eq** | **≈0 (same order)** |
 
+(These are `df61ff4`-engine runs — they BOOK the reason-4 stalls, which is why dt grows to ~5e-5 with
+~1 rejection. The O5 engine REJECTS the same stalls; on the full-window canonical gate run that collapses
+dt to ~1.5e-6 with 60k rejections at 39.5 h — §8.4. The books close either way; the difference is honest
+runtime, the cost the booking hid.)
+
 `clip_mass_adjust = 0` in both — the limiter's degenerate branch NEVER fires on the V. The published npz
 (preserved as `~/parflow-runs/tilted_v/summaries/tiltedv_inhouse_s1_pre_p0_corrupt.npz`, sha256
 `4d51616baa434806bc70f7157361bf9e566e2c782b9ea0fe36a2524a5285f93e`) additionally records
@@ -239,20 +244,42 @@ clip ≫ sheet). O1 is therefore *accuracy-critical for the swale regime*, not j
 - **O4 (deferred):** not implicated in any books violation (B2 dead; books close without it) — and the
   F9 control shows the limiter is LOAD-BEARING (bypass ⇒ Newton fails), so "replace the global rescale"
   is riskier than first framed; O1 removes the undershoots that make any limiter necessary.
-- **P0 gate:** committed-spike re-runs against the fixed engine close the engine ledger with every
-  violation an explicit rejected step (field-scale full window: −8.6e-12·cum_rain, 3 rejections, clean
-  recession; canonical storm-window diagnostics: ≤2.1e-12 both controllers; canonical full-window
-  spike-verbatim numbers in the regenerated B6 artifacts).
+- **P0 gate — PASSED.** Committed-spike re-runs against the O5 engine close the engine ledger with
+  every violation an explicit rejected step:
+  - **Canonical V, full window (the gate run):** plateau **0.996·Q_eq** (storm), peak 1.149× at wave
+    arrival, clean recession → 0; engine ledger **−7.8e-7 m³ = −3.0e-11·cum_rain**; `clip_mass_adjust=0`,
+    max_clip 0.9 mm; **60,008 rejected steps** of 162,702 attempts (37% — every one an honest O5
+    rejection, books untouched). `scratch/tiltedv_inhouse_s1_p0.npz`, now the active B6 reference.
+  - **Field-scale full window:** −8.6e-12·cum_rain, 3 rejections, clean recession.
+  - Engine-state note: the gate npz was produced at the `3d62e75` engine (O5 v1: `stall_accept_fnorm`
+    = 1e-5, no norm-recompute); the storm-phase reason-4 stalls carry |F| ≈ 3e-3 ≫ both the 1e-5 and
+    the final 3e-6 bar and the norm-recompute only moves borderline-floor decisions, so the gate result
+    is representative of HEAD (re-running to confirm = 39.5 h, not spent).
+- **Efficiency — the honest cost, and why P1 is now a tractability requirement, not only accuracy.**
+  The gate run took **39.5 h serial** (874 ms/step × 162.7k attempts), dt PINNED ~1.5e-6 d through the
+  whole storm. This is **~20× over the §6 acceptance bar (canonical V ≤ ~2 h)** — and it is a DIRECT
+  consequence of honest acceptance: the §8.1 *old-engine* diagnostics (which BOOKED the reason-4 stalls)
+  grew dt to ~5e-5 with ~1 rejection; O5 REJECTS those same stalls, so dt collapses 35× and the run
+  rejection-churns. The old engine looked fast because it was booking unconverged states; the true
+  stiffness of the oscillatory scheme is only visible once you demand honest convergence. On THIS
+  problem the old books were still ≈right (the booked stalls were individually tiny, ≤1e-6 m³ total),
+  so O5's benefit here is insurance — but the 39.5 h proves the canonical-scale acceptance bar is
+  **unreachable without removing the sawtooth**. P1 (O1) is the fix; controller re-tuning is a
+  secondary lever (P4).
 - **Merge note (review F6):** this branch forks `df61ff4` and does NOT contain main's `8a891c2`
   (per-sink drain/inlet accounting inside `step()`); the merge MUST land those per-sink increments
   INSIDE the hardened acceptance gate or O5 silently regresses for sinks.
 
 ### 8.5 Consequences for the plan
 P1 (O1 upwind-mobility edge flux) is unchanged and **upgraded in priority rationale**: it is the
-accuracy fix for the PIDS field scale (§8.3), the dt-pin fix (limiter goes no-op), and the monotonicity
-fix. P0's conservation hotfix turned out to be mostly *verification* — the committed engine's books were
-already structurally sound; what P0 actually bought is (a) the acceptance hardening that closes the
-latent B1 path, (b) the measured mechanism that re-aims P1, and (c) the corrected public record.
+accuracy fix for the PIDS field scale (§8.3), the dt-pin fix (limiter goes no-op), the monotonicity
+fix, AND — new from the gate run — the **tractability** fix: with honest acceptance the canonical V is
+39.5 h (20× the bar), and that cost is the oscillatory scheme's true stiffness, which O1 removes at the
+source. P0's conservation hotfix turned out to be mostly *verification* — the committed engine's books
+were already structurally sound on this problem; what P0 actually bought is (a) the acceptance hardening
+that closes the latent B1 path (and, as a side effect, exposes the real dt cost the old booking hid),
+(b) the measured + causally-controlled mechanism that re-aims P1, and (c) the corrected public record.
+The §6 efficiency bar (canonical ≤2 h) should be read as a **post-P1 target**, not a P0 deliverable.
 
 ## 9. Artifacts
 - This plan; B6 deck `parflow/cases/tilted_v_catchment.py`; harness `benchmarks/build_comparison_tiltedv.py`

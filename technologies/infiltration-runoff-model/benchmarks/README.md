@@ -232,7 +232,7 @@ scale / wave form / Manning; `PF_SKIPRUN=1` re-extracts from existing `.pfb`); i
 |---|---|---|---|
 | ParFlow `OverlandKinematic` 48×30 | **1.000·Q_eq** | → 0 clean | closes (storage-balance extraction) |
 | ParFlow `OverlandDiffusive` 48×30 | **1.000·Q_eq** | → 0 clean | closes |
-| in-house `CoupledProblem` 24×16×3 *(P0-corrected 2026-06-11)* | **~1.0·Q_eq** (0.997–0.998 across controller settings) | → 0 | **closes to ≤2e-12·cum rain** (storm-window diagnostics; full-window spike runs ≤1e-11); `clip_mass_adjust=0`; stalls = explicit rejected steps |
+| in-house `CoupledProblem` 24×16×3 *(P0-corrected 2026-06-11)* | **0.996·Q_eq** (full-window gate run; 0.997–0.998 storm-window diagnostics) | → 0 | **closes to −3e-11·cum rain** (full window; storm-window diagnostics ≤2e-12); `clip_mass_adjust=0`; **60,008 explicit rejected steps**, 39.5 h |
 | in-house field-scale 162 m, n=0.015 *(P0)* | **0.876·Q_eq** (coupled 24×16) — honest books, under-resolved *solution* (clip ~1.3 cm vs ~3 mm sheet; heals to 1.01 at 48×30 standalone; true physics equilibrates: t_conc ~0.005–0.01 d ≪ storm) | → 0 clean | closes to −8.6e-12·cum rain (full window) |
 
 **Findings (P0-corrected 2026-06-11 — the original finding-2 numbers are RETRACTED, plan §8):**
@@ -268,7 +268,12 @@ scale / wave form / Manning; `PF_SKIPRUN=1` re-extracts from existing `.pfb`); i
    stagnation verdicts (`SNORM_RELATIVE`, observed booking |F| up to 3e-3) are bookable only at the
    residual floor (`stall_accept_fnorm=3e-6`, recomputed at the returned iterate), else honestly
    rejected with the FULL state (incl. λ) restored; `snes_stol` pinned, `last_reason`/`last_fnorm`
-   audit trail, Tier-1 `test_step_acceptance.py`, full suite green.
+   audit trail, Tier-1 `test_step_acceptance.py`, full suite green; (d) **the honest cost** — the
+   full-window canonical gate run on the O5 engine PASSES the books gate (plateau 0.996·Q_eq, ledger
+   −3e-11·cum rain, clean recession) but took **39.5 h with 60,008 explicit rejected steps** (dt pinned
+   ~1.5e-6 d): O5 rejects the reason-4 stalls the old engine *booked* (which had grown dt to ~5e-5), so
+   the honest engine reveals the oscillatory scheme's true stiffness — **~20× over the ≤2 h efficiency
+   bar, making the upwind flux a tractability requirement, not only an accuracy one**.
 3. **Reframe (Arik 2026-06-11): convergent flow is CORE, not edge-case** — PIDS networks are installed
    along lines of topographic convergence (swales/valley lines), where the M4 features and surface
    inlets sit. Fix prioritized: **`docs/plans/2026-06-11-overland-convergent-flow-stabilization.md`**
