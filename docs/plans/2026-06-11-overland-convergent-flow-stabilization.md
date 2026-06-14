@@ -105,6 +105,26 @@ path stays for MMS/regression archaeology; the upwind path gets its own (order-1
   decide empirically. **Gates:** d ≥ −1e-12 *without* the limiter; books machine-tight; V plateau
   → Q_eq ± 3% mesh-convergent; lake-at-rest & near-flat tests unchanged to machine; 1-D kinematic
   rising-limb analytic matched; dt no longer pinned (measure).
+  - **P1 PREREQUISITE (Codex P0 review 2026-06-12) — make the O5 acceptance gate scale-invariant
+    BEFORE the new scheme/fixture.** `stall_accept_fnorm` is an *absolute* L2-residual bar: ‖F‖₂
+    scales with both the row count (mesh) and the per-row flux/measure (domain), so the value that
+    separates the *measured* populations (Tier-1 columns vs the km² V) is not guaranteed to separate
+    them on P1's upwind scheme or P3's swale — the same physical state can flip accept↔reject under
+    rescaling, and the constant-pinning test (`test_acceptance_contract_defaults`) locks the magic
+    number rather than the invariant (the two behavioural tests, stall-rejected + floor-accepted,
+    *do* pin the invariant — keep those, they are the real contract). **Replacement = a mass-relative
+    gate, which is what the gate actually exists to enforce:** summing the (free-row) residual gives
+    the discrete *global mass-balance residual* (P1 partition-of-unity ⇒ Σrows = ∫(strong residual);
+    booking a step injects exactly `dt·Σr`), so reject a reason-4 step iff
+    `|dt·Σr_free| > ε_mass · max(|ΔW|, rain·A·dt, atol_floor)` with **dimensionless** `ε_mass`
+    (~1e-6). The residual vector is ALREADY assembled in the reason-4 branch (for the norm-recompute),
+    so `Σr` is free; the v2d decomposition already showed `h·rowsum` tracks the booked gap to ~1e-7
+    (empirical pre-validation). Constrained rows (Dirichlet ψ, pinned d/λ) excluded from the sum.
+    Optionally keep a flux-normalised `‖F‖_∞ / (char. flux)` solution-quality check alongside the
+    mass gate. Validate it REPRODUCES the current accept/reject decisions on B4/B5/B6 + the Tier-1
+    suite before relying on it. (P0-as-shipped is safe on the current problems — the absolute bar is
+    measured-correct there and both mis-scalings fail non-silently: too-low → loud `dt_min` error,
+    too-high → `last_fnorm`-audited — but it is a stopgap, not the portable contract P1 builds on.)
 - **P2 — Productionize in `CoupledProblem`.** Same edge scheme on the top-facet graph of realization A
   (`ds_top` triangulation edges); λ/NCP/outlet/inlet terms unchanged; limiter demoted to a tripwire
   assert. Full TDD per the three-tier routine: new Tier-1 tests (positivity-no-clip, conservation-
@@ -240,7 +260,12 @@ clip ≫ sheet). O1 is therefore *accuracy-critical for the swale regime*, not j
   stalls restore the FULL state (ψ, d, AND the λ multiplier — review F3) and reject so the caller
   cuts dt; `last_reason`/`last_fnorm` recorded as the audit trail. Tier-1
   `tests/test_step_acceptance.py` incl. the floor-ACCEPT side (near-flat reason-4 at |F|≈3.6e-10
-  must book — review F5); full suite green.
+  must book — review F5); full suite green. **OPEN (Codex P0 review 2026-06-12): the absolute bar is
+  NON-PORTABLE** — ‖F‖₂ scales with mesh/domain, so 3e-6 is calibrated to the *current* problems, not
+  a stable contract for P1's new scheme/scale. Failure modes are non-silent (loud `dt_min` / audited
+  `last_fnorm`), so P0 ships safely, but **the P1-prerequisite is a scale-invariant mass-relative gate**
+  (§5, P1 bullet). The diagnostic scripts now read the engine's audited `last_fnorm`/`last_reason`
+  rather than the raw SNES norm (Codex F2).
 - **O4 (deferred):** not implicated in any books violation (B2 dead; books close without it) — and the
   F9 control shows the limiter is LOAD-BEARING (bypass ⇒ Newton fails), so "replace the global rescale"
   is riskier than first framed; O1 removes the undershoots that make any limiter necessary.

@@ -127,7 +127,6 @@ def main():
     W = prob.total_water()
     cum_rain = cum_out = cum_gap = 0.0
     clip_prev = prob.clip_mass_adjust
-    snes = None
     t0 = time.time()
     next_print = 0.0
     while t < T_END - 1e-12:
@@ -135,10 +134,13 @@ def main():
         rain.value = RAIN if (t + h) <= STORM + 1e-12 else 0.0
         d_prev = prob.d_n.x.array.copy()           # booked-state pair needs the OLD d_n
         converged, it = prob.step(h)
-        if snes is None:
-            snes = prob._problem.solver            # scratch probe: read the SNES directly
-        reason = int(snes.getConvergedReason())
-        fnorm = float(snes.getFunctionNorm())
+        # Read the ENGINE's audited verdict, NOT snes.getFunctionNorm() directly: on a reason-4
+        # (failed-line-search) exit PETSc can leave the cached norm belonging to the PREVIOUS
+        # iterate, and step() recomputes last_fnorm at the returned iterate to fix exactly that.
+        # Reading the raw SNES here would log a stale norm for the very stalled steps this script
+        # audits (Codex P0 review, 2026-06-12).
+        reason = int(prob.last_reason)
+        fnorm = float(prob.last_fnorm)
         if converged:
             Wn = prob.total_water()
             dclip = prob.clip_mass_adjust - clip_prev

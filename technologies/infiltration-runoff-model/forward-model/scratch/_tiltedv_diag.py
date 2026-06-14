@@ -78,17 +78,17 @@ def main():
     w0_soil = Wsoil
     cum_rain = cum_out = cum_gap = 0.0
     clip_prev = prob.clip_mass_adjust
-    snes = None
     t_run = time.time()
     next_print = 0.0
     while t < T_END - 1e-12:
         h = min(dt, T_END - t)
         rain.value = RAIN if (t + h) <= STORM + 1e-12 else 0.0
         converged, it = prob.step(h)
-        if snes is None:
-            snes = prob._problem.solver
-        reason = int(snes.getConvergedReason())
-        fnorm = float(snes.getFunctionNorm())
+        # ENGINE's audited verdict, not snes.getFunctionNorm() directly: step() recomputes
+        # last_fnorm at the returned iterate on reason-4 exits (PETSc can cache the previous
+        # iterate's norm on a failed line search) -- Codex P0 review 2026-06-12.
+        reason = int(prob.last_reason)
+        fnorm = float(prob.last_fnorm)
         if converged:
             Wsoil_n = prob.soil_water()
             Wsurf_n = prob.surface_water()
