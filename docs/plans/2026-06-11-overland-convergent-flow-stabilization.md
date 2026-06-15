@@ -105,8 +105,18 @@ path stays for MMS/regression archaeology; the upwind path gets its own (order-1
   decide empirically. **Gates:** d ≥ −1e-12 *without* the limiter; books machine-tight; V plateau
   → Q_eq ± 3% mesh-convergent; lake-at-rest & near-flat tests unchanged to machine; 1-D kinematic
   rising-limb analytic matched; dt no longer pinned (measure).
-  - **P1 PREREQUISITE (Codex P0 review 2026-06-12; design CORRECTED 2026-06-14) — make the O5
-    acceptance gate scale-invariant BEFORE the new scheme/fixture.** `stall_accept_fnorm` is an
+  - **P1 PREREQUISITE — RESOLVED-AS-DEFERRED 2026-06-15 (Arik, on Codex's 2nd opinion + the corrected
+    A1 census `0daf860`): do NOT rebuild the gate before O1; O1 is the fix, the gate revisit is
+    post-O1/P3.** The A1 census proved no residual-normalized gate can reject the dirty-V reason-4
+    stalls — they are *residual-converged* (worst F/F0 ≈ 2.4e-10) and mass-safe; their only error is the
+    Galerkin sawtooth (Defect A), which O1 removes. So the gate cannot serve as a V guard, and broadening
+    it to ACCEPT the V is a contract change best not made off this census while the absolute bar is
+    conservative + non-silent + protective. O1 dissolves the problem (sawtooth gone → V converges via
+    reason 2/3 → no stalls → no 39.5 h). Gate portability is revisited POST-O1/at P3 (swale) with clean
+    evidence as a portability/backward-error gate, NOT an accuracy guard. Original analysis (the
+    non-portability of the absolute bar, why mass-balance was rejected) retained below for that revisit.
+    --- ORIGINAL (the F1 reasoning, retained for the post-O1 revisit): make the O5 acceptance gate
+    scale-invariant BEFORE the new scheme/fixture. `stall_accept_fnorm` is an
     *absolute* L2-residual bar: ‖F‖₂ scales with both the row count (mesh) and the per-row flux/measure
     (domain), so the value separating the *measured* populations (Tier-1 columns vs the km² V) is not
     guaranteed to separate them on P1's upwind scheme or P3's swale — the same physical state can flip

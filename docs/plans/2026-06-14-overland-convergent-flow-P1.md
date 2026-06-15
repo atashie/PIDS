@@ -35,7 +35,21 @@ Expected: `136 passed`. If not, STOP and reconcile before starting.
 
 # Part A — scale-invariant (residual-normalized) acceptance gate
 
-**Acceptance for Part A:** full suite green; the gate is provably scale-invariant (a test asserts the same physical state at two domain scales gets the same decision, and the old absolute bar provably failed it); the `R_scale` form + `tol_rel` are DATA-DRIVEN from the reason-4 census (not guessed); B4/B5/B6 conservation reproduced; efficiency measured.
+> **DECISION 2026-06-15 (Arik, on Codex's second opinion + the corrected A1 census): Part A is
+> DEFERRED — only A1 ran. Tasks A2–A5 + Gate-A are NOT being done in P1. Skip directly to Part B (O1).**
+> A1's census (commit `0daf860`, F0 bug fixed) proved that **no residual-normalized gate can do what
+> Part A set out to do.** The dirty-V reason-4 stalls are themselves *residual-converged* (worst F/F0
+> ≈ 2.4e-10) AND mass-safe (P0: books close ≤3e-11, the "20% leak" retracted) — their ONLY error is the
+> Galerkin sawtooth (Defect A), which O1 fixes, not the gate. A residual gate could only ACCEPT them
+> (a contract broadening), and the current absolute bar is conservative + non-silent + protective, so
+> Codex recommended not changing it off this census. O1 is the primary fix either way: it removes the
+> sawtooth → the V converges via reason 2/3 → no reason-4 stalls → the 39.5 h disappears WITHOUT
+> touching the gate. **Gate portability (the original F1 concern) is revisited POST-O1 / at P3** on the
+> swale fixture, with clean evidence, as a portability/backward-error gate — explicitly NOT an accuracy
+> guard (the "staged hybrid": keep the bar through O1; re-census; then decide). If O1 itself exhibits a
+> reason-4 stall regime, revisit sooner. The A2–A5 task text below is RETAINED for that later revisit.
+
+**(Original) Acceptance for Part A — RETAINED FOR THE POST-O1 REVISIT, not P1:** full suite green; the gate is provably scale-invariant (a test asserts the same physical state at two domain scales gets the same decision, and the old absolute bar provably failed it); the `R_scale` form + `tol_rel` are DATA-DRIVEN from the reason-4 census (not guessed); B4/B5/B6 conservation reproduced; efficiency measured.
 
 ### Task A1: Census the reason-4 population — the diagnostic that picks `R_scale` and `tol_rel`
 
