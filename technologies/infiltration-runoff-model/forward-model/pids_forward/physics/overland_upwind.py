@@ -63,8 +63,25 @@ with J's sparsity preset from the edge graph -- and a direct LU solve, i.e. true
 solve, the most robust choice for this stiff degenerate diffusion and trivially cheap at 1-D sizes
 (a hand/analytic Jacobian is a later optimization, the ParFlow ``UseJacobian False`` precedent
 being that the monotone flux, not an exact J, is what gives robustness). Boundaries are
-NO-FLUX (closed) only for B1: a boundary node simply has fewer incident edges, so its residual
-omits the missing flux -- the natural no-flux condition (outflow BC is deferred to B2).
+NO-FLUX (closed) by default: a boundary node simply has fewer incident edges, so its residual
+omits the missing flux -- the natural no-flux condition. B2 adds an OPTIONAL Manning normal-depth
+``add_outflow_bc`` outlet (a free-drainage sink at located boundary nodes; see that method).
+
+Positivity (B2, the monotone-scheme payoff). The upwind scheme carries NO positivity limiter (no
+clip/rescale machinery -- contrast the galerkin ``OverlandProblem._enforce_positivity``), so when
+it holds ``d >= 0`` that is the monotone construction, not a post-step clip. CONDITIONALITY, stated
+honestly: the smoothed (tanh) selector is monotone STRICTLY only when it is SHARP relative to the
+front head-drop -- i.e. when the wet/dry-front head-drop greatly exceeds ``eps_H`` (STEEP fronts at
+the default ``eps_H=1e-3``, e.g. a 5%-slope slump advancing into dry ground, exactly where the
+galerkin path must engage its clip). On a MILD-slope front (~2%, head-drop comparable to
+``eps_H``) at the default ``eps_H`` the selector admits a small CENTERED flux component, giving a
+small front undershoot (~1.5 mm, comparable to the galerkin RAW pre-clip undershoot -- galerkin
+only HIDES its undershoot by post-clipping). This is a characterized spike finding, NOT a claim of
+unconditional ``d >= 0`` at the default width: a sharper ``eps_H`` (the B3 selector-width task)
+removes the mild-front undershoot. Conservation is machine-tight regardless of the undershoot (the
+telescoping flux network balances at any residual-converged root). The B2 positivity gate therefore
+pins the STEEP regime (clean + adversarial: galerkin-would-clip there); the conservation gate uses
+a closed scenario that also stays positive at the default width.
 
 Regularization (Decision 4). ``eps_S`` (slope floor inside the conveyance root, dimensionless,
 default 1e-3, matching ``overland.py``) keeps the mobility + its FD Jacobian finite at zero edge
@@ -90,10 +107,13 @@ class UpwindOverlandProblem:
     """Diffusion-wave overland flow via a monotone upwind-mobility edge flux + custom SNES.
 
     Mirrors the PUBLIC interface of ``overland.OverlandProblem`` (``set_topography``,
-    ``set_initial_condition``, ``add_rain``, ``step``, ``total_water``) so later tasks/tests use
-    the two solvers interchangeably; the INTERNALS (edge graph, finite-difference SNES) follow
-    the P1 locked decisions. B1 = 1-D, closed (no-flux) boundaries only. See the module docstring
-    for the scheme, the structural well-balanced/conservation properties, and the index space.
+    ``set_initial_condition``, ``add_rain``, ``add_outflow_bc``, ``outflow_rate``, ``step``,
+    ``total_water``) so later tasks/tests use the two solvers interchangeably; the INTERNALS (edge
+    graph, finite-difference SNES) follow the P1 locked decisions. B1 = 1-D, closed (no-flux)
+    boundaries; B2 adds the optional ``add_outflow_bc`` Manning normal-depth outlet (a free-drainage
+    nodal sink) plus the positivity/conservation/kinematic gates. See the module docstring for the
+    scheme, the structural well-balanced/conservation properties, the positivity conditionality, and
+    the index space.
     """
 
     def __init__(self, mesh, n_man: float, *, degree: int = 1, eps_S: float = 1e-3,
@@ -116,6 +136,9 @@ class UpwindOverlandProblem:
 
         self.dt = 1.0          # backward-Euler step (set per step())
         self.rain = 0.0        # uniform net rain source r [m/day]
+        # Outflow outlets (B2): each is (dofs, slope) -- a Manning normal-depth free-drainage sink
+        # at the located boundary node(s). Empty = closed (no-flux) everywhere (the B1 default).
+        self._outflows: list[tuple[np.ndarray, float]] = []
         self.last_reason = 0   # SNES converged reason of the last step() solve (audit trail)
         self.last_iters = 0    # SNES iteration count of the last solve
         self.last_fnorm = np.nan  # ||F|| at the last solve's exit
@@ -235,6 +258,14 @@ class UpwindOverlandProblem:
         np.add.at(R, i, Q_e)
         np.add.at(R, j, -Q_e)
 
+        # Outflow sinks (B2): water LEAVES the located outlet node(s), so q_out enters that node's
+        # residual with a PLUS sign (mirroring the galerkin ``+q_out v ds`` boundary sink). q_out is
+        # the Manning normal-depth discharge at the node's depth; ``max(d,0)`` guards the power.
+        for dofs, slope in self._outflows:
+            q_out = (SECONDS_PER_DAY * (1.0 / self.n_man)
+                     * np.maximum(d[dofs], 0.0) ** (5.0 / 3.0) * np.sqrt(slope))
+            np.add.at(R, dofs, q_out)
+
         b.setArray(R)
 
     # -- problem setup (mirror OverlandProblem's public interface) ------------
@@ -255,6 +286,55 @@ class UpwindOverlandProblem:
         """
         self.rain = float(rate)
         return self.rain
+
+    def add_outflow_bc(self, locator, slope: float):
+        """Free-drainage outlet: water leaves at the Manning NORMAL-DEPTH discharge.
+
+        ``q_out = SECONDS_PER_DAY * (1/n_man) * max(d,0)^{5/3} * sqrt(slope)`` (m^2/day per unit
+        width) added at the located boundary node(s), i.e. the friction slope at the outlet is
+        taken as the bed ``slope`` -- the standard kinematic/normal-depth outflow condition (vs the
+        natural no-flux boundary, which would dam the reach). Mirrors
+        ``OverlandProblem.add_outflow_bc``: there the sink enters the weak form as ``+q_out v ds``;
+        here, in the lumped node-residual formulation, it enters the located node's residual with a
+        ``+q_out`` sign -- water LEAVING that control volume (the residual unit is m^2/day, the same
+        discharge units as the storage and edge-flux terms). ``outflow_rate()`` reports the
+        integrated discharge across all such outlets.
+
+        The sink depends only on the outlet node's OWN depth, so its finite-difference Jacobian
+        contribution is purely diagonal -- already covered by the preset sparsity pattern (no
+        edge-graph/SNES change needed).
+
+        ``slope`` must be strictly positive: ``slope = 0`` would silently turn the outlet into a
+        no-flux wall (damming the reach) and ``slope < 0`` injects ``sqrt(<0)`` = NaN into the
+        residual; both are caller errors, so we reject them up front (same guard as the galerkin
+        path).
+        """
+        if slope <= 0.0:
+            raise ValueError(
+                f"add_outflow_bc requires slope > 0 (normal-depth friction slope); got {slope!r}. "
+                "slope=0 dams the outlet; slope<0 gives sqrt(<0)=NaN."
+            )
+        dofs = fem.locate_dofs_geometrical(self.V, locator)
+        dofs = dofs[dofs < self.n_dofs].astype(np.int64)  # owned dofs only (MPI-safe)
+        self._outflows.append((dofs, float(slope)))
+        return None
+
+    def outflow_rate(self) -> float:
+        """Total discharge leaving through all outflow boundaries (m^2/day per unit width).
+
+        In 1-D each outlet is a single node and the outlet facet is a point, so the boundary
+        integral equals the nodal ``q_out`` (no area weighting -- matching the galerkin
+        point-facet ``q_out ds`` and its ``test_outflow_discharge_absolute_magnitude_1d`` value).
+        Evaluated at the current solved depth state.
+        """
+        d = self.d.x.array
+        local = 0.0
+        for dofs, slope in self._outflows:
+            local += float(np.sum(
+                SECONDS_PER_DAY * (1.0 / self.n_man)
+                * np.maximum(d[dofs], 0.0) ** (5.0 / 3.0) * np.sqrt(slope)
+            ))
+        return self.mesh.comm.allreduce(local, op=MPI.SUM)
 
     # -- time stepping --------------------------------------------------------
     def step(self, dt: float):
