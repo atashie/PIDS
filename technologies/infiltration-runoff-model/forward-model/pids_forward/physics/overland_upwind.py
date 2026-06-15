@@ -31,14 +31,23 @@ nodal control volume (FV dual: half the sum of the lengths of the cells incident
 ``sum_i A_i = domain length`` = the ``total_water`` measure). ``r`` is the uniform rain
 (m/day). Two structural properties fall out of this construction:
 
-  * WELL-BALANCED (lake-at-rest exact): a uniform surface head makes every ``H_i - H_j = 0`` so
-    every ``Q_e = 0`` *structurally* -- independent of ``eps_S``/``eps_H``. A still pond holds
-    to machine precision; it cannot drain spuriously down the bed slope (the gate the galerkin
-    scheme also passes, but here it is by edge construction on H, not UFL ``grad(z_b + d)``).
-  * CONSERVATIVE (discrete, structural): each interior edge contributes ``+Q_e`` to one row and
-    ``-Q_e`` to the other, so summing all node residuals telescopes the entire flux network to
-    zero -- ``sum_i (d_i - d_n,i) A_i = dt * r * sum_i A_i`` exactly (closed domain, no rain =>
-    total water invariant). No flux leaves a node-pair without entering its neighbour.
+  * WELL-BALANCED (lake-at-rest): a uniform surface head makes every edge head-drop
+    ``H_i - H_j = 0`` -- to ROUNDOFF in ``z_b + d`` (the head sums two separately-interpolated
+    fields, so the cancellation is ~machine-eps, ~1e-16, NOT bit-exact; this is independent of
+    ``eps_S``/``eps_H``). The conveyance amplifies that ~1e-16 head-drop into a ~1e-8 m^2/day
+    residual flux, which the Newton solve then drives below tolerance -- so a still pond holds its
+    DEPTH to machine precision and cannot drain spuriously down the bed slope. (The fluxes are not
+    *structurally* zero to machine precision; well-balancedness comes from differencing H on edges,
+    and the exactness of the held depth comes from the solve converging that residual away -- vs
+    the galerkin UFL ``grad(z_b + d)``.)
+  * CONSERVATIVE (discrete, structural at the root): each interior edge adds ``+Q_e`` to one row
+    and ``-Q_e`` to the other, so summing all node residuals telescopes the entire flux network to
+    zero. AT A RESIDUAL-CONVERGED ROOT (R=0) this is exact:
+    ``sum_i (d_i - d_n,i) A_i = dt * r * sum_i A_i`` (closed domain, no rain => total water
+    invariant). NB B1 books ANY ``getConvergedReason() > 0`` (incl. reason-4 SNORM
+    stagnation-at-floor), so on a STALLED step the balance holds only to the exit ``||F||``, not
+    exactly -- the ``stall_accept_fnorm`` floor gate ``OverlandProblem`` uses for exactly this
+    (the B6 P0 hazard of booking a dirty reason-4 stall) is deferred to B2 with the conservation test.
 
 Index space (Decision 1). The edge graph lives in the P1 *dof* index space: edges come from
 ``V.dofmap.cell_dofs(c)`` (1-D: each cell -> one edge ``(dof_a, dof_b)``). The SNES unknown
@@ -49,9 +58,11 @@ edge lengths come straight from ``V.tabulate_dof_coordinates()`` indexed by the 
 
 Solver (Decisions 3, 5). ``UpwindOverlandProblem`` drives a ``petsc4py.PETSc.SNES`` directly
 (no DOLFINx ``NonlinearProblem`` -- the upwind selection is not UFL-expressible). The Jacobian
-is a BRUTE finite-difference (``snes.computeJacobianDefault``) with a direct LU solve -- true
-Newton + direct solve, the most robust choice for this stiff degenerate diffusion and trivially
-cheap at 1-D sizes (a colored FD / hand Jacobian is a later optimization). Boundaries are
+is a finite-difference Jacobian -- PETSc's internal coloring FD, selected via ``snes.setUseFD(True)``
+with J's sparsity preset from the edge graph -- and a direct LU solve, i.e. true Newton + direct
+solve, the most robust choice for this stiff degenerate diffusion and trivially cheap at 1-D sizes
+(a hand/analytic Jacobian is a later optimization, the ParFlow ``UseJacobian False`` precedent
+being that the monotone flux, not an exact J, is what gives robustness). Boundaries are
 NO-FLUX (closed) only for B1: a boundary node simply has fewer incident edges, so its residual
 omits the missing flux -- the natural no-flux condition (outflow BC is deferred to B2).
 
@@ -160,11 +171,11 @@ class UpwindOverlandProblem:
         snes = PETSc.SNES().create(comm)
         snes.setFunction(self._assemble_residual, self._b)
 
-        # Brute finite-difference Jacobian (Decision 3): no analytic/UFL Jacobian for the upwind
-        # selector -- the ParFlow ``UseJacobian False`` precedent. ``setJacobian(None, J)`` +
-        # ``setUseFD(True)`` drives PETSc's coloring finite-difference Jacobian assembly into J
-        # (the petsc4py 0.10 spelling of the removed ``computeJacobianDefault``). Coloring needs J's
-        # SPARSITY PATTERN preset, so we insert the structural nonzeros from the edge graph: a
+        # Finite-difference Jacobian (Decision 3): no analytic/UFL Jacobian for the upwind selector
+        # -- the ParFlow ``UseJacobian False`` precedent. ``setJacobian(None, J)`` + ``setUseFD(True)``
+        # selects PETSc's internal coloring finite-difference Jacobian, assembled into J. (This stack
+        # is petsc4py 3.25.2, which exposes ``setUseFD`` but not ``computeJacobianDefault``.) Coloring
+        # needs J's SPARSITY PATTERN preset, so we insert the structural nonzeros from the edge graph: a
         # diagonal entry per node (storage) plus the two symmetric off-diagonals per edge (each
         # edge couples its two endpoints). Direct LU on the assembled FD Jacobian = true Newton;
         # trivial cost at 1-D sizes. A colored/hand analytic Jacobian is a later (B4+) optimization.
@@ -263,6 +274,9 @@ class UpwindOverlandProblem:
         self.last_reason = int(self._snes.getConvergedReason())
         self.last_iters = int(self._snes.getIterationNumber())
         self.last_fnorm = float(self._snes.getFunctionNorm())
+        # B1 books ANY positive reason, INCLUDING reason-4 (SNORM stagnation-at-floor): on such a
+        # step conservation/positivity hold only to the exit ||F||, not exactly. The residual-floor
+        # acceptance gate (OverlandProblem.stall_accept_fnorm, the B6 P0 hazard) is deferred to B2.
         converged = self.last_reason > 0
         if converged:
             self.d.x.array[:] = self._x.getArray(readonly=True)
