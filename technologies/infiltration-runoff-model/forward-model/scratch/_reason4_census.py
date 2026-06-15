@@ -47,6 +47,12 @@ REASON-4 SOURCING (per the task: drive each onto reason 4; forcing it where allo
 ================================================================================
 RESULT / CHOSEN CONSTANTS (read from the table below, 2026-06-14):
 
+  CORRECTION (Codex review 2026-06-14): the first run had an ``_ovl_F0_norm`` bug -- it reset only
+  ``prob.d`` (not ``prob.d_n``) to the step-start state, injecting a spurious storage term into F0 and
+  understating F/F0 on dynamic steps. FIXED (reset both). The corrected rerun CONFIRMS the conclusion:
+  the worst-V F/F0 moved 1.96e-10 -> 2.40e-10 (immaterial -- F0 was forcing-dominated), and all four
+  forms remain INTERLEAVED (gaps below). The finding stands on clean evidence.
+
   ** NO tested R_scale form separates the floor and dirty reason-4 populations. **
 
   Across all FOUR candidate forms the populations INTERLEAVE -- the [separation] block prints the
@@ -181,13 +187,26 @@ def _ovl_conv_norm(prob) -> float:
 
 
 def _ovl_F0_norm(prob, d_prev) -> float:
-    """||F|| at the step START (d = d_n): assemble the engine residual prob.F with d set to d_prev."""
+    """||F|| at the TRUE step START (d == d_n == d_prev), so the storage term ((d-d_n)/dt) is 0.
+
+    BUGFIX (Codex review 2026-06-14): this previously set only ``prob.d``=d_prev, leaving
+    ``prob.d_n`` at the POST-step value (step() copies d_n<-d on accept). That injected a spurious
+    storage residual ((d_prev - d_current)/dt) into F0, inflating it on dynamic steps (the V) and
+    making F/F0 look artificially small (the "residual-converged" claim leaned on exactly this row).
+    The engine residual ``prob.F`` references the Function objects ``prob.d`` AND ``prob.d_n`` -- both
+    must be set to d_prev to assemble F at the genuine step start.
+    """
     d_save = prob.d.x.array.copy()
+    dn_save = prob.d_n.x.array.copy()
     prob.d.x.array[:] = d_prev
+    prob.d_n.x.array[:] = d_prev
     prob.d.x.scatter_forward()
+    prob.d_n.x.scatter_forward()
     n = _vec_norm(prob.F, prob.V)
     prob.d.x.array[:] = d_save
+    prob.d_n.x.array[:] = dn_save
     prob.d.x.scatter_forward()
+    prob.d_n.x.scatter_forward()
     return n
 
 
