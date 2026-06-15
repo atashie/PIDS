@@ -72,6 +72,7 @@ def main():
     Bw = (BAND[1] ** 2 - BAND[0] ** 2) / 2.0
 
     marks = np.unique(np.concatenate([t, [T1, T2]]))
+    dt_max = float(marks[-1]) / gen.DT_MAX_DIV           # item (B): converged BE temporal (= refD40's cap)
     I_wall, s_rate, band_max, V_pulse = [], 0.0, -np.inf, 0.0
     dt, t_prev = 1e-8, 0.0
     for t_s in marks:
@@ -83,7 +84,7 @@ def main():
                   f"(s={s_rate:.4f}/day)", flush=True)
         active = (t_prev >= T1 - 1e-15) and (t_s <= T2 + 1e-15)
         s_c.value = s_rate if active else 0.0
-        dt = dz._solve_to(problem, psi, psi_n, dt_c, t_prev, t_s, dt)
+        dt = dz._solve_to(problem, psi, psi_n, dt_c, t_prev, t_s, dt, dt_max=dt_max)
         t_prev = t_s
         if active:
             band_max = max(band_max, float(psi.x.array[in_band].max()))

@@ -11,6 +11,17 @@ established for the WI era; the clock era is a prescribed-rate closure; within t
 scope the capacity-clamped clock passive is killed by NO leg (its killers are the refused drain
 legs) -- the gate discriminates v2 from the RAW clock and the dual-scale, not from capacity-aware
 passives.
+
+ITEM (B) NOTE (2026-06-15): the drain-leg docstrings below recorded an "end I/ref = 1.019/1.030/
+1.040/1.010 = the offline PSS law's own +2-4%". Item B REFUTED that model-form reading: the closed-
+drain references carried a ~3.7-4.8% first-order backward-Euler temporal UNDER-count, so the law
+only APPEARED to over-predict. The refs were regenerated at a converged dt cap (window/2048,
+scratch/m4_phase4_refAB_drain.py::DT_MAX_DIV); against them the embedded scheme now scores (n=8)
+refD40 4.4%/end 0.979, SAND 3.6%/0.986, LOAM-R20 2.7%/0.992, SILT 5.5%/0.973, refD40-C 2.9%/0.983
+-- i.e. the over-bias FLIPPED to a small UNDER (the law's own Jensen volume-average gap, the law is
+accurate/slightly conservative). The gate bars (<=0.10, twin>=0.20) hold unchanged. The historical
+numbers in the per-test docstrings predate the regeneration; binding record:
+validation/sanity/m4_phase4_drain_endbias_attribution__2026-06-15.md.
 """
 import numpy as np
 import pytest

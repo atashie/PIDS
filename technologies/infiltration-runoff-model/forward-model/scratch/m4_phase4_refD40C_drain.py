@@ -107,7 +107,7 @@ def design(t, soil, V=V_START):
     raise AssertionError(f"design failed to reach {TWIN_PRED_TARGET:.0%}")
 
 
-def run_fem(t_grid, soil, V_wall):
+def run_fem(t_grid, soil, V_wall, dt_max=np.inf):
     """The resolved 1-D radial closed FEM reference with the constant band source (the refD40B
     machinery with the pulse replaced by the [T1,T2] constant-rate source sized a-priori)."""
     import ufl
@@ -151,7 +151,7 @@ def run_fem(t_grid, soil, V_wall):
     for t_s in marks:
         active = (t_prev >= T1 - 1e-15) and (t_s <= T2 + 1e-15)
         s_c.value = s_rate if active else 0.0
-        dt = dz._solve_to(problem, psi, psi_n, dt_c, t_prev, t_s, dt)
+        dt = dz._solve_to(problem, psi, psi_n, dt_c, t_prev, t_s, dt, dt_max=dt_max)
         t_prev = t_s
         if active:
             band_max = max(band_max, float(psi.x.array[in_band].max()))
@@ -168,6 +168,9 @@ def main(design_only=False):
     ref = np.load(HERE / "m4_phase4_refD40_drain.npz")
     t_unp, I_unp = ref["LOAM_t"], ref["LOAM_I"]
     t = np.unique(np.concatenate([t_unp, np.linspace(6.0, T_END, 10)]))
+    # item (B): cap the BE step at refD40's window/2048 (NOT T_END/2048) so the pre-T1 marching is
+    # bit-identical to the regenerated refD40 -> the pre-window identity assert below still holds.
+    dt_max_fem = float(t_unp[-1]) / gen.DT_MAX_DIV
 
     # throughput-vs-injection feasibility (the design's validity condition, printed for the record;
     # the leg deliberately runs NEAR the edge -- "hover the band just below theta_i" -- and the
@@ -186,7 +189,7 @@ def main(design_only=False):
     i_max = dth * (R_OUT ** 2 - R_W ** 2) / (2.0 * R_W)
 
     for attempt in range(3):
-        I, band_max = run_fem(t, soil, V_wall)
+        I, band_max = run_fem(t, soil, V_wall, dt_max=dt_max_fem)
         e_twin = rel_l2(twin, I)
         print(f"refD40-C (V={V_wall:.3f}): MEASURED recharge-blind twin relL2 = {e_twin:.1%} "
               f"(predicted {e_pred:.1%}); band psi_max = {band_max:.4f}")

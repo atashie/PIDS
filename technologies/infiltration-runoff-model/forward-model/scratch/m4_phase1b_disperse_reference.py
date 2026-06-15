@@ -78,10 +78,15 @@ def parlange_sorptivity(soil, psi_i, psi_w=0.0, npts=4001):
     return float(np.sqrt(max(float(np.trapezoid((th0 + th - 2.0 * th_i) * soil.K(psi), psi)), 0.0)))
 
 
-def _solve_to(problem, psi, psi_n, dt_c, t0, t_target, dt):
+def _solve_to(problem, psi, psi_n, dt_c, t0, t_target, dt, dt_max=np.inf):
+    """Adaptive backward-Euler march t0->t_target. dt_max caps every BE step (the adaptive
+    controller still drops BELOW it on Newton stiffness, never rises above it). Default inf =
+    the original uncapped behavior (disperse refs unchanged); the drain refs pass window/2048 to
+    remove the ~4% first-order BE temporal under-count documented in item (B), 2026-06-15
+    (validation/sanity/m4_phase4_drain_endbias_attribution__2026-06-15.md)."""
     t = t0
     while t < t_target - 1e-15:
-        h = min(dt, t_target - t)
+        h = min(dt, t_target - t, dt_max)
         dt_c.value = h
         problem.solve()
         snes = problem.solver
@@ -91,6 +96,7 @@ def _solve_to(problem, psi, psi_n, dt_c, t0, t_target, dt):
             t += h
             it = int(snes.getIterationNumber())
             dt = dt * 1.5 if it <= 4 else (dt * 0.7 if it >= 8 else dt)
+            dt = min(dt, dt_max)
         else:
             psi.x.array[:] = psi_n.x.array
             psi.x.scatter_forward()

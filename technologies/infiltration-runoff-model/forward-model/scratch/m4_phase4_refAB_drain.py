@@ -33,9 +33,12 @@ desaturates DOMAIN-WIDE (the saturated bulk drops psi together -- incompressible
 flow), so the closed theta-loss legitimately sits ABOVE the open fixture early (measured +35% at
 3 r_w; the sign is physics, not a bug). The closed-drain ground truth is validated by:
   (1) mesh convergence: LOAM 3 r_w re-run at cell/2 agrees < 1% rel-L2 (spatial);
-  (2) dt robustness: LOAM 3 r_w re-run on a 2x-denser SAMPLE grid agrees < 2% at the shared times
-      (temporal; MEASURED 1.26% -- that is the BE temporal accuracy of these drain refs, immaterial
-      against the >=29% discrimination margins, and documented rather than chased);
+  (2) dt robustness: every BE step is now CAPPED at window/DT_MAX_DIV (item B, 2026-06-15) so the refs
+      are temporally CONVERGED; the LOAM 3 r_w dt-dense re-check reads 0.019% post-cap. (Pre-cap it
+      read 1.26% -- but that was a 2x SAMPLE-densification that barely refined the ADAPTIVE dt and so
+      UNDER-stated the true ~4% first-order backward-Euler under-count that item B uncovered via a
+      hard dt_max ladder + Richardson; capping removes it. See DT_MAX_DIV below and
+      validation/sanity/m4_phase4_drain_endbias_attribution__2026-06-15.md.);
   (3) monotonicity + the capacity bound (equilibrium psi=-1 everywhere);
   (4) the machinery is otherwise identical to the validated disperse Ref A (only the BCs/sign differ).
 NO curve-matching check exists for closed drains -- measured and understood 2026-06-10: vs the OPEN
@@ -82,6 +85,14 @@ T_END = {  # first guesses [day], auto-tuned (max 3 attempts)
 BAND_B = (3 * R_W, 4 * R_W)
 T_END_B = 1.2                        # Ref B-drain window (LOAM, 5 r_w)
 
+# item (B), 2026-06-15: the closed-drain refs carried a ~4% first-order backward-Euler temporal
+# UNDER-count (the recorded "+2-4% offline-law end over-bias" was this reference artifact, NOT a
+# law model-form error -- validation/sanity/m4_phase4_drain_endbias_attribution__2026-06-15.md).
+# Cap every BE step at window/DT_MAX_DIV: the dt-ladder (scratch/_b_drain_refbe.py) showed
+# window/1024 already converged to <0.05% of the dt->0 Richardson limit, below the ~<1% spatial
+# floor; /2048 is a safety margin. The disperse refs (m4_phase1b _run) keep the uncapped default.
+DT_MAX_DIV = 2048
+
 
 def _setup(soil, r_out, cell=CELL, psi_i=PSI_I):
     n = max(int(round((r_out - R_W) / cell)), 80)
@@ -109,11 +120,13 @@ def _setup(soil, r_out, cell=CELL, psi_i=PSI_I):
     return msh, V, psi, psi_n, dt_c, s_c, problem, removed, band_deficit
 
 
-def run_drain_A(soil, r_out, samples, label="", cell=CELL, psi_i=PSI_I):
+def run_drain_A(soil, r_out, samples, label="", cell=CELL, psi_i=PSI_I, dt_max=None):
     _, _, psi, psi_n, dt_c, _, problem, removed, _ = _setup(soil, r_out, cell, psi_i)
+    if dt_max is None:                                   # item (B): converged BE temporal (window/2048)
+        dt_max = float(samples[-1]) / DT_MAX_DIV
     out, dt, t_prev = [], 1e-8, 0.0
     for i, t_s in enumerate(samples):
-        dt = dz._solve_to(problem, psi, psi_n, dt_c, t_prev, t_s, dt)
+        dt = dz._solve_to(problem, psi, psi_n, dt_c, t_prev, t_s, dt, dt_max=dt_max)
         t_prev = t_s
         I = COMM.allreduce(fem.assemble_scalar(removed), op=MPI.SUM) / R_W
         out.append(float(I))
@@ -129,6 +142,7 @@ def run_drain_B(soil, t_grid, t1, t2, i_max, label=""):
     xc = V.tabulate_dof_coordinates()[:, 0]
     in_band = (xc >= BAND_B[0]) & (xc <= BAND_B[1])
     marks = np.unique(np.concatenate([t_grid, [t1, t2]]))
+    dt_max = float(marks[-1]) / DT_MAX_DIV               # item (B): converged BE temporal
     I_wall, s_rate, band_max = [], 0.0, -np.inf
     dt, t_prev = 1e-8, 0.0
     for t_s in marks:
@@ -140,7 +154,7 @@ def run_drain_B(soil, t_grid, t1, t2, i_max, label=""):
                   f"(s={s_rate:.3f}/day)", flush=True)
         active = (t_prev >= t1 - 1e-15) and (t_s <= t2 + 1e-15)
         s_c.value = s_rate if active else 0.0
-        dt = dz._solve_to(problem, psi, psi_n, dt_c, t_prev, t_s, dt)
+        dt = dz._solve_to(problem, psi, psi_n, dt_c, t_prev, t_s, dt, dt_max=dt_max)
         t_prev = t_s
         if active:
             band_max = max(band_max, float(psi.x.array[in_band].max()))

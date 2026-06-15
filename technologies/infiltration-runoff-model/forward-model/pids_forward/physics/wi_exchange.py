@@ -73,13 +73,20 @@ defined on, mass-exact however coarsely the drawdown cone is resolved, and recha
 injected source raises the theta field and the drive responds; the refD40-C property) -- and the
 live wall head. (The original plain dof-mean-psi read was measured +2.3-2.7% hot in dPhi -- the
 follow-up-4 +8-10% end bias, boundary-vertex over-weighting of the wetter far field;
-scratch/m4_phase4_drain_drive_diag.py. The remaining end excess decomposed EXACTLY as the
-law's own +2.0% x the +4.7% first-order explicit lag of the start-state rate held over the
-step; the Heun trapezoid rate in the scheme's own mass variable -- pre_step's optional dt --
-removes the lag.) With the theta-mean + Heun drive the legs score 3.4/3.5/2.7% rel-L2 at end
-bias 1.019/1.030/0.996 (refD40/SAND-R40/refD40-C), n-INDEPENDENT at n=8/12 -- the mass-exact
-read removed the resolution dependence; what remains is the offline PSS closure's own
-documented +2-4%. The host read is LOAD-BEARING: the depletion bend exists only because the
+scratch/m4_phase4_drain_drive_diag.py. The remaining end excess decomposed EXACTLY as a +2.0%
+law-vs-ref factor (then read as the law's own bias; item B reattributed it to the refs -- see
+below) x the +4.7% first-order explicit lag of the start-state rate held over the step; the
+Heun trapezoid rate in the scheme's own mass variable -- pre_step's optional dt -- removes the
+lag.) With the theta-mean + Heun drive the legs score 4.4/3.6/2.9% rel-L2 at end emb/ref
+0.979/0.986/0.983 (refD40/SAND-R40/refD40-C, n=8 vs the CONVERGED refs), n-INDEPENDENT at
+n=8/12 -- the mass-exact read removed the resolution dependence. The small remaining UNDER
+(~1-3%) is the offline PSS law's own Jensen volume-average gap (it drives on Phi(theta_mean) <=
+<Phi>): the law is accurate, slightly conservative. (The previously-recorded "+2-4% OVER end
+bias = the law's own model-form" was REFUTED by item B, 2026-06-15: it was a REFERENCE
+first-order backward-Euler UNDER-count -- the closed-drain refs read ~4% low; regenerated at a
+converged dt cap (window/2048) the over-bias flips to this small Jensen under. Binding record:
+validation/sanity/m4_phase4_drain_endbias_attribution__2026-06-15.md.)
+The host read is LOAD-BEARING: the depletion bend exists only because the
 host bulk falls (fixed-drive twin fails refD40 at 74%; the original dof-mean read scored
 7.4/6.9% at end 1.085). R_out = the closed/catchment equivalent radius, a physical geometry input
 (ctx["R_out"], required). Omega stays 0 in drain mode (pure prescription; capacity-safe: the rate

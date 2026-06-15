@@ -183,9 +183,12 @@ def main():
                            "rate + live recharge-aware capacity throttle), dropping the disperse "
                            "worst to <=2.6% across n=8/12 + the soil triad + the RefB40 history "
                            "leg. Scope: serial meshes, homogeneous isotropic soils, saturated "
-                           "disperse wall, positive-WI regime (h > ~5.5 r_w). Remaining residual "
-                           "on record: the drain law's own +2-4% end over-bias (unattributed; "
-                           "early-similarity refuted -- item B, open).")),
+                           "disperse wall, positive-WI regime (h > ~5.5 r_w). The drain '+2-4% end "
+                           "over-bias' is RESOLVED (item B, 2026-06-15): it was a REFERENCE "
+                           "first-order backward-Euler under-count (~4%), NOT a law model-form error "
+                           "-- the closed-drain refs were regenerated at a converged dt cap, and the "
+                           "offline PSS law is accurate/slightly conservative (the small Jensen "
+                           "volume-average under).")),
         legs=rows,
         ledgers=("both mass ledgers asserted machine-tight on every sample inside the harness: "
                  "host theta-gain == exchanged + injected (<=1e-6 rel); scheme I*A == "

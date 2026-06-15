@@ -14,8 +14,14 @@ mechanism is the lesson):
     (sim - pss) over [t_0, 1e-3 d] ~ 1e-4 m ~ 0.01% of end-I. Not worth running.
   * CONCLUSION: the +2-4% end over-bias does NOT come from the early similarity era. That
     attribution (2026-06-12 progress notes' suspect) is REFUTED by this check. Remaining
-    candidates, unattributed: the Dietz -3/4 linearization on the nonlinear Kirchhoff problem;
-    the resolved refs' own documented ~1.3% BE temporal accuracy.
+    candidates, unattributed AT THE TIME: the Dietz -3/4 linearization on the nonlinear Kirchhoff
+    problem; the resolved refs' own ~1.3% BE temporal accuracy.
+  * RESOLVED by item B (2026-06-15): it was candidate (2) -- the references' first-order
+    backward-Euler temporal UNDER-count (~3.7-4.8%, not the ~1.3% earlier estimated), NOT the
+    Dietz -3/4 model-form (candidate 1 refuted; the law slightly UNDER-predicts the dt->0 physics,
+    the Jensen volume-average gap). The closed-drain refs were regenerated at a converged dt cap.
+    Binding record: validation/sanity/m4_phase4_drain_endbias_attribution__2026-06-15.md. (The
+    "1.020/1.031/1.042" ends above were vs the PRE-CAP refs; the pure-PSS law now reads ~0.98-0.99.)
 
 THE ORIGINAL HYPOTHESIS (kept for the record): for t below the similarity-exit time the front
 is local and the wall flux follows Bruce-Klute, I = S_BK*sqrt(t) -> rate = S_BK^2/(2 I);
