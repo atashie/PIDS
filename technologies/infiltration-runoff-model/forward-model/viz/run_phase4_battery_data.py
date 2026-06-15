@@ -37,12 +37,13 @@ from scratch.m4_phase4_drain_desorptivity import bruce_klute_desorptivity, pss_d
 from pids_forward.physics.wi_exchange import WellIndexExchange                          # noqa: E402
 from pids_forward.physics.sorptive_closure import F_cylindrical, sorptive_clock, rel_l2  # noqa: E402
 
-DATE = "2026-06-12"
+DATE = "2026-06-14"
 FIX = FM / "tests" / "data"
 SCR = FM / "scratch"
 OUT = FM.parent / "validation" / "sanity" / "data"
 OUT.mkdir(parents=True, exist_ok=True)
 EMBEDDED_TOL, BASELINE_KILL = 0.10, 0.20
+DISPERSE_TOL = 0.03     # item-A pre-registered target (2026-06-14): the resolved-ring WI read
 NS = (8, 12)
 
 
@@ -142,7 +143,8 @@ def main():
             assert out is not None, f"{key} n={n}: run did not complete"
             I_emb = out["I"]
             e = rel_l2(I_emb, I_ref)
-            assert e <= EMBEDDED_TOL, f"{key} n={n}: relL2 {e:.1%} > {EMBEDDED_TOL}"
+            tol = DISPERSE_TOL if direction == "disperse" else EMBEDDED_TOL
+            assert e <= tol, f"{key} n={n}: relL2 {e:.1%} > {tol:.0%}"
             assert np.all(np.diff(I_emb) >= -1e-12 * i_max), f"{key} n={n}: not monotone"
             # the box's ACTUAL capacity: the harness box matches the annulus REMOVABLE volume
             # (L^2 = pi*(R^2-r_w^2)) but has no excluded feature core, so it holds an extra
@@ -159,35 +161,31 @@ def main():
         row["status"] = "PASS"
         rows.append(row)
 
-    # the WI-era rate-attribution diagnostic curves (committed evidence npzs, re-emitted for viz)
-    dref = np.load(SCR / "m4_phase4_wi_diag_ref.npz")
-    q_ref = np.gradient(dref["I"], dref["t"]) * 2.0 * np.pi * R_W
-    for n in NS:
-        de = np.load(SCR / f"m4_phase4_wi_diag_emb_n{n}.npz")
-        wi = de["era"] == 1
-        I_e = de["I"][wi]
-        arrays[f"diag_n{n}_Ifrac"] = I_e / float(dref["I"][-1])
-        arrays[f"diag_n{n}_ratio"] = (de["q_exch"][wi] / float(de["length"])) / \
-            np.interp(I_e, dref["I"], q_ref)
-
     worst_emb = max(max(r["n8_rel_l2"], r["n12_rel_l2"]) for r in rows)
+    worst_disp = max((max(r["n8_rel_l2"], r["n12_rel_l2"]) for r in rows
+                      if r["direction"] == "disperse"), default=0.0)
     worst_kill = min(r["twin_rel_l2"] for r in rows)
     meta = dict(
         check="M4 Phase-4 coupled-embedding deployment gate battery (production WellIndexExchange)",
-        module="Module 4 (sec E) Phase 4 + follow-ups", date=DATE,
+        module="Module 4 (sec E) Phase 4 + follow-ups + item A", date=DATE,
         metric="rel-L2 of cumulative wall-exchange I(t) vs the resolved closed-domain reference",
-        tolerance=dict(embedded=EMBEDDED_TOL, baseline_kill=BASELINE_KILL),
+        tolerance=dict(embedded=EMBEDDED_TOL, disperse=DISPERSE_TOL, baseline_kill=BASELINE_KILL),
         verdict=dict(all_pass=all(r["status"] == "PASS" for r in rows),
                      worst_embedded_rel_l2=round(float(worst_emb), 4),
+                     worst_disperse_rel_l2=round(float(worst_disp), 4),
                      worst_twin_kill=round(float(worst_kill), 4),
                      note=("Host control: drain = live theta-mean water-balance drive (every "
                            "twin without the live host read fails); disperse = WI era only "
-                           "(>=80-91% of I; the clock era is a prescribed-rate closure). "
-                           "Scope: serial meshes, homogeneous isotropic soils, saturated "
-                           "disperse wall, positive-WI regime (h > ~5.5 r_w). Known residuals, "
+                           "(>=80-91% of I; the clock era is a prescribed-rate closure). The "
+                           "disperse WI-era residual (5.7% with the on-ridge read) is RESOLVED "
+                           "(item A, 2026-06-14): the WI-era bridge reads the RESOLVED host field "
+                           "at the catchment-radius midpoint R_out/2 (Heun-corrected prescribed "
+                           "rate + live recharge-aware capacity throttle), dropping the disperse "
+                           "worst to <=2.6% across n=8/12 + the soil triad + the RefB40 history "
+                           "leg. Scope: serial meshes, homogeneous isotropic soils, saturated "
+                           "disperse wall, positive-WI regime (h > ~5.5 r_w). Remaining residual "
                            "on record: the drain law's own +2-4% end over-bias (unattributed; "
-                           "early-similarity refuted), the disperse WI-era lattice ridge-state "
-                           "gap (localized 2026-06-12, bridge form exonerated).")),
+                           "early-similarity refuted -- item B, open).")),
         legs=rows,
         ledgers=("both mass ledgers asserted machine-tight on every sample inside the harness: "
                  "host theta-gain == exchanged + injected (<=1e-6 rel); scheme I*A == "
@@ -196,7 +194,8 @@ def main():
     np.savez(OUT / f"m4_phase4_battery__{DATE}.npz", **arrays)
     with open(OUT / f"m4_phase4_battery__{DATE}.json", "w", encoding="utf-8") as fh:
         json.dump(meta, fh, indent=1)
-    print(f"\nALL {len(rows)} LEGS PASS (worst embedded {worst_emb:.1%}, worst kill {worst_kill:.1%})")
+    print(f"\nALL {len(rows)} LEGS PASS (worst embedded {worst_emb:.1%}, worst disperse "
+          f"{worst_disp:.1%}, worst kill {worst_kill:.1%})")
     print(f"Saved -> {OUT}/m4_phase4_battery__{DATE}.npz + .json")
 
 

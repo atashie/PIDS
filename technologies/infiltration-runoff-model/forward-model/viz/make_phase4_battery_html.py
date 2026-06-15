@@ -14,10 +14,11 @@ What the eye should confirm (physical realism, panel by panel):
     coupling carries the signal;
   * on the two HISTORY legs the shaded band marks the source window: the reference re-steepens
     inside it and the production curve follows with NO knowledge of the source (it sees only
-    the live host state);
-  * the diagnostics panel shows the per-instant WI-era exchange rate vs the resolved truth at
-    matched I (disperse LOAM R40): the known, localized mid-curve deficit that cumulative
-    rel-L2 tolerates -- shown so the residual is SEEN, not hidden.
+    the live host state).
+
+(Item A, 2026-06-14: the disperse WI-era residual that the old battery's diagnostic panel
+displayed is RESOLVED -- the WI-era bridge now reads the resolved field at R_out/2 and every
+disperse leg is <=2.6%; the panel is retired and the 9 legs ARE the evidence.)
 
 Usage:  python viz/make_phase4_battery_html.py [out.html]    (from forward-model/)
 """
@@ -31,7 +32,7 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-DATE = "2026-06-12"
+DATE = "2026-06-14"
 DATA_DIR = "../validation/sanity/data"
 NPZ = f"{DATA_DIR}/m4_phase4_battery__{DATE}.npz"
 JSON = f"{DATA_DIR}/m4_phase4_battery__{DATE}.json"
@@ -70,13 +71,9 @@ def build(out_html: str) -> str:
             f"<br><span style='font-size:10px;color:#555'>"
             f"emb n=8 {r['n8_rel_l2']:.1%} / n=12 {r['n12_rel_l2']:.1%} · "
             f"<span style='color:{C_TWIN}'>{r['twin_name']} {r['twin_rel_l2']:.0%}</span></span>")
-    titles.append(
-        "<b>diagnostic · disperse WI-era rate vs resolved truth (matched I)</b>"
-        "<br><span style='font-size:10px;color:#555'>the localized residual, shown not hidden"
-        "</span>")
 
-    fig = make_subplots(rows=4, cols=3, subplot_titles=titles,
-                        vertical_spacing=0.066, horizontal_spacing=0.07)
+    fig = make_subplots(rows=3, cols=3, subplot_titles=titles,
+                        vertical_spacing=0.085, horizontal_spacing=0.07)
     seen = set()
 
     def show(lbl):
@@ -133,25 +130,6 @@ def build(out_html: str) -> str:
         fig.update_yaxes(title_text="I(t) [m]", range=[0, ymax], row=row, col=col,
                          showgrid=True, gridcolor="#eee")
 
-    # ---- diagnostics panel (row 4, col 1): WI-era rate ratio vs depletion fraction ----------
-    for n, dash in ((8, "solid"), (12, "dot")):
-        xf, yf = npz[f"diag_n{n}_Ifrac"], npz[f"diag_n{n}_ratio"]
-        ok = np.isfinite(yf)                # the resolved rate -> 0 at the full-depletion plateau
-        xf, yf = xf[ok], yf[ok]
-        fig.add_trace(go.Scatter(
-            x=xf, y=yf, mode="lines",
-            legendgroup=f"diag{n}", name=f"WI-era rate / resolved rate (n={n})",
-            showlegend=show(f"diag{n}"),
-            line=dict(color="#6a3d9a", width=2.0 if n == 8 else 1.5, dash=dash),
-            hovertemplate=(f"<b>rate ratio n={n}</b><br>I/I_max=%{{x:.2f}}<br>"
-                           "emb/resolved=%{y:.2f}<extra></extra>"),
-        ), row=4, col=1)
-    fig.add_hline(y=1.0, line=dict(color="#444", width=1.0, dash="dash"), row=4, col=1)
-    fig.update_xaxes(title_text="I / I_max (matched cumulative state)", range=[0, 1],
-                     row=4, col=1, showgrid=True, gridcolor="#eee")
-    fig.update_yaxes(title_text="rate ratio emb/resolved", range=[0, 1.6],
-                     row=4, col=1, showgrid=True, gridcolor="#eee")
-
     # ---- metrics annotation ------------------------------------------------------------------
     v, tol = meta["verdict"], meta["tolerance"]
     rows_html = []
@@ -174,6 +152,8 @@ def build(out_html: str) -> str:
         f"<b>check</b>: {meta['check']}<br>"
         f"<b>date</b>: {meta['date']}<br><br>"
         f"<b style='color:#1b7837'>ALL {len(meta['legs'])} LEGS PASS</b><br>"
+        f"worst DISPERSE rel-L2 = <b>{v['worst_disperse_rel_l2']:.1%}</b> "
+        f"(tol {tol['disperse']:.0%}; item A)<br>"
         f"worst embedded rel-L2 = <b>{v['worst_embedded_rel_l2']:.1%}</b> "
         f"(tol {tol['embedded']:.0%})<br>"
         f"worst twin kill = <b>{v['worst_twin_kill']:.0%}</b> "
@@ -201,7 +181,7 @@ def build(out_html: str) -> str:
         legend=dict(orientation="h", yanchor="bottom", y=-0.05, xanchor="center", x=0.42,
                     font=dict(size=10)),
         margin=dict(l=70, r=430, t=125, b=80),
-        width=1620, height=1700,
+        width=1620, height=1320,
         paper_bgcolor="white", plot_bgcolor="#fafafa",
         hovermode="closest", template="plotly_white",
     )

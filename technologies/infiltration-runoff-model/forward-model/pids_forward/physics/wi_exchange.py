@@ -10,27 +10,41 @@ over-correction control = 2.1-6.0% (clock rightly 1.0% there; the error sign is 
 over-delivery, not over-throttling). HOST CONTROL IS ESTABLISHED FOR THE WI ERA (>=80-91% of
 cumulative I at n=8-12, carrying ALL discriminating signal -- the RefB-40 pulse lands after
 handover); the sub-grid era is a PRESCRIBED-RATE CLOSURE whose host read is a second-order
-correction (<=~2% on the committed legs, mechanism-present but not gate-exercised). The ~5%
-residual is a WI-ERA SYSTEMATIC within the pre-registered tolerance, LOCALIZED by the 2026-06-12
-instrumented diagnostic (scratch/m4_phase4_wi_residual_diag.py + the _wi_diag npzs): the
-constant-WI bridge FORM is exonerated (evaluated on the RESOLVED field at r_0 it reproduces the
-resolved wall rate to +0.3..0.6% through the bend, +3.4% deep-bend); the carrier is the LATTICE
-RIDGE STATE sitting WETTER than the resolved field at r_0 (dPhi read -10..-18%, shrinking with n)
-plus a short post-handover spin-up transient (rate -59% for t <= 2*t_h, self-healing -- the v1
-crash mechanism, now bounded); the cumulative mid-curve +3-5% over-delivery is CLOCK-ERA SURPLUS
-carried over handover, not WI-era over-delivery. It is NOT the offline F closure's large-zeta
-bias (measured -0.9..-1.5%, wrong sign and era; review attack f). The disperse evidence does not by itself exclude passive
-capacity-aware schemes (their killers are the drain legs this class refuses). Prototype + evidence:
-scratch/m4_phase4_wi_probe.py, scratch/m4_phase4_embedded_harness.py,
-tests/test_coupled_gate_refs.py.
+correction (<=~2% on the committed legs, mechanism-present but not gate-exercised). The disperse
+WI-era residual (5.7% worst, the LOAM n=12 leg, on the original ON-RIDGE read) was RESOLVED by item
+A (2026-06-14): the 2026-06-12 diagnostic (scratch/m4_phase4_wi_residual_diag.py) exonerated the
+bridge FORM (evaluated on the RESOLVED field at r_0 it reproduces the resolved wall rate to
++0.3..0.6% through the bend) and localized the carrier to the embedded ON-RIDGE psi sitting WETTER
+than the continuum at r_0 (dPhi -7..-18%) under transient nonlinear depletion -- NOT the offline F
+closure's large-zeta bias (that is -0.9..-1.5%, wrong sign and era; review attack f). THE FIX (see
+THE SCHEME below): the WI-era bridge reads the RESOLVED far-field annulus at r_ring = R_out/2
+instead of the on-ridge node (scratch/m4_phase4_wi_ring_derivation.py: worst rate dev 2.0% across n=6..12), as a
+Heun-corrected prescribed rate with a live recharge-aware capacity throttle -- the disperse worst
+dropped to 2.6% (every leg <=3% across n=8/12 + the soil triad + the RefB40 history leg). The
+disperse evidence does not by itself exclude passive capacity-aware schemes (their killers are the
+drain legs this class refuses). Prototype + evidence: scratch/m4_phase4_wi_probe.py,
+scratch/m4_phase4_embedded_harness.py, tests/test_coupled_gate_refs.py, tests/test_wi_exchange.py.
 
-THE SCHEME (no free constants -- every number is measured or derived):
-* Post-handover the wall exchange is the constant-coefficient Kirchhoff bridge
-      q_per_length = WI * [Phi(H_f) - Phi(psi_Gamma)],   WI = 2*pi / ln(r_0(h)/r_w),
-  with r_0(h) = R0_OVER_H_P1 * h the MEASURED equivalent radius of the P1 ridge source
-  (Peaceman-for-FEM; tests/test_well_index_p1.py) and psi_Gamma the ON-ridge discrete value -- no
-  shell read, no lag (the coefficient is constant; the nonlinearity is the differentiable
-  kirchhoff_ufl), which is what makes it refinement-robust (r_0 scales with h).
+THE SCHEME (no tuned knobs -- every number is measured, derived, or, for r_ring, SELECTED from a
+broad measured plateau):
+* Post-handover (the WI era) the wall exchange is a PRESCRIBED ridge rate set by the steady
+  cylindrical Kirchhoff bridge driven by the RESOLVED host field at r_ring = R_out/2 (the catchment-
+  radius midpoint):
+      q_per_length = 2*pi * [Phi(H_f) - Phi(psi_ring)] / ln(r_ring/r_w),
+  psi_ring = the mean head over the vertex band |rho - R_out/2| <= 0.6 h (a ~+-0.6 h annulus, several
+  shells on coarse meshes, NOT a single thin shell -- which is why the broad plateau matters), and
+  r_ring is its captured mean radius. R_out/2 is not a first-principles constant: it was SELECTED
+  from the resolved-truth derivation (scratch/m4_phase4_wi_ring_derivation.py, LOAM R40) as the
+  centre of a flat [0.45,0.6]*R_out plateau (worst matched-I rate dev 2.0% across n=6..12 -- above
+  the near-wall read-fidelity floor, below the outer no-flow boundary that breaks the Thiem log);
+  the plateau's breadth makes the exact pick insensitive. Reading the resolved far field instead of
+  the on-ridge node (the original Peaceman bridge WI=2*pi/ln(r_0/r_w) on psi_Gamma, r_0=
+  R0_OVER_H_P1*h, Peaceman-for-FEM; tests/test_well_index_p1.py) removes the -7..-18% wet-read bias
+  (item A). Two DERIVED corrections, no knobs: the rate is HEUN-averaged (the start-state rate held
+  over the big WI-era steps is an explicit lag that over-injects) and THROTTLED by the live remaining
+  capacity (theta_s - theta_bulk)*V_box/dt (the infinite-domain bridge has no outer-boundary
+  knowledge; the live volume-mean theta read makes the cap mass-exact AND recharge-aware). r_0(h)
+  still sets the resolved-wall scope guard and the handover fill I_fill.
 * While the Green-Ampt front R_f(I) = sqrt(r_w^2 + 2 r_w I/dtheta) is inside the lattice's measured
   log-fidelity radius 2h, the host cannot represent the sorption front: the validated clock
   prescribes the flux as a RATE source on the ridge (a prescribed rate has no dPhi feedback to
@@ -72,19 +86,24 @@ host bulk falls (fixed-drive twin fails refD40 at 74%; the original dof-mean rea
 hard-zeros as the bulk mean reaches the wall head).
 
 SCOPE GUARDS (refusals, not silent degradation):
-* POSITIVE-WI regime only for DISPERSE (r_0 > 1.1 r_w, i.e. h > ~5.5 r_w -- field grids around a
-  5 cm feature). For finer meshes the bridge is negative-log and the BE transient has a REPELLING
-  fixed point at handover (runaway backflow, analyzed 2026-06-10) -- a resolved-wall coupling is a
-  separate design task. Refused with ValueError.
+* DISPERSE positive-WI deployment regime only (r_0 = R0_OVER_H_P1*h > 1.1 r_w, i.e. h > ~5.5 r_w --
+  field grids around a 5 cm feature) AND ctx["R_out"] required (the WI-era ring read needs R_out/2).
+  This is the validated regime; finer (resolved-wall) meshes are a separate design task, refused with
+  ValueError (historically the on-ridge Peaceman bridge there was negative-log with a repelling BE
+  fixed point at handover, analyzed 2026-06-10; the item-A ring read is positive-log but is unvalidated
+  in the resolved-wall regime too).
 * DRAIN requires ctx["R_out"] (the PSS geometry); refused with ValueError without it.
 
 USAGE (the step contract, harness-compatible -- scratch/m4_phase4_embedded_harness.py is the
-reference driver): the host residual must include BOTH feat.sorptive_into_host(w, psi) (the WI-era
-exchange; this class drives feat.Omega) AND a ridge source carrying the sub-grid-era prescribed
-rate (per unit length = rate/feat.length, e.g. `-rate_c * w * feat.dGamma` with rate_c set from
-pre_step's return). Per step: rate = pre_step(feat, psi, t, dt) BEFORE the solve (dt optional;
-passing it gets the lag-free Heun drain rate); post_step(feat, psi, t, dt) AFTER it. Mass
-identity: I_total*perimeter*length == injected + seed*perimeter*length.
+reference driver): the host residual carries the prescribed ridge rate from pre_step's return as a
+ridge source (per unit length = rate/feat.length, e.g. `-rate_c * w * feat.dGamma`).
+feat.sorptive_into_host(w, psi) / feat.Omega is retained for interface compatibility but is now
+INERT (Omega == 0 in ALL eras -- the WI-era implicit-Omega bridge was retired by item A's
+resolved-ring prescribed rate; the harness may keep sorptive_into_host in the residual, it
+contributes 0). Per step: rate = pre_step(feat, psi, t, dt) BEFORE the solve -- PASS dt: the
+disperse WI era uses it for the Heun rate + the live capacity throttle, the drain for the Heun
+depletion rate (omitting it falls back to the lagged start-state rate); post_step(feat, psi, t, dt)
+AFTER it. Mass identity: I_total*perimeter*length == injected + seed*perimeter*length.
 """
 from __future__ import annotations
 
@@ -94,9 +113,9 @@ from .sorptive_closure import F_cylindrical, R0_OVER_H_P1, R_W_DEFAULT
 
 
 class WellIndexExchange:
-    """Embedded wall exchange. DISPERSE: sub-grid rate-clock era + constant-WI Kirchhoff era
-    (host-controlled in the WI era; the clock era is a prescribed-rate closure). DRAIN: the PSS
-    depletion closure as a live-host-driven prescribed-rate ridge sink -- see the module docstring."""
+    """Embedded wall exchange. DISPERSE: sub-grid rate-clock era + resolved-ring Kirchhoff era (both
+    prescribed ridge rates; host-controlled in the WI era via the resolved R_out/2 read). DRAIN: the
+    PSS depletion closure as a live-host-driven prescribed-rate ridge sink -- see the module docstring."""
 
     def __init__(self, direction: str = "disperse"):
         if direction not in ("disperse", "drain"):
@@ -112,8 +131,9 @@ class WellIndexExchange:
         if comm_size > 1:
             raise ValueError(
                 f"WellIndexExchange: parallel mesh refused (comm size {comm_size}); every host "
-                f"read here (dof/theta means, the front-ring mean, the lumped volume weights) "
-                f"is rank-local and would be silently partition-dependent. The gate evidence is "
+                f"read here (dof/theta means, the front-ring mean, the WI-era R_out/2 ring mean, "
+                f"the lumped volume weights) is rank-local and would be silently partition-dependent. "
+                f"The gate evidence is "
                 f"serial-only (2026-06-12 Codex review finding 1).")
         from scipy.spatial import cKDTree
         self.soil, self.feat = soil, feat
@@ -133,13 +153,7 @@ class WellIndexExchange:
             # The plain dof-mean psi read was measured +2.3-2.7% hot in dPhi (-> the +8-10% end
             # bias): boundary vertices (over half the dofs at n=8, carrying 1/2-1/8 cell
             # volumes) over-weight the wetter far field (scratch/m4_phase4_drain_drive_diag.py).
-            import ufl
-            from dolfinx import fem as _fem
-            v = ufl.TestFunction(feat.V)
-            w = _fem.assemble_vector(_fem.form(v * ufl.dx(
-                metadata={"quadrature_rule": "vertex", "quadrature_degree": 1}))).array.copy()
-            self._vol = float(w.sum())                  # the host volume (the Heun mass step)
-            self._wvol = w / self._vol
+            self._set_volume_weights(feat)             # self._vol, self._wvol (the Heun mass step)
             self.inj = 0.0                              # cumulative EXTRACTED volume [m^3], >= 0
             self._last_rate = 0.0
             return self
@@ -157,9 +171,9 @@ class WellIndexExchange:
         if self.r0 <= 1.1 * self._r_w:
             raise ValueError(
                 f"WellIndexExchange: resolved-wall regime refused (r_0={self.r0:.4f} m <= 1.1*r_w; "
-                f"h={self.h:.3f} m = {self.h/self._r_w:.1f} r_w; need h > ~5.5 r_w). The negative-log "
-                f"bridge is transiently unstable (repelling BE fixed point at handover).")
-        self.WI = 2.0 * np.pi / np.log(self.r0 / self._r_w)
+                f"h={self.h:.3f} m = {self.h/self._r_w:.1f} r_w; need h > ~5.5 r_w) -- outside the "
+                f"validated deployment regime; a resolved-wall coupling is a separate design task.")
+        self.WI = 2.0 * np.pi / np.log(self.r0 / self._r_w)   # regime witness (the ring read uses r_ring)
         self.S, self.dth = feat.S_disp, feat.dth_disp
         self.dPhi_ref = feat.dPhi_ref_disp
         wall = float(getattr(feat, "psi_wall_sorp", 0.0))
@@ -177,6 +191,37 @@ class WellIndexExchange:
         self.t_handover = None
         self._last_rate = 0.0
         self._p_len = feat._perimeter * feat.length
+        # The WI-era drive reads the RESOLVED host field at the catchment-radius midpoint R_out/2,
+        # NOT the on-ridge node: the discrete on-ridge value drifts WETTER than the continuum at r_0
+        # under transient nonlinear depletion (dPhi -7..-18%, the localized WI-era residual), while
+        # the far-field annulus is faithfully resolved. r_ring = R_out/2 sits in the steady cyl
+        # annulus (above the near-wall read-fidelity floor, below the outer no-flow boundary that
+        # breaks the Thiem log); the derivation (scratch/m4_phase4_wi_ring_derivation.py) measured
+        # worst |rate dev| 2.0% across the mesh range n=6..12 (broad plateau over [0.45,0.6]*R_out).
+        R_out = ctx.get("R_out") if isinstance(ctx, dict) else None
+        if not R_out:
+            raise ValueError(
+                "WellIndexExchange(disperse): ctx['R_out'] is required -- the WI-era bridge reads "
+                "the resolved host field at the catchment-radius midpoint R_out/2 (the on-ridge read "
+                "was -7..-18% wet; derivation scratch/m4_phase4_wi_ring_derivation.py).")
+        self.r_ring_target = 0.5 * float(R_out)
+        ring = (np.abs(self._rho - self.r_ring_target) <= 0.6 * self.h) & (self._rho > 1e-12)
+        if not np.any(ring):
+            raise ValueError(
+                f"WellIndexExchange(disperse): no resolved vertex shell at R_out/2="
+                f"{self.r_ring_target:.4f} m on this mesh (h={self.h:.4f} m); the WI-era ring read "
+                f"needs one. Refine the mesh or check R_out.")
+        self._ring_mask = ring
+        self.r_ring = float(self._rho[ring].mean())
+        self.ring_lnf = float(np.log(self.r_ring / self._r_w))
+        # the WI-era rate is an EXPLICIT prescribed rate -> Heun-corrected (the start-state rate held
+        # over the big WI-era steps over-injects -- the drain follow-up-4 lag) and throttled by the
+        # LIVE remaining capacity: the infinite-domain ring bridge has no outer-no-flow-boundary
+        # knowledge and would over-inject past saturation (+17% end overshoot + ledger break,
+        # 2026-06-13 debug), so the rate is capped at (theta_s - theta_bulk_live)*V_box/dt. Reading
+        # the LIVE volume-mean theta makes the cap mass-exact AND recharge-aware (a pulse pre-fills
+        # the box and the wall backs off -- the RefB40 property). Same volume machinery as the drain.
+        self._set_volume_weights(feat)
         t0 = ctx["t0"] if isinstance(ctx, dict) else float(ctx)
         self.seed(t0)
         return self
@@ -189,6 +234,28 @@ class WellIndexExchange:
         self.seed_I = self.S * np.sqrt(float(t0))
         self.in_subgrid_era = self.seed_I < self.I_fill
         return self
+
+    # -- helpers ----------------------------------------------------------------
+    def _set_volume_weights(self, feat):
+        """Lumped vertex volume weights w_i (self._wvol normalized, self._vol the total): the
+        discrete closed-box water balance, mass-exact however coarsely the field is resolved and
+        recharge-aware. Used by the drain bulk drive AND the disperse Heun mass step + live capacity
+        throttle."""
+        import ufl
+        from dolfinx import fem as _fem
+        v = ufl.TestFunction(feat.V)
+        w = _fem.assemble_vector(_fem.form(v * ufl.dx(
+            metadata={"quadrature_rule": "vertex", "quadrature_degree": 1}))).array.copy()
+        self._vol = float(w.sum())
+        self._wvol = w / self._vol
+
+    def _psi_of_theta(self, th) -> float:
+        """Closed-form inverse van-Genuchten retention psi(theta) (the bulk drive's mass variable)."""
+        se = (th - self.soil.theta_r) / (self.soil.theta_s - self.soil.theta_r) * self.soil.Sc
+        if se >= 1.0:
+            return self.soil.h_s
+        return -((max(se, 1e-12) ** (-1.0 / self.soil.m) - 1.0) ** (1.0 / self.soil.n)) \
+            / self.soil.alpha
 
     # -- the per-step contract --------------------------------------------------
     def _I(self) -> float:
@@ -207,6 +274,48 @@ class WellIndexExchange:
         scale = self.soil.kirchhoff(psi_far, self.h_f_ref) / self.dPhi_ref
         dIdt = self.S ** 2 / (2.0 * I) * F_cylindrical(I / (self.dth * self._r_w)) * scale
         return dIdt * self._p_len
+
+    def _ring_bridge(self, psi_ring) -> float:
+        """The bare steady cylindrical Kirchhoff bridge rate [m^3/day] at a ring head psi_ring:
+            q = 2*pi*[Phi(H_f) - Phi(psi_ring)] / ln(r_ring/r_w) * length
+              = dPhi / (r_w * ln(r_ring/r_w)) * p_len   (the drain PSS rate shape, no -3/4)."""
+        if psi_ring >= self.h_f_ref:
+            return 0.0                                      # ring at/above the wall head: no drive
+        dphi = float(self.soil.kirchhoff(psi_ring, self.h_f_ref))
+        return dphi / (self._r_w * self.ring_lnf) * self._p_len
+
+    def _wi_ring_rate(self, psi, dt=0.0) -> float:
+        """WI-era prescribed ridge rate [m^3/day]: the steady cylindrical Kirchhoff bridge driven by
+        the RESOLVED host field at r_ring = R_out/2 (the catchment-radius midpoint), read as the mean
+        psi over the vertex shell there. Reading the far-field annulus instead of the on-ridge node
+        removes the -7..-18% wet-read residual (the node drifts wetter than the continuum at r_0 under
+        transient nonlinear depletion; the bridge FORM was already exonerated). Derivation +
+        the resolved-ring radius: scratch/m4_phase4_wi_ring_derivation.py.
+
+        With dt > 0 (production) two coupled corrections, both DERIVED (no knobs):
+        * HEUN: the start-state rate held over the big WI-era steps is a first-order explicit lag
+          (over-injection; the drain follow-up-4 lag). rate = (r0+r1)/2, r1 = the bridge at the ring
+          head PREDICTED after the step's mean theta rise r0*dt/V_box (the scheme's own mass step).
+          APPROXIMATION: the ring's LOCAL theta rise is taken equal to the box-MEAN rise (the injected
+          water is wall-concentrated, not uniform) -- a second-order correction to a prescribed rate;
+          the measured 2.0-2.6% disperse result validates it, and it mirrors the drain Heun's step.
+        * LIVE CAPACITY THROTTLE: the infinite-domain bridge has no outer-no-flow-boundary knowledge
+          and would over-inject past saturation. Cap the rate at the LIVE remaining capacity
+          (theta_s - theta_bulk)*V_box/dt with theta_bulk the volume-mean of the current field --
+          mass-exact and recharge-aware (a pulse raises theta_bulk and the wall backs off)."""
+        psi_ring = float(psi.x.array[self._ring_mask].mean())
+        r0 = self._ring_bridge(psi_ring)
+        if dt <= 0.0 or r0 == 0.0:
+            return r0
+        th_pred = min(float(self.soil.theta(psi_ring)) + r0 * dt / self._vol,
+                      self.soil.theta_s)
+        r1 = self._ring_bridge(self._psi_of_theta(th_pred))
+        rate = 0.5 * (r0 + r1)
+        th_bulk = float((self._wvol * self.soil.theta(psi.x.array)).sum())
+        rem = self.soil.theta_s - th_bulk                   # live remaining capacity (theta units)
+        if rem <= 1e-12 * (self.soil.theta_s - self.soil.theta_r):
+            return 0.0                                      # box full (pad absorbs weight-sum rounding)
+        return min(rate, rem * self._vol / dt)
 
     def _drain_rate_at(self, th_bar, hf_bar) -> float:
         """The PSS depletion rate [m^3/day, >= 0] at a given bulk water content th_bar."""
@@ -262,22 +371,20 @@ class WellIndexExchange:
             feat.Omega.x.scatter_forward()
             self._last_rate = self._clock_rate(psi)
             return self._last_rate
-        feat.Omega.x.array[self._g] = self.WI / feat._perimeter
-        feat.Omega.x.scatter_forward()
-        return 0.0
+        feat.Omega.x.scatter_forward()                      # WI era: Omega stays 0 (prescribed rate)
+        self._last_rate = self._wi_ring_rate(psi, dt)
+        return self._last_rate
 
     def post_step(self, feat, psi, t, dt):
-        """Call AFTER an accepted solve: account the step's exchange and handle handover."""
+        """Call AFTER an accepted solve: account the step's prescribed exchange and handle handover.
+        Both disperse eras (clock + WI-ring) and drain are now prescribed ridge rates -- the WI-era
+        implicit-Omega bridge was retired by the item-A resolved-ring read (2026-06-13)."""
+        self.inj += self._last_rate * dt                   # exactly what the caller injected/extracted
         if self.direction == "drain":
-            self.inj += self._last_rate * dt               # extracted magnitude, >= 0
             return
-        if self.in_subgrid_era:
-            self.inj += self._last_rate * dt               # exactly what the caller injected
-            if self._I() >= self.I_fill:
-                self.in_subgrid_era = False
-                self.t_handover = t + dt
-        else:
-            self.inj += feat.host_sorptive_flux(psi) * dt
+        if self.in_subgrid_era and self._I() >= self.I_fill:
+            self.in_subgrid_era = False
+            self.t_handover = t + dt
 
     # -- observables -------------------------------------------------------------
     def I_total(self, feat=None) -> float:

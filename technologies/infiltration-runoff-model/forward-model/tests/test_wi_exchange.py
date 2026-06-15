@@ -40,7 +40,7 @@ def test_wi_constant_from_measured_r0():
     """WI = 2*pi/ln(r_0/r_w) with r_0 = 0.1986*h, h auto-measured from the lattice."""
     feat = _feat(2)                                        # h = 0.5 m = 10 r_w: deployment regime
     x = WellIndexExchange()
-    x.setup(feat, LOAM, {"t0": 1e-4})
+    x.setup(feat, LOAM, {"t0": 1e-4, "R_out": 1.0})        # R_out only sizes the WI-era ring read
     assert abs(x.h - 0.5) < 1e-12
     assert abs(x.WI - 2.0 * np.pi / np.log(R0_OVER_H_P1 * 0.5 / R_W_DEFAULT)) < 1e-12
     assert x.WI > 0.0
@@ -50,7 +50,119 @@ def test_resolved_wall_regime_is_refused():
     """h <= ~5.5 r_w -> negative-log bridge (transiently unstable, analyzed 2026-06-10) -> refuse."""
     feat = _feat(8)                                        # h = 0.125 m = 2.5 r_w
     with pytest.raises(ValueError, match="regime"):
+        WellIndexExchange().setup(feat, LOAM, {"t0": 1e-4, "R_out": 2.0})
+
+
+def _feat_box(R_out, n):
+    """A harness-style closed box (ridge along x at the y-z centre) sized to R_out, so the WI-era
+    ring at R_out/2 lands on a resolved vertex shell (the [0,1]^3 _feat box is too small for that)."""
+    L = float(np.sqrt(np.pi * (R_out ** 2 - R_W_DEFAULT ** 2)))
+    h = L / n
+    msh = dmesh.create_box(COMM, [[0.0, 0.0, 0.0], [4 * h, L, L]], [4, n, n])
+    feat = EmbeddedFeature(msh, lambda x: np.isclose(x[1], L / 2) & np.isclose(x[2], L / 2),
+                           tangent=(1.0, 0.0, 0.0), K_feat=1.0,
+                           area=np.pi * R_W_DEFAULT ** 2, porosity=0.4)
+    feat.configure_sorptive(LOAM, psi_i=-1.0, psi_wall=0.0)
+    return feat
+
+
+def test_disperse_requires_catchment_radius():
+    """Item A (2026-06-13): the WI-era bridge now reads the resolved field at the catchment-radius
+    midpoint R_out/2 (the on-ridge read was -7..-18% WET -- the localized WI-era residual;
+    scratch/m4_phase4_wi_ring_derivation.py). Disperse setup must REQUIRE R_out (symmetric with drain), AFTER the
+    regime/wall-head guards so those keep their own messages."""
+    feat = _feat_box(2.0, 8)
+    with pytest.raises(ValueError, match="R_out"):
         WellIndexExchange().setup(feat, LOAM, {"t0": 1e-4})
+
+
+def test_disperse_wi_era_reads_resolved_ring_at_Rout_half():
+    """Item A: in the WI era the disperse exchange is a PRESCRIBED ridge rate driven by the resolved
+    field at r_ring = R_out/2 (mean psi over the vertex shell there), via the steady cylindrical
+    Kirchhoff resistance  q = 2*pi*[Phi(H_f) - Phi(psi_ring)]/ln(r_ring/r_w) * length  -- NOT the
+    implicit on-ridge Omega bridge. Omega is 0 and the rate is returned as a ridge source (the
+    clock-era path). A uniform host makes psi_ring exact, so the rate is checked to machine eps."""
+    from dolfinx import fem
+    R_out = 2.0
+    feat = _feat_box(R_out, 8)
+    x = WellIndexExchange().setup(feat, LOAM, {"t0": 1e-4, "R_out": R_out})
+    assert abs(x.r_ring_target - 0.5 * R_out) < 1e-12
+    assert 0.4 * R_out < x.r_ring < 0.6 * R_out            # the captured shell sits near R_out/2
+    x.in_subgrid_era = False                               # force the WI era
+    psi = fem.Function(feat.V)
+    psi.x.array[:] = -0.5                                  # uniform host -> psi_ring = -0.5 exactly
+    rate = x.pre_step(feat, psi, 1.0)
+    assert np.allclose(feat.Omega.x.array, 0.0), "WI era must be prescribed-rate (Omega = 0)"
+    want = float(LOAM.kirchhoff(-0.5, 0.0)) / (R_W_DEFAULT * np.log(x.r_ring / R_W_DEFAULT)) \
+        * feat._perimeter * feat.length
+    assert rate > 0.0
+    assert abs(rate - want) < 1e-9 * abs(want), f"ring-read rate {rate:.6e} != want {want:.6e}"
+
+
+def test_disperse_wi_ring_rate_zero_when_ring_at_wall_head():
+    """Capacity/saturation safety: when the resolved ring sits at/above the wall head the WI-era
+    prescribed rate must hard-zero (no injection into an already-saturated annulus), mirroring the
+    clock-era front-ring guard."""
+    from dolfinx import fem
+    R_out = 2.0
+    x = WellIndexExchange().setup(_feat_box(R_out, 8), LOAM, {"t0": 1e-4, "R_out": R_out})
+    x.in_subgrid_era = False
+    psi = fem.Function(x.feat.V)
+    for host in (0.0, 0.5):                                # at the wall head; ponded above it
+        psi.x.array[:] = host
+        assert x.pre_step(x.feat, psi, 1.0) == 0.0         # dt=0 (bare) and ...
+        assert x.pre_step(x.feat, psi, 1.0, 20.0) == 0.0   # ... dt>0 (r0==0 early return)
+    # cap=0 edge: a fully-SATURATED bulk (theta_bulk == theta_s) with a sub-wall-head ring read
+    # (a nonzero bare bridge) must still return 0 -- the live-capacity throttle hard-zeros it.
+    psi.x.array[:] = LOAM.h_s                              # air entry: theta == theta_s, psi < H_f
+    assert x._ring_bridge(LOAM.h_s) > 0.0                  # the bare bridge is nonzero here
+    assert x.pre_step(x.feat, psi, 1.0, 20.0) == 0.0       # but the cap (theta_s - theta_s) zeros it
+
+
+def test_disperse_wi_heun_reduces_the_explicit_lag():
+    """Item A (2026-06-13 debug): the prescribed WI-era rate held over the big WI-era steps is a
+    first-order explicit lag (over-injection). With dt>0 the scheme returns the HEUN rate
+    (r0+r1)/2 with r1 = the bridge at the ring head PREDICTED after the step's mean theta rise
+    r0*dt/V_box -- strictly below the start-state rate on a wetting step (no knobs)."""
+    from dolfinx import fem
+    R_out = 2.0
+    feat = _feat_box(R_out, 8)
+    x = WellIndexExchange().setup(feat, LOAM, {"t0": 1e-4, "R_out": R_out})
+    x.in_subgrid_era = False
+    psi = fem.Function(feat.V)
+    psi.x.array[:] = -0.5                                  # uniform, far from saturation (cap slack)
+    r0 = x.pre_step(feat, psi, 1.0)                        # dt omitted -> bare bridge
+    dt = 0.5
+    rate = x.pre_step(feat, psi, 1.0, dt)                  # Heun-corrected
+    th_pred = float(LOAM.theta(-0.5)) + r0 * dt / x._vol
+    se = (th_pred - LOAM.theta_r) / (LOAM.theta_s - LOAM.theta_r) * LOAM.Sc
+    psi_pred = -((se ** (-1.0 / LOAM.m) - 1.0) ** (1.0 / LOAM.n)) / LOAM.alpha
+    r1 = float(LOAM.kirchhoff(psi_pred, 0.0)) / (R_W_DEFAULT * np.log(x.r_ring / R_W_DEFAULT)) \
+        * feat._perimeter * feat.length
+    assert abs(rate - 0.5 * (r0 + r1)) < 1e-9 * abs(rate), f"Heun mismatch {rate} vs {0.5*(r0+r1)}"
+    assert rate < r0, "Heun must reduce the start-state rate on a wetting step"
+
+
+def test_disperse_wi_live_capacity_throttle_is_recharge_aware():
+    """Item A (2026-06-13 debug): the infinite-domain ring bridge has no outer-boundary knowledge
+    and would over-inject past saturation (+17% end overshoot, ledger break). The rate is throttled
+    by the LIVE remaining capacity (theta_s - theta_bulk)*V_box/dt read from the current field --
+    mass-exact and recharge-aware. A near-saturated bulk with a dry ring read must return the
+    capacity cap, not the large bridge rate."""
+    from dolfinx import fem
+    R_out = 2.0
+    feat = _feat_box(R_out, 8)
+    x = WellIndexExchange().setup(feat, LOAM, {"t0": 1e-4, "R_out": R_out})
+    x.in_subgrid_era = False
+    psi = fem.Function(feat.V)
+    psi.x.array[:] = -0.05                                 # uniform NEAR saturation (tiny capacity)
+    dt = 20.0                                              # long step -> the small capacity binds
+    rate = x.pre_step(feat, psi, 1.0, dt)
+    th_bulk = float((x._wvol * LOAM.theta(psi.x.array)).sum())
+    cap = (LOAM.theta_s - th_bulk) * x._vol / dt
+    r0 = x._ring_bridge(-0.05)
+    assert cap < r0, "test setup: the capacity cap must bind below the (uncapped) bridge rate"
+    assert rate > 0.0 and abs(rate - cap) < 1e-9 * abs(cap), f"throttle not applied: {rate} vs {cap}"
 
 
 def test_parallel_comm_refused():
@@ -310,7 +422,7 @@ def test_gate_R40_soil_generality_closed_box(soil):
     out = run_embedded(WellIndexExchange(), soil, 40 * R_W_DEFAULT, 8, t)
     assert out is not None, f"embedded closed-box {soil} run did not complete"
     e = rel_l2(out["I"], I_ref)
-    assert e <= 0.10, f"{soil} R40 gate failed: relL2={e:.1%}"
+    assert e <= DISPERSE_TOL, f"{soil} R40 gate failed: relL2={e:.1%} > {DISPERSE_TOL:.0%}"
     clk = sorptive_clock(t, float(a40[f"{soil}_S"]), float(a40[f"{soil}_dtheta"]),
                          R_W_DEFAULT, F_cylindrical)
     assert rel_l2(clk, I_ref) >= 0.20, "discrimination twin lost: the offline clock passes"
@@ -354,7 +466,7 @@ def test_clock_rate_zero_when_ring_at_wall_head():
     rate must hard-zero, not inject on a magnitude-only Kirchhoff drop (2026-06-11 review)."""
     from dolfinx import fem
     feat = _feat(2)
-    x = WellIndexExchange().setup(feat, LOAM, {"t0": 1e-4})
+    x = WellIndexExchange().setup(feat, LOAM, {"t0": 1e-4, "R_out": 1.0})
     psi = fem.Function(feat.V)
     for host in (0.0, 0.5):                                # saturated to the wall head; ponded above
         psi.x.array[:] = host
@@ -368,7 +480,7 @@ def test_subgrid_era_reduces_to_the_validated_clock():
     from dolfinx import fem
     feat = _feat(2)
     x = WellIndexExchange()
-    x.setup(feat, LOAM, {"t0": 1e-4})
+    x.setup(feat, LOAM, {"t0": 1e-4, "R_out": 1.0})
     x.seed(1e-4)
     psi = fem.Function(feat.V)
     psi.x.array[:] = -1.0
@@ -400,20 +512,26 @@ def test_dualscale_kill_baseline_regression():
         f"the retracted dual-scale baseline PASSES the gate ({e:.1%}) -- discrimination lost, STOP"
 
 
-@pytest.mark.parametrize("n", [8])
+DISPERSE_TOL = 0.03     # item-A pre-registered target (2026-06-13): the resolved-ring WI read drops
+#                         the disperse worst from 5.7% (on-ridge) to <=3% across n=8/12 + the soil
+#                         triad + the RefB40 history leg (scratch/m4_phase4_wi_ring_derivation.py derivation; the
+#                         Heun-corrected prescribed rate + live recharge-aware capacity throttle).
+
+
+@pytest.mark.parametrize("n", [8, 12])
 def test_gate_refA40_closed_box(n):
     """THE discriminating gate, production class through the closed-box harness: the embedded I(t)
     tracks the resolved depleting-reservoir reference (LOAM, R=40 r_w, full depletion) within the
-    pre-registered EMBEDDED_TOL while the offline clock fails the same leg; both mass ledgers are
-    asserted every sample inside the harness. (~3 min; the full n/RefB sweep lives in
-    scratch/m4_phase4_wi_probe.py + the Tier-3 record.)"""
+    item-A DISPERSE_TOL at BOTH meshes while the offline clock fails the same leg; both mass ledgers
+    are asserted every sample inside the harness. (~3 min each; measured 2.0%/2.6% at n=8/12 -- the
+    resolved-ring read, vs the on-ridge 2.2%/5.7%.)"""
     from scratch.m4_phase4_embedded_harness import run_embedded
     refA = np.load("tests/data/m4_phase4_refA_disperse.npz")
     t, I_ref = refA["LOAM_R40_t"], refA["LOAM_R40_I"]
     out = run_embedded(WellIndexExchange(), "LOAM", 40 * R_W_DEFAULT, n, t)
     assert out is not None, "embedded closed-box run did not complete"
     e = rel_l2(out["I"], I_ref)
-    assert e <= 0.10, f"gate failed: relL2={e:.1%}"
+    assert e <= DISPERSE_TOL, f"gate failed: relL2={e:.1%} > {DISPERSE_TOL:.0%}"
     S, dth = float(refA["LOAM_S"]), float(refA["LOAM_dtheta"])
     clk = sorptive_clock(t, S, dth, R_W_DEFAULT, F_cylindrical)
     assert rel_l2(clk, I_ref) >= 0.20, "discrimination twin lost: the offline clock passes this leg"

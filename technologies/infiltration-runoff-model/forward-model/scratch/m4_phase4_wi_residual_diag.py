@@ -130,7 +130,11 @@ def part2_emb(n):
                             petsc_options=dict(_LU_BASE, snes_type="newtonls",
                                                snes_linesearch_type="cp"))
     exch_f = fem.form(feat._perimeter * feat.Omega * soil.kirchhoff_ufl(psi, feat.Hf) * feat.dGamma)
-    sch = WellIndexExchange().setup(feat, soil, dict(h=h, t0=float(t_grid[0])))
+    # NOTE (item A, 2026-06-14): this diagnostic instruments the PRE-item-A on-ridge implicit-Omega
+    # path (q_exch = the assembled Omega exchange). Item A retired that path (Omega == 0; the WI era
+    # is now a prescribed ring rate), so re-running on current code logs q_exch == 0 -- this file is
+    # the HISTORICAL localization record (psi_g vs the resolved field at r_0). R_out is now required.
+    sch = WellIndexExchange().setup(feat, soil, dict(h=h, t0=float(t_grid[0]), R_out=R_OUT))
     g = feat._gamma_dofs
     log = {k: [] for k in ("t", "I", "q_exch", "q_clock", "psi_g", "era")}
     dt, t_prev = 1e-7, float(t_grid[0])
