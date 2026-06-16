@@ -362,3 +362,238 @@ def test_outflow_bc_rejects_nonpositive_slope_1d():
         prob.add_outflow_bc(lambda x: np.isclose(x[0], 50.0), slope=0.0)
     with pytest.raises(ValueError):
         prob.add_outflow_bc(lambda x: np.isclose(x[0], 50.0), slope=-0.01)
+
+
+# ============================ B4: 2-D extension ============================
+# The 1-D class (B1-B3) is extended to 2-D triangle meshes (create_rectangle). The ONLY
+# dimension-aware parts are the edge graph (built from mesh.topology edge<->vertex, mapped into
+# the P1-dof index space), the two-point transmissibility T_e (the COTANGENT / FV dual-mesh
+# weight = the negated P1 stiffness off-diagonal, the standard monotone coefficient), and the
+# nodal area A_i (the lumped P1 mass int phi_i dx, sum = domain area). The node-residual
+# telescoping, smoothed-upwind selector, Manning mobility, SNES (FD-Jacobian + LU) and eps_H/eps_S
+# are IDENTICAL to 1-D. Monotonicity needs T_e >= 0 (the M-matrix property), which holds on the
+# structured box V (right-triangle split: axis edges get cot(90 deg)=0, diagonal edges get acute
+# cotangents > 0) and is GUARDED loudly. Mesh restriction: structured box / Delaunay non-obtuse.
+
+TRI = dmesh.CellType.triangle  # the 2-D cell type used throughout the B4 gates
+
+
+def test_cotangent_T_e_equals_negated_stiffness_offdiagonal_2d():
+    """T_e VERIFICATION: the cotangent edge weight == DOLFINx's P1 stiffness off-diagonal.
+
+    The crux of B4: the two-point transmissibility used by the upwind flux is T_e =
+    1/2(cot a_ij + cot b_ij) over the (one or two) triangles sharing edge ij. This is the
+    cotangent-Laplacian weight and MUST equal the negated assembled P1 stiffness off-diagonal
+    -int grad(phi_i).grad(phi_j) dx -- the same lateral operator the galerkin path assembles. We
+    pin them bit-for-bit on a small structured mesh (probe ``scratch/_b4_cotan_probe.py`` found
+    max|diff| = 0.0), so the edge-graph T_e cannot silently diverge from the FEM Laplacian.
+    """
+    import ufl
+    from dolfinx import fem
+    from dolfinx.fem.petsc import assemble_matrix
+
+    msh = dmesh.create_rectangle(MPI.COMM_WORLD, [(0.0, 0.0), (1.0, 1.0)], [3, 3],
+                                 cell_type=TRI)
+    prob = UpwindOverlandProblem(msh, n_man=N_MAN)
+
+    V = prob.V
+    u = ufl.TrialFunction(V)
+    vt = ufl.TestFunction(V)
+    A = assemble_matrix(fem.form(ufl.dot(ufl.grad(u), ufl.grad(vt)) * ufl.dx))
+    A.assemble()
+    Ad = A.convert("dense").getDenseArray()
+
+    maxdiff = 0.0
+    for e in range(prob.n_edges):
+        i, j = int(prob.edges[e, 0]), int(prob.edges[e, 1])
+        stiff_off = -0.5 * (Ad[i, j] + Ad[j, i])  # symmetric P1 stiffness, negated off-diagonal
+        maxdiff = max(maxdiff, abs(stiff_off - prob.T_e[e]))
+    assert maxdiff < 1e-13, f"cotangent T_e diverged from stiffness off-diagonal by {maxdiff:.2e}"
+
+
+def test_m_matrix_guard_holds_on_structured_V_2d():
+    """M-MATRIX guard: every edge weight T_e >= 0 on the structured box V (monotonicity req).
+
+    On a ``create_rectangle`` triangle mesh the right-angle split gives non-negative cotangent
+    weights: the axis edges get cot(90 deg) = 0 from the right angle, the diagonal/hypotenuse
+    edges get acute-angle cotangents > 0. So min(T_e) = 0 (>= -1e-14). The class asserts this in
+    its constructor; here we re-pin it on the mesh B5 will actually use.
+    """
+    msh = dmesh.create_rectangle(MPI.COMM_WORLD, [(0.0, 0.0), (2.0, 1.0)], [16, 8],
+                                 cell_type=TRI)
+    prob = UpwindOverlandProblem(msh, n_man=N_MAN)
+    assert prob.T_e.min() >= -1e-14, f"M-matrix violated: min T_e = {prob.T_e.min():.3e}"
+    assert prob.mesh.topology.dim == 2  # genuinely the 2-D path
+    # sum A_i = domain area (the conserved-quantity consistency: total_water = int d dx).
+    assert prob.A_i.sum() == pytest.approx(2.0, rel=1e-12)
+
+
+def test_m_matrix_guard_raises_on_obtuse_mesh_2d():
+    """M-MATRIX guard FIRES: a deliberately OBTUSE triangulation must RAISE in the constructor.
+
+    The monotone scheme REQUIRES T_e >= 0; an obtuse opposite angle gives cot < 0 -> a negative
+    transmissibility (an anti-diffusive edge that breaks the maximum principle). The guard must
+    refuse such a mesh LOUDLY rather than silently produce a non-monotone scheme. Two flat
+    ("sliver") triangles sharing their long edge give cot(obtuse) ~ -4.95 on that edge (probe
+    ``scratch/_b4_obtuse_probe.py``); building an ``UpwindOverlandProblem`` on it must raise.
+    """
+    import basix.ufl
+    import ufl
+
+    pts = np.array([[0.0, 0.0], [1.0, 0.0], [0.5, 0.05], [0.5, -0.05]], dtype=np.float64)
+    cells = np.array([[0, 1, 2], [0, 1, 3]], dtype=np.int64)  # share the long edge 0-1
+    ufl_el = basix.ufl.element("Lagrange", "triangle", 1, shape=(2,))
+    domain = ufl.Mesh(ufl_el)
+    obtuse = dmesh.create_mesh(MPI.COMM_WORLD, cells, domain, pts)
+
+    with pytest.raises(ValueError, match="M-matrix"):
+        UpwindOverlandProblem(obtuse, n_man=N_MAN)
+
+
+def test_lake_at_rest_is_held_exactly_2d():
+    """2-D lake-at-rest (well-balanced gate): a still pond over a SLOPING 2-D bed stays at rest.
+
+    The 2-D analogue of ``test_lake_at_rest_is_held_exactly_1d``: a uniform surface head H = z_b+d
+    on a 2-D tilted bed makes every edge head drop H_i - H_j = 0 (to roundoff in z_b + d), so all
+    edge fluxes vanish and the depth holds to machine precision after a step -- STRUCTURAL on H
+    (the scheme differences H, not d), independent of eps_S/eps_H. Depths are non-uniform (the bed
+    tilts in both x and y) so this is a genuine 2-D well-balancedness check, not a flat lake.
+    """
+    msh = dmesh.create_rectangle(MPI.COMM_WORLD, [(0.0, 0.0), (1.0, 1.0)], [12, 12],
+                                 cell_type=TRI)
+    prob = UpwindOverlandProblem(msh, n_man=N_MAN)
+    # Sloping bed in both directions; flat surface H = 0.8 -> d = H - z_b strictly positive.
+    prob.set_topography(lambda x: 0.5 - 0.2 * x[0] - 0.1 * x[1])
+    still = lambda x: 0.3 + 0.2 * x[0] + 0.1 * x[1]  # d = 0.8 - z_b > 0 everywhere
+    prob.set_initial_condition(still)
+    d0 = prob.d.x.array.copy()
+    w0 = prob.total_water()
+
+    converged, iters = prob.step(dt=0.1)
+    assert converged
+
+    assert float(np.max(np.abs(prob.d.x.array - d0))) < 1e-14
+    assert abs(prob.total_water() - w0) <= 1e-14 * max(1.0, abs(w0))
+    assert prob.d.x.array.min() >= 0.0
+
+
+def test_nonflat_head_drives_flow_2d():
+    """2-D SANITY (anti-degenerate): a NON-uniform surface head actually moves water in 2-D.
+
+    The lake gate is also passed by a do-nothing solver, so prove the 2-D scheme is live: a flat
+    bed with a central depth bump (=> real edge head drops in both directions) must redistribute --
+    the bump draws down at the peak while the flanks rise -- in a closed domain, conserving total
+    water on a genuinely dynamic step (the 2-D telescoping flux network).
+    """
+    msh = dmesh.create_rectangle(MPI.COMM_WORLD, [(0.0, 0.0), (1.0, 1.0)], [16, 16],
+                                 cell_type=TRI)
+    prob = UpwindOverlandProblem(msh, n_man=N_MAN)  # flat bed (z_b = 0)
+    prob.set_initial_condition(
+        lambda x: 0.1 + 0.1 * np.exp(-(((x[0] - 0.5) ** 2 + (x[1] - 0.5) ** 2) / 0.02))
+    )
+    d0 = prob.d.x.array.copy()
+    w0 = prob.total_water()
+    coords = prob.V.tabulate_dof_coordinates()
+    peak = int(np.argmin((coords[:, 0] - 0.5) ** 2 + (coords[:, 1] - 0.5) ** 2))
+
+    converged, iters = prob.step(dt=1e-3)
+    assert converged
+
+    moved = float(np.max(np.abs(prob.d.x.array - d0)))
+    assert moved > 1e-6, f"non-flat 2-D head failed to drive flow (max move {moved:.2e})"
+    assert prob.d.x.array[peak] < d0[peak]  # the bump draws down (diffusive spreading)
+    assert prob.d.x.array.min() >= -1e-12
+    assert np.all(np.isfinite(prob.d.x.array))
+    assert abs(prob.total_water() - w0) <= 1e-12 * max(1.0, abs(w0))
+
+
+def test_tilted_v_catchment_conserves_2d():
+    """2-D closed-slump CONSERVATION + positivity-without-limiter on the tilted-V catchment.
+
+    Mirrors the galerkin ``test_tilted_v_catchment_conserves_2d`` (``test_overland_diffusionwave``):
+    a water blob on a V-shaped bed (cross-slope to a central channel that tilts to the outlet)
+    slumps in a CLOSED domain (no-flux, no rain), so total water is invariant; the blob visibly
+    redistributes while depth stays >= 0. Here we assert the UPWIND path conserves to machine
+    precision (telescoping edge signs => structural discrete conservation at every residual-
+    converged root) AND has no negative excursion -- on this geometry, WITHOUT any limiter (the
+    monotone-scheme payoff; contrast the galerkin path's ``_enforce_positivity`` clip). The blob
+    here sits on a WET BASE so no wet/dry front forms (the B3-documented mild-2% sub-mm undershoot
+    is a SEPARATE, characterized regime); this gate is the clean conserve-and-positive check.
+
+    The class carries NO positivity limiter -- assert the clipping machinery is absent so a
+    non-negative min(d) here is the monotone construction, not a post-step clip.
+    """
+    msh = dmesh.create_unit_square(MPI.COMM_WORLD, 16, 16)
+    prob = UpwindOverlandProblem(msh, n_man=N_MAN)
+    # tilted-V bed: V across y (channel at y=0.5) + gentle tilt along x toward x=1 (same as galerkin).
+    prob.set_topography(lambda x: 0.05 * np.abs(x[1] - 0.5) + 0.02 * (1.0 - x[0]))
+    # broad blob on a wet base (0.05) -> dynamic 2-D redistribution, no wet/dry front.
+    prob.set_initial_condition(
+        lambda x: 0.05 + 0.1 * np.exp(-(((x[0] - 0.5) ** 2 + (x[1] - 0.5) ** 2) / 0.02))
+    )
+    w0 = prob.total_water()
+    d_before = prob.d.x.array.copy()
+
+    assert not hasattr(prob, "_enforce_positivity")
+    assert not hasattr(prob, "max_clip_seen")
+
+    t, nsteps, min_d, _ = _march(prob, t_end=0.02, dt0=1e-3)
+    assert nsteps > 0
+
+    assert abs(prob.total_water() - w0) <= 1e-12 * max(1.0, abs(w0))  # conserved (closed, no rain)
+    assert np.max(np.abs(prob.d.x.array - d_before)) > 1e-3  # genuine 2-D redistribution
+    assert min_d >= -1e-12  # positivity over the whole run, NO limiter
+    assert prob.d.x.array.min() >= -1e-12
+    assert np.all(np.isfinite(prob.d.x.array))
+
+
+def test_steep_front_positive_without_limiter_2d():
+    """2-D POSITIVITY GATE on a STEEP wet/dry FRONT: d >= 0 over the run, NO limiter.
+
+    The 2-D analogue of the 1-D headline ``test_front_advance_positive_without_limiter_1d`` -- the
+    IDENTICAL steep-front scenario (5% slope, sharp Gaussian peak 0.25 at x=7, marched to t=0.01
+    day) extruded into a thin 2-D ribbon, so the wet/dry front advances downslope into dry ground
+    in 2-D. This is the regime where the front head-drop >> eps_H, so the smoothed-upwind selector
+    is SHARP and the monotone scheme holds ``d.min() >= -1e-12`` STRICTLY without any limiter (the
+    upwind payoff; the galerkin path must clip ~mm here). The probe
+    ``scratch/_b4_positivity_probe.py`` measured run-min ~6e-34 on this scenario in 2-D --
+    bit-identical to the 1-D steep front, and eps_H-invariant from 1e-3 down -- confirming the 2-D
+    cotangent flux is monotone on a genuine steep front exactly as 1-D.
+
+    STEEPNESS, honestly (the B3 conditionality, now MEASURED in 2-D): "steep" means the FRONT
+    head-drop >> eps_H, NOT merely a large bed slope. A small off-channel blob on a 5% cross-slope V
+    is a MILD front in disguise (its surface-head drop across the wet/dry interface ~ eps_H) and
+    undershoots ~0.9 mm at eps_H=1e-3 (probe), shrinking to ~1e-15 as eps_H sharpens -- exactly the
+    B3-documented geometry-dependent 0..~0.9 mm mild regime, governed by eps_H vs the front
+    head-drop. THIS gate uses the downslope-advancing front (head-drop >> eps_H) where strictness is
+    structural; B5 must MEASURE the actual undershoot on the V's mild 2% valley (it is not assumed
+    d>=0 there). The class carries NO limiter -- assert the clip machinery is absent so a
+    non-negative min(d) is the monotone construction, not a post-step clip.
+    """
+    # thin 2-D ribbon (the 1-D steep front extruded in y): create_rectangle, 60x4 triangles.
+    msh = dmesh.create_rectangle(MPI.COMM_WORLD, [(0.0, 0.0), (20.0, 1.0)], [60, 4],
+                                 cell_type=TRI)
+    prob = UpwindOverlandProblem(msh, n_man=N_MAN)
+    prob.set_topography(lambda x: 0.05 * (20.0 - x[0]))  # 5% slope toward x=20 -> stiff front
+    prob.set_initial_condition(lambda x: 0.25 * np.exp(-((x[0] - 7.0) / 1.5) ** 2))
+    w0 = prob.total_water()
+
+    assert not hasattr(prob, "_enforce_positivity")
+    assert not hasattr(prob, "max_clip_seen")
+
+    coords = prob.V.tabulate_dof_coordinates()
+    xs = coords[:, 0]
+    wet = 0.02 * 0.25  # wetted-front threshold (2% of peak)
+    front_pre = xs[prob.d.x.array > wet].max()
+
+    t, nsteps, min_d, _ = _march(prob, t_end=0.01, dt0=1e-4)
+    assert nsteps > 0
+    # (1) HEADLINE: depth never went negative over the WHOLE run, no limiter (strict, ~6e-34).
+    assert min_d >= -1e-12, f"2-D steep front undershot to {min_d:.3e} without a limiter"
+    assert prob.d.x.array.min() >= -1e-12
+    assert np.all(np.isfinite(prob.d.x.array))
+    # (2) ADVERSARIAL: the wetted front genuinely advanced downslope into the dry region.
+    front_post = xs[prob.d.x.array > wet].max()
+    assert front_post > front_pre + 1.0, f"front did not advance: {front_pre:.2f} -> {front_post:.2f}"
+    # (3) closed-domain conservation stays machine-tight.
+    assert abs(prob.total_water() - w0) <= 1e-12 * max(1.0, abs(w0))

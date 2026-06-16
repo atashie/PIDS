@@ -146,6 +146,7 @@ converts to m^2/day. Plan: docs/plans/2026-06-14-overland-convergent-flow-P1.md 
 from __future__ import annotations
 
 import numpy as np
+import ufl  # B4: only the 2-D path uses it (lumped-mass A_i assembly)
 from dolfinx import fem
 from mpi4py import MPI
 from petsc4py import PETSc
@@ -196,9 +197,15 @@ class UpwindOverlandProblem:
         self._build_edge_graph()
         self._setup_snes()
 
-    # -- edge graph (P1-dof index space, Decision 1/2) ------------------------
+    # -- edge graph (P1-dof index space, Decision 1/2; B4 adds the 2-D branch) -
     def _build_edge_graph(self) -> None:
-        """Build the P1-dof edge list, edge transmissibilities T_e, and nodal areas A_i.
+        """Build the P1-dof edge list, edge transmissibilities T_e, edge lengths L_e, areas A_i.
+
+        Dispatches on ``mesh.topology.dim``: the 1-D path (B1) is unchanged; the 2-D path (B4)
+        is additive (a separate builder). Both populate the SAME attributes the residual reads --
+        ``self.edges`` (dof pairs), ``self.L_e`` (edge lengths, for the Manning friction slope),
+        ``self.T_e`` (the geometric two-point transmissibility), ``self.A_i`` (nodal areas), and
+        ``self.n_edges`` -- so ``_assemble_residual`` / ``_setup_snes`` are dimension-agnostic.
 
         1-D: every cell is one edge ``(dof_a, dof_b)`` from ``V.dofmap.cell_dofs(c)``. Edge
         length ``L_e`` = |x_a - x_b| from the dof coordinates (P1: dof coords == vertex coords).
@@ -207,12 +214,16 @@ class UpwindOverlandProblem:
         ``sum_i A_i = domain length`` = the ``total_water`` measure (Decision 2).
         """
         tdim = self.mesh.topology.dim
+        self.n_dofs = self.V.dofmap.index_map.size_local
+        if tdim == 2:
+            self._build_edge_graph_2d()
+            return
         if tdim != 1:
             raise NotImplementedError(
-                "UpwindOverlandProblem B1 supports 1-D interval meshes only (2-D edge graph = B4)."
+                "UpwindOverlandProblem supports 1-D interval and 2-D triangle meshes (got "
+                f"topology.dim = {tdim}; 3-D top-facet ridge graph is the P2 productionization)."
             )
         n_cells = self.mesh.topology.index_map(tdim).size_local
-        self.n_dofs = self.V.dofmap.index_map.size_local
         coords = self.V.tabulate_dof_coordinates()[:, 0]  # P1: dof x-coordinate per dof
 
         edges = np.empty((n_cells, 2), dtype=np.int32)
@@ -234,6 +245,116 @@ class UpwindOverlandProblem:
         self.A_i = A_i                     # (n_dofs,) nodal control volumes [m]; sum = domain length
         self.n_edges = n_cells
 
+    def _build_edge_graph_2d(self) -> None:
+        """B4: the 2-D triangle-mesh edge graph + cotangent transmissibility + M-matrix guard.
+
+        Only the edge graph, ``T_e``, and ``A_i`` change vs 1-D -- the residual telescoping,
+        smoothed-upwind selector, Manning mobility, SNES, and ``eps_H``/``eps_S`` are identical.
+
+        EDGE GRAPH. Mesh EDGES are the unique P1-dof pairs: ``create_connectivity(1, 0)`` gives
+        edge -> the two vertices, and ``create_connectivity(1, tdim)`` gives edge -> its (one or two)
+        adjacent triangles. We map vertices -> dofs via the cell-local correspondence (for P1 the
+        ``c2v`` cell-vertex order matches the ``cell_dofs`` order, the most robust map; verified on a
+        tiny mesh in ``scratch/_b4_cotan_probe.py``, coord match ~1e-16) so the graph lives in the
+        P1-dof index space exactly as 1-D and ``d.x.array`` stays the SNES unknown.
+
+        TRANSMISSIBILITY (the crux). ``T_e`` is the COTANGENT / FV dual-mesh weight -- the standard
+        monotone two-point coefficient -- equal to the NEGATED P1 stiffness off-diagonal for edge ij:
+        ``T_e = 1/2 sum_tri cot(theta_opp)`` over the triangle(s) sharing ij, where ``theta_opp`` is
+        the angle OPPOSITE edge ij (a boundary edge has one term). ``cot = cos/sin = (u.w)/|u x w|``
+        from the two other triangle-edge vectors at the opposite vertex. This equals the FV
+        perpendicular-bisector dual length / L_e on a Delaunay mesh, and is bit-identical to
+        DOLFINx's assembled ``-int grad(phi_i).grad(phi_j) dx`` (pinned in
+        ``test_cotangent_T_e_equals_negated_stiffness_offdiagonal_2d``; probe found max|diff|=0).
+        ``L_e`` (the actual edge length) is retained SEPARATELY for the Manning friction slope
+        ``S_f = |H_i - H_j| / L_e`` inside the mobility -- only the OUTER geometric factor changes
+        from ``1/L_e`` (1-D) to the cotangent ``T_e`` (2-D).
+
+        M-MATRIX GUARD (loud). Monotonicity REQUIRES ``T_e >= 0``. On a structured ``create_rectangle``
+        box the right-triangle split gives non-negative weights (axis edges: cot(90 deg)=0; diagonal
+        edges: acute-angle cotangents > 0). If any ``T_e < -1e-14`` (obtuse triangles / a bad split)
+        we RAISE, naming the offending edge -- the scheme is non-monotone otherwise. MESH RESTRICTION:
+        structured box / Delaunay, NON-OBTUSE. (Unstructured/obtuse transmissibility is P2/P3.)
+
+        AREA. ``A_i`` = the lumped P1 mass ``int phi_i dx`` (vertex-quadrature row sum), the simplest
+        correct 2-D control area; ``sum_i A_i = domain area`` so ``total_water = sum d_i A_i = int d dx``,
+        matching the galerkin ``OverlandProblem.total_water`` lumped integral exactly.
+        """
+        from dolfinx.fem.petsc import assemble_vector
+
+        tdim = self.mesh.topology.dim
+        top = self.mesh.topology
+        top.create_connectivity(tdim, 0)   # cell -> vertices (for the dof map + cotangents)
+        top.create_connectivity(1, 0)      # edge -> vertices
+        top.create_connectivity(1, tdim)   # edge -> cells (1 or 2 triangles per edge)
+        c2v = top.connectivity(tdim, 0)
+        e2v = top.connectivity(1, 0)
+        e2c = top.connectivity(1, tdim)
+        n_cells = top.index_map(tdim).size_local
+        n_verts = top.index_map(0).size_local
+        n_edges = top.index_map(1).size_local
+        x = self.mesh.geometry.x  # vertex coordinates (gdim columns)
+
+        # vertex -> P1 dof, from the cell-local correspondence (robust; matches cell_dofs order).
+        vtx_to_dof = np.full(n_verts, -1, dtype=np.int64)
+        for c in range(n_cells):
+            verts = c2v.links(c)
+            dofs = self.V.dofmap.cell_dofs(c)
+            for k in range(len(verts)):
+                vtx_to_dof[verts[k]] = dofs[k]
+
+        def _cot_opposite(tri, vi, vj):
+            """cotangent of the angle at the third (opposite) vertex of ``tri`` for edge vi-vj."""
+            vk = [v for v in tri if v != vi and v != vj]
+            k = int(vk[0])
+            u = x[vi] - x[k]
+            w = x[vj] - x[k]
+            cross = u[0] * w[1] - u[1] * w[0]      # 2-D cross-product z-component (= 2*area, signed)
+            dot = u[0] * w[0] + u[1] * w[1]
+            return dot / abs(cross)                # cot = cos/sin = (u.w)/|u x w|
+
+        edges = np.empty((n_edges, 2), dtype=np.int32)
+        L_e = np.empty(n_edges, dtype=np.float64)
+        T_e = np.zeros(n_edges, dtype=np.float64)
+        for e in range(n_edges):
+            vi, vj = (int(v) for v in e2v.links(e))
+            di, dj = int(vtx_to_dof[vi]), int(vtx_to_dof[vj])
+            edges[e] = (di, dj)
+            L_e[e] = float(np.linalg.norm(x[vi] - x[vj]))
+            s = 0.0
+            for c in e2c.links(e):
+                s += 0.5 * _cot_opposite(c2v.links(c), vi, vj)
+            T_e[e] = s
+
+        # M-MATRIX GUARD: loud failure on any negative transmissibility (obtuse triangle / bad split).
+        if T_e.min() < -1e-14:
+            bad = int(np.argmin(T_e))
+            i, j = int(edges[bad, 0]), int(edges[bad, 1])
+            raise ValueError(
+                "M-matrix property violated: the cotangent transmissibility is NEGATIVE on edge "
+                f"(dofs {i}, {j}), T_e = {T_e[bad]:.6e} < -1e-14. The monotone upwind scheme REQUIRES "
+                "T_e >= 0 for every edge (an obtuse opposite angle gives cot < 0 -> an anti-diffusive "
+                "edge that breaks the discrete maximum principle). UpwindOverlandProblem is restricted "
+                "to structured-box / Delaunay NON-OBTUSE triangulations; remesh (a structured "
+                "create_rectangle box, or a Delaunay mesh) so all opposite angles are <= 90 degrees."
+            )
+
+        # A_i = lumped P1 mass int phi_i dx (vertex quadrature); sum_i A_i = domain area.
+        v = ufl.TestFunction(self.V)
+        mass_form = fem.form(
+            v * ufl.dx(metadata={"quadrature_rule": "vertex", "quadrature_degree": 1})
+        )
+        bm = assemble_vector(mass_form)
+        bm.assemble()
+        A_i = bm.getArray()[: self.n_dofs].copy()
+        bm.destroy()
+
+        self.edges = edges                 # (n_edges, 2) int32 dof pairs (i, j)
+        self.L_e = L_e                     # (n_edges,) edge lengths [m] (for the Manning slope)
+        self.T_e = T_e                     # (n_edges,) cotangent transmissibility [-] (>= 0, guarded)
+        self.A_i = A_i                     # (n_dofs,) lumped P1 control areas [m^2]; sum = domain area
+        self.n_edges = n_edges
+
     # -- custom PETSc SNES (FD Jacobian + LU, Decision 3) ---------------------
     def _setup_snes(self) -> None:
         comm = self.mesh.comm
@@ -251,9 +372,16 @@ class UpwindOverlandProblem:
         # needs J's SPARSITY PATTERN preset, so we insert the structural nonzeros from the edge graph: a
         # diagonal entry per node (storage) plus the two symmetric off-diagonals per edge (each
         # edge couples its two endpoints). Direct LU on the assembled FD Jacobian = true Newton;
-        # trivial cost at 1-D sizes. A colored/hand analytic Jacobian is a later (B4+) optimization.
+        # trivial cost at these mesh sizes. A colored/hand analytic Jacobian is a later (P2) optimization.
+        # Per-row nnz from the edge graph: diagonal + the (variable) edge-neighbour count -- 2 in 1-D
+        # (tridiagonal), up to ~6-8 in 2-D (interior triangle-mesh valence), so we count it exactly.
+        nnz = np.ones(n, dtype=np.int32)  # 1 diagonal per row
+        for e in range(self.n_edges):
+            a, b = int(self.edges[e, 0]), int(self.edges[e, 1])
+            nnz[a] += 1
+            nnz[b] += 1
         J = PETSc.Mat().createAIJ([n, n], comm=comm)
-        J.setPreallocationNNZ(3)  # tridiagonal: diagonal + up to 2 edge neighbours per row
+        J.setPreallocationNNZ(nnz)  # diagonal + per-row edge-neighbour count (1-D: 3; 2-D: valence+1)
         J.setUp()
         for k in range(n):
             J.setValue(k, k, 0.0)  # diagonal (storage term) -- always present
