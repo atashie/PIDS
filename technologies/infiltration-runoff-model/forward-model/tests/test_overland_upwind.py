@@ -598,3 +598,120 @@ def test_steep_front_positive_without_limiter_2d():
     assert front_post > front_pre + 1.0, f"front did not advance: {front_pre:.2f} -> {front_post:.2f}"
     # (3) closed-domain conservation stays machine-tight.
     assert abs(prob.total_water() - w0) <= 1e-12 * max(1.0, abs(w0))
+
+
+# ============================ B5: the decisive convergent-V gate ============================
+# THE payoff of the O1 spike: does the upwind scheme reach the equilibrium plateau Q -> Q_eq on the
+# convergent tilted-V where the galerkin OverlandProblem fails (P0: plateau gap-corrupted 0.676-0.996
+# with dt PINNED ~5e-5; field-scale 0.876 under-resolved)? Canonical tilted-V (Di Giammarco 1996 /
+# Kollet-Maxwell 2006), the SAME geometry/forcing as the galerkin diagnostic scratch/_v2d_overland_diag.py
+# and the runner scratch/_v2d_upwind_V.py. The full measurement (mesh convergence 48x30 vs 96x60, field
+# scale, dt distribution, oscillation, books, undershoot) lives in the runner; these two tests pin the
+# decisive numbers as real assertions.
+
+# canonical V constants (== _v2d_overland_diag.py / _v2d_upwind_V.py).
+_VX, _VY = 1620.0, 1000.0      # m (SCALE=1.0)
+_VXC = _VX / 2.0
+_VSX, _VSY = 0.05, 0.02        # cross-slope, valley slope
+_VN = 0.015                    # Manning n (SI)
+_VRAIN = 0.2592                # m/day
+_VSTORM = 0.0625               # day
+
+
+def _v_topography(x):
+    return _VSY * (_VY - x[1]) + _VSX * np.abs(x[0] - _VXC)
+
+
+def test_v_outlet_line_discharge_matches_analytic_2d():
+    """B5 OUTLET SUBTLETY: the 2-D LINE outlet discharge == the analytic q*LX (length-weighted).
+
+    The V outlet is a LINE of nodes along y=LY, so outflow_rate() must INTEGRATE the per-unit-width
+    Manning flux over the outlet edge length -- each node carries its boundary-edge control length
+    (add_outflow_bc assembles int phi_k ds; the galerkin path gets this from its ds measure). At a
+    KNOWN uniform depth d0 on the LY edge the discharge is the closed-form q_out_per_width * LX. The
+    B2 NAIVE nodal sum (no length weighting) was ~33x wrong on a 48-node outlet (probe
+    scratch/_b5_outlet_probe.py), which would make the +-3% Q_eq plateau gate meaningless -- so pin
+    the length-weighting directly here. (1-D backward-compat -- B_k=1.0 at a point facet -- is pinned
+    by test_outflow_discharge_absolute_magnitude_1d, which stays green.)
+    """
+    nx, ny, d0 = 48, 30, 0.01
+    msh = dmesh.create_rectangle(MPI.COMM_WORLD, [[0.0, 0.0], [_VX, _VY]], [nx, ny],
+                                 cell_type=TRI)
+    prob = UpwindOverlandProblem(msh, n_man=_VN)
+    prob.set_topography(_v_topography)
+    prob.set_initial_condition(lambda x: d0 + 0.0 * x[0])
+    prob.add_outflow_bc(lambda x: np.isclose(x[1], _VY), slope=_VSY)
+
+    q_per_width = 86400.0 * (1.0 / _VN) * d0 ** (5.0 / 3.0) * np.sqrt(_VSY)  # m^2/day, hard-coded 86400
+    expected = q_per_width * _VX  # the analytic LINE discharge over the outlet edge [m^3/day]
+    assert prob.outflow_rate() == pytest.approx(expected, rel=1e-6), (
+        "2-D line-outlet discharge != analytic q*LX -- outlet length-weighting is wrong, the "
+        "+-3% Q_eq V gate would be meaningless"
+    )
+
+
+def test_tilted_v_plateau_reaches_Qeq_2d():
+    """THE decisive O1 gate: the convergent tilted-V storm plateau reaches Q_eq within +-3%.
+
+    Drives UpwindOverlandProblem over the canonical tilted-V (dry start, constant storm rain, the
+    y=LY normal-depth LINE outlet) through the storm window and asserts the late-storm outlet
+    discharge plateau Q/Q_eq is within +-3% of 1.0 -- the gap the galerkin path could not close
+    (P0 §8.3: galerkin plateau 0.676-0.996 with dt pinned ~5e-5; the limiter<->Newton sawtooth).
+    48x30 = the ParFlow B6 grid, storm window only (the rising limb saturates within the storm),
+    DT_MAX=1e-3 -- the well-resolved choice (~0.4s; the runner shows dt climbs to 1e-2 if the cap is
+    raised, i.e. the galerkin pin is LIFTED, not a stiffness floor). Also asserts: the plateau
+    oscillation RMS <= 2% (the sawtooth O1 removes), the books close to machine precision (the
+    telescoping flux network is conservative), and the V undershoot is sub-mm (the mild 2% valley --
+    MEASURED, not assumed d>=0, per the B3 conditionality). The runner _v2d_upwind_V.py carries the
+    full mesh-convergence + field-scale + dt-distribution measurement; this is the Tier-1 pin.
+    """
+    nx, ny = 48, 30
+    msh = dmesh.create_rectangle(MPI.COMM_WORLD, [[0.0, 0.0], [_VX, _VY]], [nx, ny],
+                                 cell_type=TRI)
+    prob = UpwindOverlandProblem(msh, n_man=_VN)
+    prob.set_topography(_v_topography)
+    prob.set_initial_condition(lambda x: 0.0 * x[0])  # dry start
+    prob.add_rain(0.0)
+    prob.add_outflow_bc(lambda x: np.isclose(x[1], _VY), slope=_VSY)
+
+    area = _VX * _VY
+    q_eq = _VRAIN * area  # all rain runs off at equilibrium [m^3/day]
+
+    # March the storm window with the adaptive controller (mirrors _v2d_upwind_V.py).
+    t, dt, dt_max, t_end = 0.0, 1e-5, 1e-3, _VSTORM
+    w_prev = prob.total_water()
+    cum_rain = cum_out = 0.0
+    run_min_d = float(prob.d.x.array.min())
+    plateau_q = []  # Q/Q_eq over the late-storm window [0.6*STORM, STORM]
+    while t < t_end - 1e-12:
+        h = min(dt, t_end - t)
+        prob.add_rain(_VRAIN if (t + h) <= t_end + 1e-12 else 0.0)
+        converged, it = prob.step(h)
+        assert converged, f"V march failed to converge at t={t:.4g} (reason {prob.last_reason})"
+        wn = prob.total_water()
+        qout = prob.outflow_rate()
+        cum_rain += h * _VRAIN * area
+        cum_out += h * qout
+        run_min_d = min(run_min_d, float(prob.d.x.array.min()))
+        t += h
+        if t >= 0.6 * _VSTORM:
+            plateau_q.append(qout / q_eq)
+        w_prev = wn
+        dt = min(dt * (1.5 if it <= 3 else 0.7 if it >= 8 else 1.0), dt_max)
+
+    plateau_q = np.array(plateau_q)
+    plateau_mean = float(np.mean(plateau_q))
+    plateau_rms = float(np.sqrt(np.mean((plateau_q - plateau_mean) ** 2)))
+    books_gap = cum_rain - cum_out - (prob.total_water() - 0.0)
+
+    # (1) THE HEADLINE: the convergent-V plateau reaches Q_eq within +-3% (galerkin: gap-corrupted).
+    assert plateau_mean == pytest.approx(1.0, abs=0.03), (
+        f"V plateau Q/Q_eq = {plateau_mean:.4f} not within +-3% of 1.0 (galerkin gave 0.676-0.996)"
+    )
+    # (2) the plateau is FLAT: oscillation RMS <= 2% (the sawtooth the monotone scheme removes).
+    assert plateau_rms <= 0.02, f"plateau oscillation RMS {100*plateau_rms:.2f}% exceeds the 2% bar"
+    # (3) conservative by construction: the books close to machine precision.
+    assert abs(books_gap) <= 1e-6 * max(cum_rain, 1.0), f"books gap {books_gap:+.3e} not machine-tight"
+    # (4) the V undershoot is SUB-MM (mild 2% valley; MEASURED per the B3 conditionality, not d>=0).
+    assert run_min_d >= -1e-3, f"V undershot {run_min_d:.3e} m (> 1 mm) -- worse than the B3 mild bound"
+    assert np.all(np.isfinite(prob.d.x.array))

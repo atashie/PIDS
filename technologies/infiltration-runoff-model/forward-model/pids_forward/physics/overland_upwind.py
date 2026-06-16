@@ -146,8 +146,9 @@ converts to m^2/day. Plan: docs/plans/2026-06-14-overland-convergent-flow-P1.md 
 from __future__ import annotations
 
 import numpy as np
-import ufl  # B4: only the 2-D path uses it (lumped-mass A_i assembly)
+import ufl  # B4: lumped-mass A_i assembly; B5: per-node outlet-edge control length (line outlet)
 from dolfinx import fem
+from dolfinx import mesh as dmesh  # B5: locate_entities_boundary + meshtags for the outlet ds
 from mpi4py import MPI
 from petsc4py import PETSc
 
@@ -187,9 +188,16 @@ class UpwindOverlandProblem:
 
         self.dt = 1.0          # backward-Euler step (set per step())
         self.rain = 0.0        # uniform net rain source r [m/day]
-        # Outflow outlets (B2): each is (dofs, slope) -- a Manning normal-depth free-drainage sink
-        # at the located boundary node(s). Empty = closed (no-flux) everywhere (the B1 default).
-        self._outflows: list[tuple[np.ndarray, float]] = []
+        # Outflow outlets (B2; B5 adds the per-node boundary control length B for the 2-D LINE
+        # outlet): each is (dofs, slope, B) -- a Manning normal-depth free-drainage sink at the
+        # located boundary node(s). ``B[k]`` is the boundary-edge control LENGTH carried by outlet
+        # node ``dofs[k]`` (= int phi_k ds over the located outlet facets): 1.0 for a 1-D point
+        # outlet (point measure -> length-weighting is a no-op, the B2 1-D values are preserved),
+        # and the node's share of the outlet-edge length in 2-D (sum B = outlet length), so the
+        # per-unit-width Manning flux q_out [m^2/day] integrates to a VOLUMETRIC line discharge
+        # [m^3/day] that telescopes with the volumetric storage (d*A_i/dt) and edge fluxes. Empty
+        # = closed (no-flux) everywhere (the B1 default).
+        self._outflows: list[tuple[np.ndarray, float, np.ndarray]] = []
         self.last_reason = 0   # SNES converged reason of the last step() solve (audit trail)
         self.last_iters = 0    # SNES iteration count of the last solve
         self.last_fnorm = np.nan  # ||F|| at the last solve's exit
@@ -438,12 +446,16 @@ class UpwindOverlandProblem:
         np.add.at(R, i, Q_e)
         np.add.at(R, j, -Q_e)
 
-        # Outflow sinks (B2): water LEAVES the located outlet node(s), so q_out enters that node's
-        # residual with a PLUS sign (mirroring the galerkin ``+q_out v ds`` boundary sink). q_out is
-        # the Manning normal-depth discharge at the node's depth; ``max(d,0)`` guards the power.
-        for dofs, slope in self._outflows:
+        # Outflow sinks (B2; B5 length-weights for the 2-D LINE outlet): water LEAVES the located
+        # outlet node(s), so q_out enters that node's residual with a PLUS sign (mirroring the
+        # galerkin ``+q_out v ds`` boundary sink, whose ``ds`` supplies exactly this length factor).
+        # q_out is the per-unit-width Manning normal-depth discharge [m^2/day] at the node's depth;
+        # multiplying by the node's boundary control length ``B`` makes the sink VOLUMETRIC
+        # [m^3/day] in 2-D (B = the node's outlet-edge length) and leaves the 1-D point outlet
+        # unchanged (B = 1.0). ``max(d,0)`` guards the fractional power.
+        for dofs, slope, B in self._outflows:
             q_out = (SECONDS_PER_DAY * (1.0 / self.n_man)
-                     * np.maximum(d[dofs], 0.0) ** (5.0 / 3.0) * np.sqrt(slope))
+                     * np.maximum(d[dofs], 0.0) ** (5.0 / 3.0) * np.sqrt(slope)) * B
             np.add.at(R, dofs, q_out)
 
         b.setArray(R)
@@ -471,14 +483,27 @@ class UpwindOverlandProblem:
         """Free-drainage outlet: water leaves at the Manning NORMAL-DEPTH discharge.
 
         ``q_out = SECONDS_PER_DAY * (1/n_man) * max(d,0)^{5/3} * sqrt(slope)`` (m^2/day per unit
-        width) added at the located boundary node(s), i.e. the friction slope at the outlet is
-        taken as the bed ``slope`` -- the standard kinematic/normal-depth outflow condition (vs the
-        natural no-flux boundary, which would dam the reach). Mirrors
-        ``OverlandProblem.add_outflow_bc``: there the sink enters the weak form as ``+q_out v ds``;
-        here, in the lumped node-residual formulation, it enters the located node's residual with a
-        ``+q_out`` sign -- water LEAVING that control volume (the residual unit is m^2/day, the same
-        discharge units as the storage and edge-flux terms). ``outflow_rate()`` reports the
-        integrated discharge across all such outlets.
+        width) at the located boundary node(s), i.e. the friction slope at the outlet is taken as
+        the bed ``slope`` -- the standard kinematic/normal-depth outflow condition (vs the natural
+        no-flux boundary, which would dam the reach). Mirrors ``OverlandProblem.add_outflow_bc``:
+        there the sink enters the weak form as ``+q_out v ds``; here, in the lumped node-residual
+        formulation, it enters each located node's residual with a ``+q_out * B_k`` sign -- water
+        LEAVING that control volume.
+
+        2-D LINE OUTLET (B5; the subtlety that makes the V's ``Q_out`` correct). For a 1-D POINT
+        outlet (a single node) the discharge is just the nodal ``q_out`` and the residual unit is
+        m^2/day. But the V outlet is a LINE of nodes along ``y=LY``: the total discharge is the
+        INTEGRAL of the per-unit-width flux ``q_out`` over the outlet edge length, so each node must
+        carry its share ``B_k`` of the outlet-edge control LENGTH (exactly what the galerkin
+        ``ds`` measure supplies via ``int phi_k ds``). We assemble that boundary mass once here
+        (``int phi_k ds`` over the located outlet facets) and store it per outlet; ``B_k`` then
+        weights the residual sink AND ``outflow_rate()``. ``B_k = 1.0`` for a 1-D point facet (point
+        measure), so length-weighting is a NO-OP in 1-D and the B2 1-D outflow values are preserved;
+        in 2-D ``sum_k B_k = outlet length`` and the sink is volumetric m^3/day, telescoping with
+        the volumetric storage (``d*A_i/dt``) and edge fluxes. (Verified on the canonical V outlet:
+        ``scratch/_b5_outlet_probe.py`` -- the length-weighted nodal sum matches the galerkin
+        ``ds``-integral and the analytic ``q*LX`` to ~1e-6; the naive un-weighted B2 sum was ~33x
+        wrong on a 48-node outlet.)
 
         The sink depends only on the outlet node's OWN depth, so its finite-difference Jacobian
         contribution is purely diagonal -- already covered by the preset sparsity pattern (no
@@ -496,23 +521,51 @@ class UpwindOverlandProblem:
             )
         dofs = fem.locate_dofs_geometrical(self.V, locator)
         dofs = dofs[dofs < self.n_dofs].astype(np.int64)  # owned dofs only (MPI-safe)
-        self._outflows.append((dofs, float(slope)))
+        B = self._boundary_control_length(locator)[dofs]   # per-node outlet-edge length (1.0 in 1-D)
+        self._outflows.append((dofs, float(slope), B))
         return None
 
-    def outflow_rate(self) -> float:
-        """Total discharge leaving through all outflow boundaries (m^2/day per unit width).
+    def _boundary_control_length(self, locator) -> np.ndarray:
+        """Per-dof boundary control length ``B_i = int phi_i ds`` over the located outlet facets.
 
-        In 1-D each outlet is a single node and the outlet facet is a point, so the boundary
-        integral equals the nodal ``q_out`` (no area weighting -- matching the galerkin
-        point-facet ``q_out ds`` and its ``test_outflow_discharge_absolute_magnitude_1d`` value).
-        Evaluated at the current solved depth state.
+        This is the lumped boundary "mass" the galerkin outlet sink carries implicitly through its
+        ``ds`` measure: assembling ``v * ds_locator`` puts each node's share of the located outlet
+        edge length on row ``i`` (sum over the outlet = the outlet length in 2-D; 1.0 at a 1-D point
+        facet). Used to length-weight the outlet sink + ``outflow_rate()`` for the 2-D line outlet
+        (B5). Returns the full per-dof array (indexed by the caller with its owned outlet dofs).
+        """
+        from dolfinx.fem.petsc import assemble_vector
+
+        fdim = self.mesh.topology.dim - 1
+        self.mesh.topology.create_connectivity(fdim, self.mesh.topology.dim)
+        facets = np.sort(dmesh.locate_entities_boundary(self.mesh, fdim, locator))
+        ft = dmesh.meshtags(self.mesh, fdim, facets, np.full(facets.shape, 1, dtype=np.int32))
+        ds_out = ufl.Measure("ds", domain=self.mesh, subdomain_data=ft)(1)
+        v = ufl.TestFunction(self.V)
+        bvec = assemble_vector(fem.form(v * ds_out))
+        bvec.assemble()
+        B = bvec.getArray()[: self.n_dofs].copy()
+        bvec.destroy()
+        return B
+
+    def outflow_rate(self) -> float:
+        """Total discharge leaving through all outflow boundaries.
+
+        The boundary integral of the per-unit-width Manning flux ``q_out`` over each outlet, i.e.
+        ``sum_k q_out(d_k) * B_k`` with ``B_k`` the node's outlet-edge control length -- the exact
+        discrete analogue of the galerkin ``int q_out ds``. 1-D: ``B_k = 1.0`` (point facet), so
+        this is the nodal ``q_out`` and reports m^2/day per unit width (matching the galerkin
+        point-facet value + ``test_outflow_discharge_absolute_magnitude_1d``). 2-D: ``B_k`` is the
+        node's share of the outlet length, so this is the VOLUMETRIC line discharge m^3/day (the
+        quantity compared to ``Q_eq = rain*area`` at equilibrium). Evaluated at the current solved
+        depth state.
         """
         d = self.d.x.array
         local = 0.0
-        for dofs, slope in self._outflows:
+        for dofs, slope, B in self._outflows:
             local += float(np.sum(
                 SECONDS_PER_DAY * (1.0 / self.n_man)
-                * np.maximum(d[dofs], 0.0) ** (5.0 / 3.0) * np.sqrt(slope)
+                * np.maximum(d[dofs], 0.0) ** (5.0 / 3.0) * np.sqrt(slope) * B
             ))
         return self.mesh.comm.allreduce(local, op=MPI.SUM)
 
