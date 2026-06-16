@@ -118,6 +118,23 @@ import numpy as np
 
 from .sorptive_closure import F_cylindrical, R0_OVER_H_P1, R_W_DEFAULT
 
+# Resolved-wall HONEST FENCE constants (item C, 2026-06-16) -- replace the blanket r_0<=1.1*r_w refusal.
+# Background: the post-item-A driver is r_0-INDEPENDENT (the negative-log on-ridge bridge was retired),
+# so the resolved-wall regime (h <= ~5.5 r_w, fine meshes around the feature) is tractable; it had been
+# refused only as UNVALIDATED. The resolved-wall sweep (scratch/m4_phase4_resolved_wall.py, 2026-06-16,
+# Codex-reviewed) VALIDATED the realistic deployment band (large R_out catchment + fine mesh) and
+# characterized the breakdown: the embedded relL2 grows with REFINEMENT and the refinement budget scales
+# with R_out (DISPERSE R40, R_out/2=20 r_w, robust to h=2.2 r_w at 4.3%; R10, R_out/2=5 r_w, degraded
+# 2.4->19.1% as h:2.2->0.49). The analytic mode-2 boundary (2h<=r_w) was REFUTED (R3 passes past it).
+# DISPERSE keys on R_out (the WI-era ring read needs a deep R_out/2); DRAIN is mass-based (psi(theta-
+# mean), no ring read) so it is R_out-robust (validated R20+R40), keyed on a lower floor. Unvalidated
+# corners (smaller R_out / finer h) stay refused unless allow_resolved_wall=True. (The drain dt-collapse
+# at very fine mesh is a SEPARATE solver limit, NOT encoded here -- 2026-06-16 Codex.)
+_RW_H_REGIME_OVER_RW = 5.5         # h/r_w at/below this = resolved-wall (above = the deployment regime)
+_RW_HFLOOR_OVER_RW = 2.2           # finest VALIDATED h/r_w (both directions)
+_RW_ROUT_MIN_DISP_OVER_RW = 40.0   # disperse R_out/r_w floor (the WI-era ring read needs R_out/2>=20 r_w)
+_RW_ROUT_MIN_DRAIN_OVER_RW = 20.0  # drain R_out/r_w floor (mass-based; validated R20+R40)
+
 
 class WellIndexExchange:
     """Embedded wall exchange. DISPERSE: sub-grid rate-clock era + resolved-ring Kirchhoff era (both
@@ -133,6 +150,27 @@ class WellIndexExchange:
         # keeps production + test_resolved_wall_regime_is_refused byte-identical; a validated honest
         # fence replaces the blanket refusal in production (item C plan).
         self.allow_resolved_wall = bool(allow_resolved_wall)
+
+    def _resolved_wall_fence(self, h, R_out):
+        """The honest resolved-wall fence (item C, 2026-06-16). Returns None when the mesh is in the
+        deployment regime (h > ~5.5 r_w) or inside the VALIDATED resolved-wall band; otherwise a refusal
+        message. allow_resolved_wall=True forces past it (probe/escape hatch). Provenance + the band: the
+        module-level _RW_* constants."""
+        if self.allow_resolved_wall or h > _RW_H_REGIME_OVER_RW * self._r_w:
+            return None                                     # opt-in, or the unchanged deployment regime
+        rout_min = (_RW_ROUT_MIN_DRAIN_OVER_RW if self.direction == "drain"
+                    else _RW_ROUT_MIN_DISP_OVER_RW) * self._r_w
+        if float(R_out) >= rout_min and h >= _RW_HFLOOR_OVER_RW * self._r_w:
+            return None                                     # the validated resolved-wall band: auto-allow
+        why = ("disperse degrades with refinement as R_out shrinks (the WI-era R_out/2 ring read)"
+               if self.direction != "drain" else
+               "finer/smaller-R_out drain is untested (mass-based, but unvalidated there)")
+        return (
+            f"WellIndexExchange({self.direction}): resolved-wall mesh outside the VALIDATED band "
+            f"(h={h/self._r_w:.2f} r_w, R_out={float(R_out)/self._r_w:.1f} r_w; need R_out >= "
+            f"{rout_min/self._r_w:.0f} r_w AND h >= {_RW_HFLOOR_OVER_RW} r_w). Item C validated the "
+            f"realistic large-R_out deployment band at fine mesh (resolved-wall sweep 2026-06-16); "
+            f"{why}. Pass allow_resolved_wall=True to run anyway (characterization).")
 
     # -- lifecycle -------------------------------------------------------------
     def setup(self, feat, soil, ctx):
@@ -156,8 +194,19 @@ class WellIndexExchange:
                     "WellIndexExchange(drain): ctx['R_out'] is required -- the PSS depletion "
                     "closure needs the closed/catchment equivalent radius (ln(R_out/r_w) - 3/4).")
             self._r_w = feat._r_w
-            self.geo = np.log(float(R_out) / self._r_w) - 0.75
             self._g = feat._gamma_dofs
+            # measure h (nearest off-ridge vertex) for the resolved-wall fence -- drain is mass-based
+            # (psi(theta-mean), no R_out/2 ring read) so it is R_out-robust, but finer/smaller-R_out
+            # resolved-wall meshes are untested (item C, 2026-06-16).
+            xc = feat.V.tabulate_dof_coordinates()
+            rho = cKDTree(xc[self._g]).query(xc, k=1)[0]
+            off = rho > 1e-12
+            h_ctx = ctx.get("h") if isinstance(ctx, dict) else None
+            self.h = float(h_ctx) if h_ctx else float(rho[off].min())
+            msg = self._resolved_wall_fence(self.h, R_out)
+            if msg:
+                raise ValueError(msg)
+            self.geo = np.log(float(R_out) / self._r_w) - 0.75
             self._p_len = feat._perimeter * feat.length
             # lumped vertex volume weights: the drive is psi(volume-mean theta) -- the discrete
             # closed-box water balance (mass-exact however coarsely the drawdown cone is
@@ -171,6 +220,13 @@ class WellIndexExchange:
             return self
         self._g = feat._gamma_dofs
         self._r_w = feat._r_w
+        wall = float(getattr(feat, "psi_wall_sorp", 0.0))   # refuse a misconfigured feature EARLY,
+        if wall != 0.0:                                     # independent of ctx (before R_out/the fence)
+            raise ValueError(
+                f"WellIndexExchange: non-zero sorptive wall head refused (psi_wall={wall}); the "
+                f"gate evidence is saturated-wall (psi_wall=0) only -- the clock-era Kirchhoff "
+                f"scaling is unvalidated elsewhere (2026-06-11 review).")
+        self.h_f_ref = wall                                 # the configure_sorptive wall head
         xc = feat.V.tabulate_dof_coordinates()
         gco = xc[self._g]
         # nearest-Gamma-VERTEX distance of every dof (exact perpendicular distance for the straight,
@@ -180,22 +236,18 @@ class WellIndexExchange:
         h = ctx.get("h") if isinstance(ctx, dict) else None
         self.h = float(h) if h else float(self._rho[off].min())
         self.r0 = R0_OVER_H_P1 * self.h
-        if self.r0 <= 1.1 * self._r_w and not self.allow_resolved_wall:
+        R_out = ctx.get("R_out") if isinstance(ctx, dict) else None
+        if not R_out:
             raise ValueError(
-                f"WellIndexExchange: resolved-wall regime refused (r_0={self.r0:.4f} m <= 1.1*r_w; "
-                f"h={self.h:.3f} m = {self.h/self._r_w:.1f} r_w; need h > ~5.5 r_w) -- outside the "
-                f"validated deployment regime; pass allow_resolved_wall=True to characterize it "
-                f"(item C, 2026-06-15) -- a validated honest fence replaces this in production.")
+                "WellIndexExchange(disperse): ctx['R_out'] is required -- the WI-era bridge reads "
+                "the resolved host field at the catchment-radius midpoint R_out/2 (the on-ridge read "
+                "was -7..-18% wet; derivation scratch/m4_phase4_wi_ring_derivation.py).")
+        msg = self._resolved_wall_fence(self.h, R_out)      # item C honest fence (after the R_out read)
+        if msg:
+            raise ValueError(msg)
         self.WI = 2.0 * np.pi / np.log(self.r0 / self._r_w)   # regime witness (the ring read uses r_ring)
         self.S, self.dth = feat.S_disp, feat.dth_disp
         self.dPhi_ref = feat.dPhi_ref_disp
-        wall = float(getattr(feat, "psi_wall_sorp", 0.0))
-        if wall != 0.0:
-            raise ValueError(
-                f"WellIndexExchange: non-zero sorptive wall head refused (psi_wall={wall}); the "
-                f"gate evidence is saturated-wall (psi_wall=0) only -- the clock-era Kirchhoff "
-                f"scaling is unvalidated elsewhere (2026-06-11 review).")
-        self.h_f_ref = wall                                 # the configure_sorptive wall head
         two_h = 2.0 * self.h
         self.I_fill = self.dth * (two_h ** 2 - self._r_w ** 2) / (2.0 * self._r_w)
         self.seed_I = 0.0
@@ -211,12 +263,7 @@ class WellIndexExchange:
         # annulus (above the near-wall read-fidelity floor, below the outer no-flow boundary that
         # breaks the Thiem log); the derivation (scratch/m4_phase4_wi_ring_derivation.py) measured
         # worst |rate dev| 2.0% across the mesh range n=6..12 (broad plateau over [0.45,0.6]*R_out).
-        R_out = ctx.get("R_out") if isinstance(ctx, dict) else None
-        if not R_out:
-            raise ValueError(
-                "WellIndexExchange(disperse): ctx['R_out'] is required -- the WI-era bridge reads "
-                "the resolved host field at the catchment-radius midpoint R_out/2 (the on-ridge read "
-                "was -7..-18% wet; derivation scratch/m4_phase4_wi_ring_derivation.py).")
+        # (R_out was read + the resolved-wall fence applied earlier, before the WI witness.)
         self.r_ring_target = 0.5 * float(R_out)
         ring = (np.abs(self._rho - self.r_ring_target) <= 0.6 * self.h) & (self._rho > 1e-12)
         if not np.any(ring):

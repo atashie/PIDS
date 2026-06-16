@@ -57,13 +57,6 @@ def test_wi_constant_from_measured_r0():
     assert x.WI > 0.0
 
 
-def test_resolved_wall_regime_is_refused():
-    """h <= ~5.5 r_w -> negative-log bridge (transiently unstable, analyzed 2026-06-10) -> refuse."""
-    feat = _feat(8)                                        # h = 0.125 m = 2.5 r_w
-    with pytest.raises(ValueError, match="regime"):
-        WellIndexExchange().setup(feat, LOAM, {"t0": 1e-4, "R_out": 2.0})
-
-
 def _feat_box(R_out, n):
     """A harness-style closed box (ridge along x at the y-z centre) sized to R_out, so the WI-era
     ring at R_out/2 lands on a resolved vertex shell (the [0,1]^3 _feat box is too small for that)."""
@@ -77,17 +70,47 @@ def _feat_box(R_out, n):
     return feat
 
 
-def test_resolved_wall_probe_hook_bypasses_guard():
-    """Item C characterization hook (2026-06-15): allow_resolved_wall=True opts a scheme instance past
-    the resolved-wall refusal so the sweep can run the item-A driver at fine meshes. Default False keeps
-    the production refusal byte-identical (test_resolved_wall_regime_is_refused, above). Item A already
-    retired the negative-log on-ridge bridge, so the production driver is r_0-independent -- the witness
-    self.WI may be negative-log here but the rate path (ring read at R_out/2) never touches it."""
-    feat = _feat_box(2.0, 16)                              # h = 4.43 r_w: resolved-wall, ring resolvable
-    x = WellIndexExchange(allow_resolved_wall=True).setup(feat, LOAM, {"t0": 1e-4, "R_out": 2.0})
-    assert x.allow_resolved_wall is True
-    assert x.r0 <= 1.1 * R_W_DEFAULT                       # we ARE in the otherwise-refused regime
-    assert x.h < 5.5 * R_W_DEFAULT
+def test_resolved_wall_validated_band_auto_allowed():
+    """Item C honest fence (2026-06-16): the post-item-A driver is r_0-independent, and the resolved-wall
+    SWEEP (scratch/m4_phase4_resolved_wall.py) validated the realistic deployment band (large R_out
+    catchment + fine mesh). A disperse mesh inside it -- R_out >= 40 r_w AND h >= 2.2 r_w -- is now
+    AUTO-ALLOWED with the DEFAULT constructor (no opt-in): the validation is the warrant."""
+    feat = _feat_box(2.0, 16)                              # R_out = 40 r_w, h = 4.43 r_w: validated band
+    x = WellIndexExchange().setup(feat, LOAM, {"t0": 1e-4, "R_out": 2.0})
+    assert x.allow_resolved_wall is False                 # no opt-in needed
+    assert x.r0 <= 1.1 * R_W_DEFAULT and x.h < 5.5 * R_W_DEFAULT   # genuinely resolved-wall
+    assert x.h >= 2.2 * R_W_DEFAULT
+
+
+def test_resolved_wall_below_rout_floor_refused():
+    """Disperse keys on R_out: the WI-era ring read at R_out/2 degrades when R_out/2 is shallow (the
+    refinement budget shrinks with R_out -- R10 degraded 2.4->19.1% as h:2.2->0.49). A resolved-wall
+    mesh with R_out < 40 r_w is REFUSED by default, and allow_resolved_wall=True forces past it."""
+    feat = _feat_box(0.5, 16)                              # R_out = 10 r_w (< 40), h = 1.10 r_w
+    with pytest.raises(ValueError, match="VALIDATED band"):
+        WellIndexExchange().setup(feat, LOAM, {"t0": 1e-4, "R_out": 0.5})
+    x = WellIndexExchange(allow_resolved_wall=True).setup(feat, LOAM, {"t0": 1e-4, "R_out": 0.5})
+    assert x.allow_resolved_wall is True                  # the probe/escape hatch still works
+
+
+def test_resolved_wall_below_h_floor_refused():
+    """Both directions auto-allow only down to the validated floor h >= 2.2 r_w; finer is unvalidated
+    (the embedded relL2 grows with refinement) and REFUSED unless opted in. (ctx['h'] override drives
+    the fence to a sub-floor h on a coarse mesh so this stays a fast setup-only test.)"""
+    feat = _feat_box(2.0, 16)                              # R_out = 40 r_w (ok); ctx h forces sub-floor
+    with pytest.raises(ValueError, match="VALIDATED band"):
+        WellIndexExchange().setup(feat, LOAM, {"t0": 1e-4, "R_out": 2.0, "h": 2.0 * R_W_DEFAULT})
+
+
+def test_resolved_wall_drain_band_and_floor():
+    """Drain is mass-based (psi(volume-mean theta), no R_out/2 ring read) -> R_out-robust, validated at
+    R20+R40, so its fence keys on the LOWER R_out >= 20 r_w floor (+ h >= 2.2 r_w). Below 20 r_w is
+    refused by default; the validated band is auto-allowed."""
+    ok = _feat_box(1.0, 8)                                 # R_out = 20 r_w, h = 4.42 r_w: validated band
+    WellIndexExchange(direction="drain").setup(ok, LOAM, {"t0": 1e-4, "R_out": 1.0})   # no raise
+    bad = _feat_box(0.5, 8)                                # R_out = 10 r_w (< 20), h = 4.42 r_w
+    with pytest.raises(ValueError, match="VALIDATED band"):
+        WellIndexExchange(direction="drain").setup(bad, LOAM, {"t0": 1e-4, "R_out": 0.5})
 
 
 def test_disperse_requires_catchment_radius():
@@ -558,4 +581,29 @@ def test_gate_refA40_closed_box(n):
     assert e <= DISPERSE_TOL, f"gate failed: relL2={e:.1%} > {DISPERSE_TOL:.0%}"
     S, dth = float(refA["LOAM_S"]), float(refA["LOAM_dtheta"])
     clk = sorptive_clock(t, S, dth, R_W_DEFAULT, F_cylindrical)
+    assert rel_l2(clk, I_ref) >= 0.20, "discrimination twin lost: the offline clock passes this leg"
+
+
+RW_EMBEDDED_TOL = 0.10  # item-C pre-registered (2026-06-16, locked before the resolved-wall sweep): the
+#                         realistic deployment band (large R_out + fine mesh) gate bar; the established
+#                         gate constant for a NEW regime (the 0.03 deployment polish does not apply).
+
+
+@pytest.mark.parametrize("n", [16])
+def test_resolved_wall_gate_refA40_auto_allowed(n):
+    """Item C (2026-06-16): in the VALIDATED resolved-wall band (R_out=40 r_w, fine mesh h=4.43 r_w <
+    5.5 r_w -- the regime the DEPLOYMENT gate above REFUSED) the DEFAULT constructor (auto-allowed, NO
+    opt-in -- the honest fence's warrant) tracks RefA40 within RW_EMBEDDED_TOL while the offline clock
+    fails. End-to-end proof the fence's auto-allow works. (resolved-wall sweep: n16/24/32 = 2.7/3.5/4.3%;
+    Codex-reviewed -- the discrimination is ensemble [+ RefB40 + drain], the analytic mode-2 fence
+    refuted, the R10 small-R_out failure is refinement-budget, not deployment-scale.) (~3 min.)"""
+    from scratch.m4_phase4_embedded_harness import run_embedded
+    refA = np.load("tests/data/m4_phase4_refA_disperse.npz")
+    t, I_ref = refA["LOAM_R40_t"], refA["LOAM_R40_I"]
+    out = run_embedded(WellIndexExchange(), "LOAM", 40 * R_W_DEFAULT, n, t)   # DEFAULT ctor: auto-allow
+    assert out is not None, "embedded resolved-wall run did not complete"
+    assert out["h"] < 5.5 * R_W_DEFAULT, "test must be in the resolved-wall regime (h < 5.5 r_w)"
+    e = rel_l2(out["I"], I_ref)
+    assert e <= RW_EMBEDDED_TOL, f"resolved-wall gate failed: relL2={e:.1%} > {RW_EMBEDDED_TOL:.0%}"
+    clk = sorptive_clock(t, float(refA["LOAM_S"]), float(refA["LOAM_dtheta"]), R_W_DEFAULT, F_cylindrical)
     assert rel_l2(clk, I_ref) >= 0.20, "discrimination twin lost: the offline clock passes this leg"
