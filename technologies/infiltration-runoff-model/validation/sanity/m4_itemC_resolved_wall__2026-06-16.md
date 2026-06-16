@@ -2,8 +2,8 @@
 
 **Date:** 2026-06-16. **Outcome:** DONE — the realistic resolved-wall band is validated and shipped as
 an honest per-direction auto-allow fence; the unvalidated corners stay refused (opt-in). **Status:**
-awaiting Arik sign-off. **Commits (main):** design `480e644`, plan `30ba5e2`, probe hook `13439cf`,
-sweep+results `37e790a`, R-sweep `51ca2bb`, fence `92612a9`, docstring reconcile `72c1e90`.
+SIGNED OFF (Arik, 2026-06-16) + pushed. **Commits (main):** design `480e644`, plan `30ba5e2`, probe hook
+`13439cf`, sweep+results `37e790a`, R-sweep `51ca2bb`, fence `92612a9`, docstring reconcile `72c1e90`.
 **Design/plan:** `docs/plans/2026-06-15-m4-itemC-resolved-wall-{design,plan}.md`.
 
 ## The reframing (verified against code, not assumed)
