@@ -178,15 +178,16 @@ def test_front_advance_positive_without_limiter_1d():
     without a limiter holds because the selector is SHARP relative to the front head-drop (drop >>
     ``eps_H``). The undershoot is governed by ``eps_H`` vs the front head-drop, NOT by the slope
     alone. B3 (``scratch/_upwind_selector_probe.py``, 2026-06-15) swept ``eps_H`` and FIXED it at
-    1e-3 on exactly this trade: at the chosen ``eps_H=1e-3`` BOTH this steep 5% front AND the
-    canonical MILD 2% front (the B5 valley regime) are strictly positive (run-min ~6e-34); the
-    front undershoot only appears at a LOOSER width (~2.4 mm at ``eps_H=1e-2`` on the 2% front),
-    and even an adversarially sharp/tall 2% mound undershoots only <= ~0.36 mm at 1e-3. (The
-    pre-B3 note here once claimed ~1.5-1.6 mm "at the default eps_H" -- that was an OVER-claim;
-    that magnitude belongs to the looser ~1e-2 width. Corrected per P1-B3; see the module
-    docstring "Regularization (Decision 4)" table.) Conservation stays machine-tight regardless
-    (~2e-16). Sharpening below 1e-3 buys NO accuracy and costs Newton robustness (B3 table), so
-    the default ``eps_H=1e-3`` is KEPT.
+    1e-3 on exactly this trade: at the chosen ``eps_H=1e-3`` this steep 5% front is strictly
+    positive (run-min ~6e-34), and the MILD 2% regime (the B5 valley) is GEOMETRY-DEPENDENT
+    SUB-MILLIMETER -- 0 .. ~0.9 mm (controller adjudication sweep 2026-06-16, 24 mild-2%
+    geometries: worst -0.93 mm on a sharp mound; the canonical mound is strictly positive), vs
+    ~2.4 mm at the looser ``eps_H=1e-2``. (Two earlier single-number claims were superseded: B2's
+    "~1.5-1.6 mm at default" was high, B3's "<=0.36 mm" was low -- the honest figure is the
+    geometry-dependent 0 .. ~0.9 mm range; see the module docstring "Positivity (B2)" /
+    "Regularization (Decision 4)".) The undershoot is SUB-MM (vs the galerkin limiter's cm-scale
+    clip it replaces) and CONSERVATION stays machine-tight regardless (~2e-16). Sharpening below
+    1e-3 buys NO accuracy and costs Newton robustness (B3 table), so ``eps_H=1e-3`` is KEPT.
 
     Reason-4 audit: this run books many reason-4 (SNORM-stagnation) steps, which B1 accepts without
     a residual-floor gate (deferred Part A). They are HONEST floor exits here, not dirty stalls: the
@@ -246,10 +247,10 @@ def test_closed_domain_conserves_multistep_1d():
     even when a LOOSE-width 2% front undershoots a few mm, the budget still drifts only ~2e-16). To
     keep THIS gate a clean POSITIVE-and-conservative check per the B2 decision (point 4), the mound
     here sits on a WET BASE and is broad/gentle (1% slope, sigma 3) so no wet/dry front forms and
-    ``min(d)`` stays comfortably positive (~0.027 m) at the default width. (B3 since FIXED
-    ``eps_H=1e-3`` and showed even the canonical mild 2% FRONT is strictly positive at that width;
-    the few-mm undershoot was a LOOSER-width artifact -- module docstring "Regularization
-    (Decision 4)". This gate isolates conservation from positivity either way.)
+    ``min(d)`` stays comfortably positive (~0.027 m) at the default width. (B3 FIXED ``eps_H=1e-3``;
+    on a mild 2% front that width gives a geometry-dependent SUB-MM undershoot, 0 .. ~0.9 mm --
+    module docstring "Regularization (Decision 4)". This gate isolates conservation from positivity
+    either way: it is machine-tight regardless of any residual undershoot.)
     """
     msh = dmesh.create_interval(MPI.COMM_WORLD, 40, [0.0, 20.0])  # closed (no-flux) reach
     prob = UpwindOverlandProblem(msh, n_man=N_MAN)

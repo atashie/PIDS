@@ -72,17 +72,20 @@ clip/rescale machinery -- contrast the galerkin ``OverlandProblem._enforce_posit
 it holds ``d >= 0`` that is the monotone construction, not a post-step clip. CONDITIONALITY, stated
 honestly: the smoothed (tanh) selector is monotone STRICTLY only when it is SHARP relative to the
 front head-drop -- i.e. when the wet/dry-front head-drop greatly exceeds ``eps_H``. The selector
-width that achieves this on BOTH the steep AND the mild front was fixed empirically in B3 (see
-"Regularization (Decision 4)" below); the chosen ``eps_H=1e-3`` holds strict ``d >= -1e-12`` on the
-STEEP 5%-slope slump (head-drop >> eps_H -- exactly where the galerkin path must engage its clip)
-AND on the canonical MILD 2%-slope mound (the B5 valley regime). The undershoot is governed by
-``eps_H`` relative to the front head-drop, not by the slope alone: it only appears at a LOOSER
-``eps_H`` (~2.4 mm at ``eps_H=1e-2`` on the 2% front; the B3 sweep) -- at the default 1e-3 the
-canonical mild mound is strictly positive (run-min ~6e-34) and even an adversarially sharp/tall 2%
-mound undershoots only <= ~0.36 mm. Conservation is machine-tight regardless of any residual
-undershoot (the telescoping flux network balances at any residual-converged root, ~2e-16). The B2
-positivity gate pins the STEEP regime (clean + adversarial: galerkin-would-clip there); the
-conservation gate uses a closed scenario that also stays positive at the default width.
+width that best balances this against Newton/accuracy was fixed empirically in B3 (see
+"Regularization (Decision 4)" below). At the chosen ``eps_H=1e-3``: the STEEP 5%-slope slump holds
+strict ``d >= -1e-12`` (head-drop >> eps_H -- exactly where the galerkin path must engage its clip);
+the MILD 2%-slope regime (the B5 valley) is **GEOMETRY-DEPENDENT SUB-MILLIMETER** -- strictly
+positive on smooth mounds, but adversarially sharp 2% mounds undershoot up to ~0.9 mm (controller
+adjudication sweep 2026-06-16, 24 mild-2% geometries: worst run-min -0.93 mm; B2's earlier
+"~1.5 mm" was high and B3's "<=0.36 mm" was low -- the honest figure is a geometry-dependent range
+0 .. ~0.9 mm). The undershoot is governed by ``eps_H`` relative to the front head-drop, not the
+slope alone, and grows at a LOOSER ``eps_H`` (~2.4 mm at ``eps_H=1e-2``). Two things are robust
+regardless of the residual undershoot: it is SUB-MM (vs the galerkin limiter's cm-scale
+clip-and-rescale pathology it replaces), and CONSERVATION is machine-tight (the telescoping flux
+network balances at any residual-converged root, ~2e-16). The B2 positivity gate pins the STEEP
+regime (clean + adversarial: galerkin-would-clip there); the conservation gate uses a closed
+scenario that also stays positive at the default width.
 
 Regularization (Decision 4). ``eps_S`` (slope floor inside the conveyance root, dimensionless,
 default 1e-3, matching ``overland.py``) keeps the mobility + its FD Jacobian finite at zero edge
@@ -107,33 +110,35 @@ selector multiplies), so the gate cannot be tuned to pass.
     1e-5  | +6e-34 m    |  0.000 mm (str) | 106 / 498  (2x cost)        |   1.000    |  20.00
     1e-6  | +6e-34 m    |  0.000 mm (str) | 843 / 3680 (~15x cost)      |   1.000    |  20.00
 
-  (* canonical mild mound sigma=1.5/peak=0.25; an adversarially sharp/tall 2% mound undershoots
-  <= ~0.36 mm at 1e-3 -- still > 4x below the looser-width undershoot, and removed by accepting
-  the strict-positivity construction the chosen width gives on the canonical front.)
+  (* the table's mild-front row is the CANONICAL mound (sigma=1.5/peak=0.25), strictly positive
+  in B3's setup; the mild-2% undershoot is GEOMETRY-DEPENDENT: a controller adjudication sweep
+  (2026-06-16, 24 geometries) found 0 .. ~0.9 mm at 1e-3 (worst -0.93 mm on a sharp mound), vs
+  ~2.4 mm at the looser 1e-2 -- so 1e-3 is ~3x better than 1e-2 but NOT bit-strict on the sharpest
+  mild mounds. Conservation machine-tight throughout.)
 
   CHOICE = ``eps_H = 1e-3`` (the B1/B2 default is KEPT). Reasoning + the honest trade:
-   * Positivity does NOT need a sharper selector -- it needs the selector NOT to be LOOSER. The
-     default 1e-3 is already STRICTLY monotone (>= -1e-12) on both the steep 5% AND the canonical
-     mild 2% front; only the looser 1e-2 undershoots (-1.9 mm steep, -2.4 mm mild). So the B2
-     "default undershoots ~1.5 mm on mild slopes" characterization was an OVER-claim (that
-     magnitude belongs to ~1e-2, not 1e-3) -- corrected in the Positivity section above + the B2
-     tests/docstrings (P1-B3).
+   * Positivity does NOT need a sharper selector -- it needs the selector NOT to be LOOSER. At the
+     default 1e-3 the steep 5% front is strictly monotone (>= -1e-12) and the mild 2% front is
+     sub-mm (0 .. ~0.9 mm, geometry-dependent); the looser 1e-2 is clearly worse (-1.9 mm steep,
+     -2.4 mm mild). (The B2 "~1.5 mm at default" was high for typical mounds AND B3's first
+     "<=0.36 mm" was low -- both superseded by the 0 .. ~0.9 mm range above; corrected here + in
+     the Positivity section + the B2 tests/docstrings.)
    * Accuracy is eps_H-INVARIANT from 1e-3 downward: front position (20.00 m), post-run peak
      depth, and the kinematic equilibrium ``d/d_eq = 1.000`` do not move -- sharpening buys NO
      accuracy, so there is no accuracy reason to go sharper.
    * Newton robustness DEGRADES sharply below 1e-3: 1e-5 doubles the step count and 1e-6 is a
      ~15x blow-up (843 vs 47 steps, the extra all reason-4 SNORM stagnation as ``tanh`` -> the
-     non-smooth ``sign`` and the FD-Jacobian Newton stalls). This is the documented
-     positivity-vs-Newton tension -- but its crossover sits BELOW the chosen width: the default
-     already gives strict positivity, so the tension does not bite here.
+     non-smooth ``sign`` and the FD-Jacobian Newton stalls). Going sharper to chase the last sub-mm
+     of mild-front positivity would hit this cliff for no accuracy gain -- so 1e-3 is the balance.
    * 1e-4 ties 1e-3 on every axis; 1e-3 is kept as the established default with the larger margin
      to the Newton cliff and the green suite.
-   IMPLICATION FOR B5 (the V's 2% valley): the chosen ``eps_H=1e-3`` gives strict positivity on
-   the 2% mild front, so O1 is positive-viable on the V at the spike resolution. IF a future
-   closed-domain scenario ever needed ``eps_H`` sharper than ~1e-4 for positivity, the Newton
-   cost would become prohibitive and SEMISMOOTH NEWTON is the P2 fallback (the SCHEME is the
-   deliverable; this smoothed-selector tuning is secondary, per the B3 task) -- not triggered by
-   any scenario probed here.
+   IMPLICATION FOR B5 (the V's 2% valley): at ``eps_H=1e-3`` O1 is positive-viable on the V --
+   sub-mm undershoot (0 .. ~0.9 mm, geometry-dependent) with machine-tight conservation, vs the
+   galerkin limiter's cm-scale clip-and-rescale that drives the convergent-V pathology. This is NOT
+   bit-strict positivity on the sharpest mild fronts, so **B5 must MEASURE the actual undershoot on
+   the V** (not assume d>=0). IF the V needed ``eps_H`` sharper than ~1e-4 for acceptable positivity,
+   the Newton cost would become prohibitive and SEMISMOOTH NEWTON is the P2 fallback (the SCHEME is
+   the deliverable; this smoothed-selector tuning is secondary) -- not indicated by anything probed.
 
 Units: length m, time day, slope dimensionless. ``n_man`` is SI s.m^{-1/3}; ``SECONDS_PER_DAY``
 converts to m^2/day. Plan: docs/plans/2026-06-14-overland-convergent-flow-P1.md (Part B, B1).
