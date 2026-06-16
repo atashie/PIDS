@@ -318,6 +318,44 @@ that closes the latent B1 path (and, as a side effect, exposes the real dt cost 
 (b) the measured + causally-controlled mechanism that re-aims P1, and (c) the corrected public record.
 The §6 efficiency bar (canonical ≤2 h) should be read as a **post-P1 target**, not a P0 deliverable.
 
+### 8.6 O1 upwind spike result (P1 Part B, 2026-06-16) — the spike PASSES the §5 P1 gate list
+
+> **Numbering note:** the originally-planned §8.6 (the A5 "residual-gate efficiency" write-up) was
+> never produced — Part A (the gate rework) was DEFERRED 2026-06-15 (§5 P1-PREREQUISITE; A1's census
+> proved no residual gate can reject the dirty-V stalls, so O1 dissolves the problem instead). This
+> §8.6 is therefore the O1 spike result (the P1-plan called it "§8.7"; renumbered to close the gap).
+
+**Verdict: O1 — a MONOTONE, well-balanced upwind-mobility two-point edge flux on a custom FD-Jacobian
+SNES (`pids_forward/physics/overland_upwind.py`, `UpwindOverlandProblem`) — is the convergent-flow fix.
+It meets EVERY §5 P1 gate, most by 2–3 orders of magnitude, and it does so on the validated galerkin
+path's terms WITHOUT touching that path (separate class; the galerkin MMS/regression reference is
+bit-identical).** Each §5 P1 gate (and the P1-plan acceptance bars 6–11), pass/fail + number + evidence:
+
+| # | §5 P1 gate / P1-plan bar | Verdict | Evidence |
+|---|--------------------------|---------|----------|
+| 6 | Lake-at-rest & near-flat exact (well-balanced); books machine-tight | **PASS** | upwind lake-at-rest held EXACTLY 1-D + 2-D (head differenced on edges → ~1e-16, depth held to machine through the solve), `eps_H`-independent (structural, can't be tuned to pass); closed-domain conservation ~2e-16; V books gap **−2.7e-10 m³** (48×30), **−2.4e-10** (96×60), **−1.7e-11** (field), vs `cum_rain` 26244 / 262 m³ — i.e. ≤1e-13·cum_rain (target was 1e-8). Galerkin near-flat/MMS untouched (separate class). Tests `test_lake_at_rest_is_held_exactly_{1d,2d}`, `test_lake_at_rest_independent_of_eps_H_1d`, `test_closed_domain_conserves_multistep_1d`, `test_tilted_v_catchment_conserves_2d`. |
+| 7 | **d ≥ −1e-12 WITHOUT any limiter** (the monotonicity headline) | **PASS** (1 characterized caveat) | the class carries NO positivity machinery. STEEP 5% front strict `d ≥ −1e-12` 1-D + 2-D (exactly where the galerkin path must engage its clip). On the canonical V (the 2% mild valley) the measured `run_min_d = −0.0` at all three meshes/scales — **no undershoot in practice.** **Honest caveat (not a fail, characterized):** the smoothed (tanh) selector is bit-strict monotone only where the front head-drop ≫ `eps_H`; on adversarially-sharp *mild-2%* mounds it shows a **geometry-dependent SUB-MM undershoot, 0 .. ~0.9 mm at `eps_H=1e-3`** (controller adjudication sweep, 24 geometries), with conservation machine-tight throughout — vs the galerkin limiter's cm-scale clip-and-rescale pathology it replaces. Sharpening `eps_H` to remove the last sub-mm hits a ~15× Newton-cost cliff for zero accuracy gain (B3), so 1e-3 is the chosen balance; semismooth Newton is the P2 fallback if a future fixture needs strict mild-front positivity (not indicated). Tests `test_front_advance_positive_without_limiter_1d`, `test_steep_front_positive_without_limiter_2d`. |
+| 8 | 1-D kinematic rising-limb analytic matched (to O(h)) | **PASS** | `d/d_eq = 1.000`, front position 20.00 m on the 100 m plane. Test `test_kinematic_wave_plane_hydrograph_1d`. |
+| 9 | V plateau → Q_eq ±3% at ≈48×30, mesh-convergent, oscillation ≤2% RMS; field-scale ≈1.0 where galerkin gave 0.876 | **PASS (by ~500×)** | **48×30: plateau 0.99994·Q_eq (0.006% err), oscillation RMS 0.013%.** 96×60: 0.99999, RMS 0.0036% — both error AND RMS shrink with h (mesh-convergent). **Field-scale (SCALE=0.1): 1.0000 exactly, vs galerkin's under-resolved 0.876** — the §8.3/F10 accuracy claim confirmed. Test `test_tilted_v_plateau_reaches_Qeq_2d` (pins ±3% at 48×30); runner `scratch/_v2d_upwind_V.py`, npz `scratch/v2d_upwind_{48x30,96x60,48x30_s0.1}.npz`. |
+| 10 | dt no longer pinned (measured vs galerkin ~5e-5) | **PASS — the tractability fix** | median dt at DT_MAX **1e-3** (min 1e-5), **0 rejected steps** on all three runs, vs the galerkin V pinned ~5e-5 (P0 full-window: ~1.5e-6) with **60,008 rejections / 39.5 h**. Upwind canonical V wall-clock: **0.43 s** (48×30), 2.3 s (96×60), 0.36 s (field) — the 39.5 h / 20×-over-bar cost (§8.4) is GONE because the sawtooth that drove the reason-4 churn is gone (V converges via reason 2/3; reason-4 here is benign floor stagnation, 0 rejections). |
+| 11 | Galerkin `OverlandProblem` path UNTOUCHED; full suite green | **PASS** | new scheme is a separate class `UpwindOverlandProblem`; `overland.py` not modified. Full suite **154 passed** (`pytest tests/` exit 0; = 136 P0 baseline + the 18 new `tests/test_overland_upwind.py`, all green). |
+
+**Carried decisions (locked by the spike, inputs to P2):**
+- **`eps_H = 1e-3` m** (smoothed-`tanh` upwind-selector head width) — chosen empirically in B3 (`scratch/_upwind_selector_probe.py`): 1e-3 is the balance of positivity (sharper buys no accuracy; 1e-2 undershoots ~2.4 mm) vs Newton robustness (a ~15× step blow-up below 1e-3 as `tanh`→`sign`).
+- **`eps_S = 1e-3`** (slope floor in the Manning conveyance root) — matches `overland.py`.
+- **`T_e` form:** 1-D `T_e = 1/L_e` (FD Laplacian); 2-D = the FV dual-mesh cotangent transmissibility (= the negated galerkin stiffness off-diagonal, pinned by `test_cotangent_T_e_equals_negated_stiffness_offdiagonal_2d`), with an **M-matrix guard** `T_e ≥ −1e-14` that holds on the structured box V and **raises loudly on an obtuse mesh** (`test_m_matrix_guard_{holds_on_structured_V,raises_on_obtuse_mesh}_2d`).
+- **Finite-difference (PETSc-colored) Jacobian + direct LU** (`snes.setUseFD(True)`), the ParFlow `UseJacobian False` precedent — proving the *scheme*, not an exact J. A hand/analytic Jacobian is the P2 performance item (FD cost is trivial at spike sizes, 0.4–2.3 s).
+
+**P2 productionization readiness:** the same edge scheme transfers to the realization-A top-facet ridge
+graph (`ds_top` triangulation edges) of `CoupledProblem`; λ / NCP / outlet / inlet terms unchanged; the
+galerkin limiter demoted to a tripwire assert. Full TDD per the three-tier routine (new Tier-1
+positivity-no-clip / conservation-no-clip / kinematic / V-plateau tests, suite green, galerkin path
+bit-identical, Tier-3 B4/B5 re-baseline with Arik sign-off). **Carry-forward risks** (none a P1 blocker):
+the sub-mm mild-front undershoot (gate 7 caveat) — quantify on the P3 swale and engage semismooth Newton
+only if it hurts that answer; the M-matrix guard is structured-mesh-only (unstructured/obtuse `T_e` is
+P2/P3, §7); O(h) upwind smearing on mm sheet flow (FCT/O3 is the P4 escape hatch if it measurably hurts
+the swale). **NEXT = P2** (productionize in `CoupledProblem`).
+
 ## 9. Artifacts
 - This plan; B6 deck `parflow/cases/tilted_v_catchment.py`; harness `benchmarks/build_comparison_tiltedv.py`
   + `make_comparison_tiltedv_html.py`; in-house runner `forward-model/scratch/_tiltedv_spike.py` (to be

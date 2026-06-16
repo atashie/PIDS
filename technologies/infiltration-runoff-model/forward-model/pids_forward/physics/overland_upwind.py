@@ -6,6 +6,16 @@ sawtooth (the "Defect A" Galerkin instability on convergence lines, B6 P0). This
 touch ``overland.py`` -- that galerkin path stays the MMS/regression reference; this is a
 separate scheme on its own class so the two can be compared head-to-head.
 
+P1 SPIKE VERDICT (B6, 2026-06-16): the scheme PASSES every parent-plan §5 P1 gate, most by orders
+of magnitude. On the canonical 2-D tilted-V it gives plateau 0.99994*Q_eq (oscillation RMS 0.013%,
+mesh-convergent), field-scale (SCALE=0.1) 1.0000*Q_eq vs the galerkin 0.876, books gap <=1e-13*cum_rain,
+the dt-pin LIFTED (median dt at DT_MAX, 0 rejected steps, 0.4 s vs the galerkin V's 39.5 h / 60k
+rejections), and NO limiter. The one characterized caveat is the sub-mm geometry-dependent mild-front
+undershoot (Positivity section below) -- on the actual V the measured run-min depth was -0.0. Full
+verdict + the P2 readiness/risks = parent plan `docs/plans/2026-06-11-overland-convergent-flow-stabilization.md`
+section 8.6. NEXT = P2 (productionize the same edge scheme on the realization-A top-facet ridge graph
+of ``CoupledProblem``; galerkin limiter demoted to a tripwire assert).
+
 The scheme (per the P1 plan, docs/plans/2026-06-14-overland-convergent-flow-P1.md, Part B).
 Surface head ``H = z_b + d``. The lateral conveyance is assembled as a finite-volume two-point
 flux on an EDGE GRAPH: for each edge ``e = (i, j)`` with transmissibility ``T_e``,
