@@ -77,6 +77,19 @@ def _feat_box(R_out, n):
     return feat
 
 
+def test_resolved_wall_probe_hook_bypasses_guard():
+    """Item C characterization hook (2026-06-15): allow_resolved_wall=True opts a scheme instance past
+    the resolved-wall refusal so the sweep can run the item-A driver at fine meshes. Default False keeps
+    the production refusal byte-identical (test_resolved_wall_regime_is_refused, above). Item A already
+    retired the negative-log on-ridge bridge, so the production driver is r_0-independent -- the witness
+    self.WI may be negative-log here but the rate path (ring read at R_out/2) never touches it."""
+    feat = _feat_box(2.0, 16)                              # h = 4.43 r_w: resolved-wall, ring resolvable
+    x = WellIndexExchange(allow_resolved_wall=True).setup(feat, LOAM, {"t0": 1e-4, "R_out": 2.0})
+    assert x.allow_resolved_wall is True
+    assert x.r0 <= 1.1 * R_W_DEFAULT                       # we ARE in the otherwise-refused regime
+    assert x.h < 5.5 * R_W_DEFAULT
+
+
 def test_disperse_requires_catchment_radius():
     """Item A (2026-06-13): the WI-era bridge now reads the resolved field at the catchment-radius
     midpoint R_out/2 (the on-ridge read was -7..-18% WET -- the localized WI-era residual;

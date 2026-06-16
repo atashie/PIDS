@@ -124,10 +124,15 @@ class WellIndexExchange:
     prescribed ridge rates; host-controlled in the WI era via the resolved R_out/2 read). DRAIN: the
     PSS depletion closure as a live-host-driven prescribed-rate ridge sink -- see the module docstring."""
 
-    def __init__(self, direction: str = "disperse"):
+    def __init__(self, direction: str = "disperse", allow_resolved_wall: bool = False):
         if direction not in ("disperse", "drain"):
             raise ValueError(f"direction must be 'disperse' or 'drain' (got {direction!r})")
         self.direction = direction
+        # Item C characterization hook (2026-06-15): default-off opt-in past the resolved-wall refusal,
+        # so the sweep can run the (r_0-independent, post-item-A) driver at fine meshes. Default False
+        # keeps production + test_resolved_wall_regime_is_refused byte-identical; a validated honest
+        # fence replaces the blanket refusal in production (item C plan).
+        self.allow_resolved_wall = bool(allow_resolved_wall)
 
     # -- lifecycle -------------------------------------------------------------
     def setup(self, feat, soil, ctx):
@@ -175,11 +180,12 @@ class WellIndexExchange:
         h = ctx.get("h") if isinstance(ctx, dict) else None
         self.h = float(h) if h else float(self._rho[off].min())
         self.r0 = R0_OVER_H_P1 * self.h
-        if self.r0 <= 1.1 * self._r_w:
+        if self.r0 <= 1.1 * self._r_w and not self.allow_resolved_wall:
             raise ValueError(
                 f"WellIndexExchange: resolved-wall regime refused (r_0={self.r0:.4f} m <= 1.1*r_w; "
                 f"h={self.h:.3f} m = {self.h/self._r_w:.1f} r_w; need h > ~5.5 r_w) -- outside the "
-                f"validated deployment regime; a resolved-wall coupling is a separate design task.")
+                f"validated deployment regime; pass allow_resolved_wall=True to characterize it "
+                f"(item C, 2026-06-15) -- a validated honest fence replaces this in production.")
         self.WI = 2.0 * np.pi / np.log(self.r0 / self._r_w)   # regime witness (the ring read uses r_ring)
         self.S, self.dth = feat.S_disp, feat.dth_disp
         self.dPhi_ref = feat.dPhi_ref_disp
