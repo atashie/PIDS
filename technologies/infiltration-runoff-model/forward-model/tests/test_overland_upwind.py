@@ -175,15 +175,18 @@ def test_front_advance_positive_without_limiter_1d():
     region (the regime that drives the galerkin undershoot), not sit frozen.
 
     CONDITIONALITY (stated here, NOT hidden -- B2 decision point 2): this strict ``d >= 0``
-    without a limiter holds because the selector is SHARP relative to this STEEP front's head-drop
-    (drop >> ``eps_H=1e-3``). On a MILD-slope front (~2%, head-drop comparable to ``eps_H``) at the
-    DEFAULT ``eps_H`` the smoothed (tanh) selector admits a small CENTERED flux and the scheme
-    shows a small front UNDERSHOOT (~1.5-1.6 mm, measured 2026-06-15 on the 2%-slope sharp mound --
-    comparable to the galerkin RAW pre-clip undershoot, which galerkin only HIDES by post-clipping).
-    Conservation stays machine-tight through that undershoot (~2e-16). So this is NOT a claim of
-    unconditional ``d >= 0`` at the default width: it is the clean STEEP regime; the B3
-    selector-width (``eps_H``) task removes the mild-front undershoot. The default ``eps_H`` is left
-    UNCHANGED at B2 (tightening it pre-empts B3 and could affect kinematic accuracy).
+    without a limiter holds because the selector is SHARP relative to the front head-drop (drop >>
+    ``eps_H``). The undershoot is governed by ``eps_H`` vs the front head-drop, NOT by the slope
+    alone. B3 (``scratch/_upwind_selector_probe.py``, 2026-06-15) swept ``eps_H`` and FIXED it at
+    1e-3 on exactly this trade: at the chosen ``eps_H=1e-3`` BOTH this steep 5% front AND the
+    canonical MILD 2% front (the B5 valley regime) are strictly positive (run-min ~6e-34); the
+    front undershoot only appears at a LOOSER width (~2.4 mm at ``eps_H=1e-2`` on the 2% front),
+    and even an adversarially sharp/tall 2% mound undershoots only <= ~0.36 mm at 1e-3. (The
+    pre-B3 note here once claimed ~1.5-1.6 mm "at the default eps_H" -- that was an OVER-claim;
+    that magnitude belongs to the looser ~1e-2 width. Corrected per P1-B3; see the module
+    docstring "Regularization (Decision 4)" table.) Conservation stays machine-tight regardless
+    (~2e-16). Sharpening below 1e-3 buys NO accuracy and costs Newton robustness (B3 table), so
+    the default ``eps_H=1e-3`` is KEPT.
 
     Reason-4 audit: this run books many reason-4 (SNORM-stagnation) steps, which B1 accepts without
     a residual-floor gate (deferred Part A). They are HONEST floor exits here, not dirty stalls: the
@@ -240,12 +243,13 @@ def test_closed_domain_conserves_multistep_1d():
     Scenario choice (honest, tied to the documented positivity CONDITIONALITY -- module docstring
     + ``test_front_advance...``): conservation is machine-tight REGARDLESS of any front undershoot
     (the telescoping flux network balances at every residual-converged root -- verified directly:
-    a 2%-slope SHARP mound undershoots to ~-1.6 mm at the default ``eps_H`` yet still drifts only
-    ~2e-16). To keep THIS gate a clean POSITIVE-and-conservative check per the B2 decision (point
-    4), the mound here sits on a WET BASE and is broad/gentle (1% slope, sigma 3) so no wet/dry
-    front forms and ``min(d)`` stays comfortably positive (~0.027 m) at the default width -- the
-    mild-front undershoot is NOT hidden, it is characterized in ``test_front_advance...``'s mild
-    note and removed by B3; here we simply isolate conservation from it.
+    even when a LOOSE-width 2% front undershoots a few mm, the budget still drifts only ~2e-16). To
+    keep THIS gate a clean POSITIVE-and-conservative check per the B2 decision (point 4), the mound
+    here sits on a WET BASE and is broad/gentle (1% slope, sigma 3) so no wet/dry front forms and
+    ``min(d)`` stays comfortably positive (~0.027 m) at the default width. (B3 since FIXED
+    ``eps_H=1e-3`` and showed even the canonical mild 2% FRONT is strictly positive at that width;
+    the few-mm undershoot was a LOOSER-width artifact -- module docstring "Regularization
+    (Decision 4)". This gate isolates conservation from positivity either way.)
     """
     msh = dmesh.create_interval(MPI.COMM_WORLD, 40, [0.0, 20.0])  # closed (no-flux) reach
     prob = UpwindOverlandProblem(msh, n_man=N_MAN)
