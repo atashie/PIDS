@@ -1,16 +1,18 @@
-"""Phase-4 production integration (DISPERSE-ONLY): the rate-clock + well-index exchange.
+"""Phase-4 production integration: the rate-clock + well-index exchange (disperse + drain).
 
 Pins `pids_forward.physics.wi_exchange.WellIndexExchange` -- the production form of the Phase-4
 prototype that passed the deployment-regime discriminating gate (RefA-40 2.2-5.7%, RefB-40 history
-5.0-5.4%, control 2.1-6.0%; offline clock 27-34%, retracted dual-scale 13-39%). SCOPE: disperse,
-positive-WI deployment regime (h > ~5.5 r_w); the drain direction is REFUSED (its sub-grid closure
-for closed domains is open research -- see scratch/m4_phase4_wi_probe.py header) and the
-resolved-wall regime is REFUSED (negative-log bridge = transiently unstable). ADVERSARIALLY
-REVIEWED 2026-06-11 (validation/sanity/m4_phase4_coupled_review__2026-06-11.md): host control is
-established for the WI era; the clock era is a prescribed-rate closure; within this disperse-only
-scope the capacity-clamped clock passive is killed by NO leg (its killers are the refused drain
-legs) -- the gate discriminates v2 from the RAW clock and the dual-scale, not from capacity-aware
-passives.
+5.0-5.4%, control 2.1-6.0%; offline clock 27-34%, retracted dual-scale 13-39%). SCOPE: BOTH
+directions (disperse rate-clock + WI ring read; drain PSS depletion -- a validated production
+direction, the drain_gate legs below). The DEPLOYMENT regime (h > ~5.5 r_w, field grids around a
+5 cm feature) is the original validated regime; the RESOLVED-WALL regime (h <= ~5.5 r_w, fine
+meshes) is now gated by the item-C HONEST FENCE (2026-06-16): auto-allow the validated band
+(disperse R_out>=40 r_w & h>=2.2 r_w; drain R_out>=20 r_w & h>=2.2 r_w), refuse the rest unless
+allow_resolved_wall=True (the resolved-wall sweep + the *_resolved_wall_* tests below). ADVERSARIALLY
+REVIEWED 2026-06-11 (validation/sanity/m4_phase4_coupled_review__2026-06-11.md) + Codex (item C,
+2026-06-16): host control is established for the WI era; the clock era is a prescribed-rate closure;
+the discrimination is ENSEMBLE -- the capacity-clamped passive is killed by the drain legs (the
+disperse legs discriminate v2 from the RAW clock + dual-scale, not capacity-aware passives).
 
 ITEM (B) NOTE (2026-06-15): the drain-leg docstrings below recorded an "end I/ref = 1.019/1.030/
 1.040/1.010 = the offline PSS law's own +2-4%". Item B REFUTED that model-form reading: the closed-

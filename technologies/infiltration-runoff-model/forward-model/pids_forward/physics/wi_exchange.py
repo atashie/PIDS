@@ -92,14 +92,18 @@ host bulk falls (fixed-drive twin fails refD40 at 74%; the original dof-mean rea
 (ctx["R_out"], required). Omega stays 0 in drain mode (pure prescription; capacity-safe: the rate
 hard-zeros as the bulk mean reaches the wall head).
 
-SCOPE GUARDS (refusals, not silent degradation):
-* DISPERSE positive-WI deployment regime only (r_0 = R0_OVER_H_P1*h > 1.1 r_w, i.e. h > ~5.5 r_w --
-  field grids around a 5 cm feature) AND ctx["R_out"] required (the WI-era ring read needs R_out/2).
-  This is the validated regime; finer (resolved-wall) meshes are a separate design task, refused with
-  ValueError (historically the on-ridge Peaceman bridge there was negative-log with a repelling BE
-  fixed point at handover, analyzed 2026-06-10; the item-A ring read is positive-log but is unvalidated
-  in the resolved-wall regime too).
-* DRAIN requires ctx["R_out"] (the PSS geometry); refused with ValueError without it.
+SCOPE GUARDS (refusals/honest fence, not silent degradation):
+* The DEPLOYMENT regime (h > ~5.5 r_w, field grids around a 5 cm feature) is always allowed; ctx["R_out"]
+  is required for BOTH directions (disperse: the WI-era R_out/2 ring read; drain: the PSS geometry).
+* The RESOLVED-WALL regime (h <= ~5.5 r_w, fine meshes) is gated by the item-C HONEST FENCE (2026-06-16;
+  the _RW_* constants + _resolved_wall_fence): the post-item-A driver is r_0-INDEPENDENT (the negative-log
+  on-ridge bridge was retired), so resolved-wall is tractable, and the resolved-wall sweep VALIDATED the
+  realistic deployment band. AUTO-ALLOWED (no opt-in): disperse R_out >= 40 r_w AND h >= 2.2 r_w; drain
+  R_out >= 20 r_w AND h >= 2.2 r_w (drain is mass-based -- no R_out/2 ring read -- so it is R_out-robust).
+  Smaller-R_out / finer-h resolved-wall meshes are UNVALIDATED and refused unless allow_resolved_wall=True
+  (the probe/escape hatch). The analytic mode-2 boundary (2h<=r_w) was REFUTED; the drain dt-collapse at
+  very fine mesh is a separate solver limit, not encoded here. (The old blanket r_0<=1.1 r_w refusal --
+  the negative-log-bridge era -- is gone; that hazard never reached the item-A driver.)
 
 USAGE (the step contract, harness-compatible -- scratch/m4_phase4_embedded_harness.py is the
 reference driver): the host residual carries the prescribed ridge rate from pre_step's return as a
@@ -145,10 +149,10 @@ class WellIndexExchange:
         if direction not in ("disperse", "drain"):
             raise ValueError(f"direction must be 'disperse' or 'drain' (got {direction!r})")
         self.direction = direction
-        # Item C characterization hook (2026-06-15): default-off opt-in past the resolved-wall refusal,
-        # so the sweep can run the (r_0-independent, post-item-A) driver at fine meshes. Default False
-        # keeps production + test_resolved_wall_regime_is_refused byte-identical; a validated honest
-        # fence replaces the blanket refusal in production (item C plan).
+        # Item C opt-in/escape hatch (2026-06-15): forces past the resolved-wall honest fence
+        # (_resolved_wall_fence) to run the (r_0-independent, post-item-A) driver on UNVALIDATED
+        # resolved-wall meshes (smaller R_out / finer h than the validated band). Default False = the
+        # production fence; the sweep used True to characterize the band (scratch/m4_phase4_resolved_wall.py).
         self.allow_resolved_wall = bool(allow_resolved_wall)
 
     def _resolved_wall_fence(self, h, R_out):
