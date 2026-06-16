@@ -116,6 +116,14 @@ if __name__ == "__main__":
         for n in (24, 36):                                  # R10: mode-2 BRACKET at R_out/2=5 r_w (cleaner
             disperse_leg(10 * R_W, n, "LOAM_R10_t", "LOAM_R10_I", "LOAM_R10_Imax",  # than R3 for locating
                          "LOAM_S", "LOAM_dtheta", f"RefA10 n{n} m2")               # the degeneracy; Codex #2)
+    if which in ("rsweep", "all"):
+        # Codex results-review #3: disambiguate R_out vs h for the R10 failure. Fixed-h anchors
+        # (R10 n8 h=2.20 vs R40 n32 h=2.21, both PASS-or-not at the SAME h) + the per-R_out h-trend.
+        # Diagnostic legs (embedded relL2 isolates the variable); R5/R10 are non-discriminating
+        # depletion-wise (small twin) -- read the relL2 column, not pass/fail. R20 has no disperse ref.
+        for (R, n) in [(5, 8), (5, 16), (10, 8), (10, 16)]:
+            disperse_leg(R * R_W, n, f"LOAM_R{R}_t", f"LOAM_R{R}_I", f"LOAM_R{R}_Imax",
+                         "LOAM_S", "LOAM_dtheta", f"RefA{R} n{n}")
     if which in ("killmap", "all"):                         # Codex (b): the passive must still DIE at fine
         from scratch.m4_phase4_embedded_harness import DualScaleScheme  # mesh (the gate still discriminates)
         ref = np.load(A)
