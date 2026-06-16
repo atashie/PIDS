@@ -271,8 +271,10 @@ class UpwindOverlandProblem:
         from ``1/L_e`` (1-D) to the cotangent ``T_e`` (2-D).
 
         M-MATRIX GUARD (loud). Monotonicity REQUIRES ``T_e >= 0``. On a structured ``create_rectangle``
-        box the right-triangle split gives non-negative weights (axis edges: cot(90 deg)=0; diagonal
-        edges: acute-angle cotangents > 0). If any ``T_e < -1e-14`` (obtuse triangles / a bad split)
+        box the right-triangle split gives non-negative weights: the DIAGONAL (hypotenuse) edges are
+        opposite the right angle so cot(90 deg)=0 (verified: T_e=0 on all diagonals), and the AXIS
+        edges are opposite acute angles so they carry the positive cotangents (T_e in [0.5, 1.0] on a
+        unit-square grid). If any ``T_e < -1e-14`` (obtuse triangles / a bad split)
         we RAISE, naming the offending edge -- the scheme is non-monotone otherwise. MESH RESTRICTION:
         structured box / Delaunay, NON-OBTUSE. (Unstructured/obtuse transmissibility is P2/P3.)
 

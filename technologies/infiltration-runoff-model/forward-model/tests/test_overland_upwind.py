@@ -372,8 +372,9 @@ def test_outflow_bc_rejects_nonpositive_slope_1d():
 # nodal area A_i (the lumped P1 mass int phi_i dx, sum = domain area). The node-residual
 # telescoping, smoothed-upwind selector, Manning mobility, SNES (FD-Jacobian + LU) and eps_H/eps_S
 # are IDENTICAL to 1-D. Monotonicity needs T_e >= 0 (the M-matrix property), which holds on the
-# structured box V (right-triangle split: axis edges get cot(90 deg)=0, diagonal edges get acute
-# cotangents > 0) and is GUARDED loudly. Mesh restriction: structured box / Delaunay non-obtuse.
+# structured box V (right-triangle split: DIAGONAL/hypotenuse edges get cot(90 deg)=0, AXIS edges
+# get the acute cotangents > 0; verified by probe) and is GUARDED loudly. Mesh restriction:
+# structured box / Delaunay non-obtuse.
 
 TRI = dmesh.CellType.triangle  # the 2-D cell type used throughout the B4 gates
 
@@ -415,9 +416,9 @@ def test_m_matrix_guard_holds_on_structured_V_2d():
     """M-MATRIX guard: every edge weight T_e >= 0 on the structured box V (monotonicity req).
 
     On a ``create_rectangle`` triangle mesh the right-angle split gives non-negative cotangent
-    weights: the axis edges get cot(90 deg) = 0 from the right angle, the diagonal/hypotenuse
-    edges get acute-angle cotangents > 0. So min(T_e) = 0 (>= -1e-14). The class asserts this in
-    its constructor; here we re-pin it on the mesh B5 will actually use.
+    weights: the DIAGONAL/hypotenuse edges get cot(90 deg) = 0 (opposite the right angle), the
+    AXIS edges get acute-angle cotangents > 0 (T_e in [0.5,1.0]). So min(T_e) = 0 (>= -1e-14). The
+    class asserts this in its constructor; here we re-pin it on the mesh B5 will actually use.
     """
     msh = dmesh.create_rectangle(MPI.COMM_WORLD, [(0.0, 0.0), (2.0, 1.0)], [16, 8],
                                  cell_type=TRI)
