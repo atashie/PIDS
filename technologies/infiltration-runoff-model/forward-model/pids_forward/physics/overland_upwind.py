@@ -173,6 +173,8 @@ from dolfinx import mesh as dmesh  # B5: locate_entities_boundary + meshtags for
 from mpi4py import MPI
 from petsc4py import PETSc
 
+from .overland_edge_kernel import build_edge_graph_2d, edge_flux_residual
+
 SECONDS_PER_DAY = 86400.0
 
 
@@ -311,80 +313,11 @@ class UpwindOverlandProblem:
         correct 2-D control area; ``sum_i A_i = domain area`` so ``total_water = sum d_i A_i = int d dx``,
         matching the galerkin ``OverlandProblem.total_water`` lumped integral exactly.
         """
-        from dolfinx.fem.petsc import assemble_vector
-
-        tdim = self.mesh.topology.dim
-        top = self.mesh.topology
-        top.create_connectivity(tdim, 0)   # cell -> vertices (for the dof map + cotangents)
-        top.create_connectivity(1, 0)      # edge -> vertices
-        top.create_connectivity(1, tdim)   # edge -> cells (1 or 2 triangles per edge)
-        c2v = top.connectivity(tdim, 0)
-        e2v = top.connectivity(1, 0)
-        e2c = top.connectivity(1, tdim)
-        n_cells = top.index_map(tdim).size_local
-        n_verts = top.index_map(0).size_local
-        n_edges = top.index_map(1).size_local
-        x = self.mesh.geometry.x  # vertex coordinates (gdim columns)
-
-        # vertex -> P1 dof, from the cell-local correspondence (robust; matches cell_dofs order).
-        vtx_to_dof = np.full(n_verts, -1, dtype=np.int64)
-        for c in range(n_cells):
-            verts = c2v.links(c)
-            dofs = self.V.dofmap.cell_dofs(c)
-            for k in range(len(verts)):
-                vtx_to_dof[verts[k]] = dofs[k]
-
-        def _cot_opposite(tri, vi, vj):
-            """cotangent of the angle at the third (opposite) vertex of ``tri`` for edge vi-vj."""
-            vk = [v for v in tri if v != vi and v != vj]
-            k = int(vk[0])
-            u = x[vi] - x[k]
-            w = x[vj] - x[k]
-            cross = u[0] * w[1] - u[1] * w[0]      # 2-D cross-product z-component (= 2*area, signed)
-            dot = u[0] * w[0] + u[1] * w[1]
-            return dot / abs(cross)                # cot = cos/sin = (u.w)/|u x w|
-
-        edges = np.empty((n_edges, 2), dtype=np.int32)
-        L_e = np.empty(n_edges, dtype=np.float64)
-        T_e = np.zeros(n_edges, dtype=np.float64)
-        for e in range(n_edges):
-            vi, vj = (int(v) for v in e2v.links(e))
-            di, dj = int(vtx_to_dof[vi]), int(vtx_to_dof[vj])
-            edges[e] = (di, dj)
-            L_e[e] = float(np.linalg.norm(x[vi] - x[vj]))
-            s = 0.0
-            for c in e2c.links(e):
-                s += 0.5 * _cot_opposite(c2v.links(c), vi, vj)
-            T_e[e] = s
-
-        # M-MATRIX GUARD: loud failure on any negative transmissibility (obtuse triangle / bad split).
-        if T_e.min() < -1e-14:
-            bad = int(np.argmin(T_e))
-            i, j = int(edges[bad, 0]), int(edges[bad, 1])
-            raise ValueError(
-                "M-matrix property violated: the cotangent transmissibility is NEGATIVE on edge "
-                f"(dofs {i}, {j}), T_e = {T_e[bad]:.6e} < -1e-14. The monotone upwind scheme REQUIRES "
-                "T_e >= 0 for every edge (an obtuse opposite angle gives cot < 0 -> an anti-diffusive "
-                "edge that breaks the discrete maximum principle). UpwindOverlandProblem is restricted "
-                "to structured-box / Delaunay NON-OBTUSE triangulations; remesh (a structured "
-                "create_rectangle box, or a Delaunay mesh) so all opposite angles are <= 90 degrees."
-            )
-
-        # A_i = lumped P1 mass int phi_i dx (vertex quadrature); sum_i A_i = domain area.
-        v = ufl.TestFunction(self.V)
-        mass_form = fem.form(
-            v * ufl.dx(metadata={"quadrature_rule": "vertex", "quadrature_degree": 1})
-        )
-        bm = assemble_vector(mass_form)
-        bm.assemble()
-        A_i = bm.getArray()[: self.n_dofs].copy()
-        bm.destroy()
-
-        self.edges = edges                 # (n_edges, 2) int32 dof pairs (i, j)
-        self.L_e = L_e                     # (n_edges,) edge lengths [m] (for the Manning slope)
-        self.T_e = T_e                     # (n_edges,) cotangent transmissibility [-] (>= 0, guarded)
-        self.A_i = A_i                     # (n_dofs,) lumped P1 control areas [m^2]; sum = domain area
-        self.n_edges = n_edges
+        # Extracted to the shared kernel (Convergent-flow P2-A1, DRY) so the coupled solver reuses
+        # the SAME graph math; bit-identical to the prior in-class body (pinned by
+        # tests/test_overland_edge_kernel.py + the full standalone suite staying green).
+        self.edges, self.L_e, self.T_e, self.A_i = build_edge_graph_2d(self.V, self.mesh)
+        self.n_edges = self.edges.shape[0]
 
     # -- custom PETSc SNES (FD Jacobian + LU, Decision 3) ---------------------
     def _setup_snes(self) -> None:
@@ -440,45 +373,14 @@ class UpwindOverlandProblem:
         ``+Q_e`` for the i-row, ``-Q_e`` for the j-row. No-flux boundaries are automatic: a
         boundary node has fewer incident edges, so its residual simply omits the absent flux.
         """
+        # Extracted to the shared kernel (Convergent-flow P2-A1, DRY); bit-identical to the prior
+        # in-class body (pinned by tests/test_overland_edge_kernel.py + the standalone suite).
         d = x.getArray(readonly=True)
-        z_b = self.z_b.x.array
-        d_n = self.d_n.x.array
-
-        # Lumped storage + rain source (per node). Edge fluxes are accumulated on top below.
-        R = (d - d_n) * self.A_i / self.dt - self.rain * self.A_i
-
-        i = self.edges[:, 0]
-        j = self.edges[:, 1]
-        H_i = z_b[i] + d[i]
-        H_j = z_b[j] + d[j]
-        dH = H_i - H_j                                   # edge head drop (i - j)
-        slope = dH / self.L_e                            # signed edge slope
-
-        # Smoothed C1 upstream weight: w -> 1 when H_i >> H_j (take d_i), -> 0 when H_j >> H_i.
-        w = 0.5 * (1.0 + np.tanh(dH / self.eps_H))
-        d_up = w * d[i] + (1.0 - w) * d[j]
-        d_up_pos = np.maximum(d_up, 0.0)                 # guard the fractional power
-        slope_root = (slope * slope + self.eps_S ** 2) ** 0.25  # Manning slope floor (inside root)
-        M = SECONDS_PER_DAY * d_up_pos ** (5.0 / 3.0) / (self.n_man * slope_root)
-        Q_e = self.T_e * M * dH                          # edge flux (>0: i -> j)
-
-        # Telescoping accumulation: +Q_e on the i-row, -Q_e on the j-row (np.add.at handles the
-        # repeated indices of interior nodes shared by two edges).
-        np.add.at(R, i, Q_e)
-        np.add.at(R, j, -Q_e)
-
-        # Outflow sinks (B2; B5 length-weights for the 2-D LINE outlet): water LEAVES the located
-        # outlet node(s), so q_out enters that node's residual with a PLUS sign (mirroring the
-        # galerkin ``+q_out v ds`` boundary sink, whose ``ds`` supplies exactly this length factor).
-        # q_out is the per-unit-width Manning normal-depth discharge [m^2/day] at the node's depth;
-        # multiplying by the node's boundary control length ``B`` makes the sink VOLUMETRIC
-        # [m^3/day] in 2-D (B = the node's outlet-edge length) and leaves the 1-D point outlet
-        # unchanged (B = 1.0). ``max(d,0)`` guards the fractional power.
-        for dofs, slope, B in self._outflows:
-            q_out = (SECONDS_PER_DAY * (1.0 / self.n_man)
-                     * np.maximum(d[dofs], 0.0) ** (5.0 / 3.0) * np.sqrt(slope)) * B
-            np.add.at(R, dofs, q_out)
-
+        R = edge_flux_residual(
+            d, self.z_b.x.array, self.d_n.x.array, self.rain, self.dt,
+            self.edges, self.L_e, self.T_e, self.A_i, self.n_man, self.eps_S, self.eps_H,
+            self._outflows,
+        )
         b.setArray(R)
 
     # -- problem setup (mirror OverlandProblem's public interface) ------------
