@@ -156,3 +156,55 @@ def test_top_facet_m_matrix_guard_holds_on_structured_box_3d():
 
     assert T_e.min() >= -1e-14, f"M-matrix violated on the box top: min T_e = {T_e.min():.3e}"
     assert len(edges) > 0 and msh.topology.dim == 3
+
+
+def test_edge_flux_residual_sums_to_zero_3d():
+    """The CONSERVATION ROOT on the top-facet graph: with storage cancelled (d == d_n), no rain and
+    no outlet, the residual is purely the lateral edge flux, which telescopes to EXACTLY zero over
+    the closed surface (every interior edge adds +Q_e to one row, -Q_e to the other). This is why
+    coupled conservation is structural. The flux itself is genuinely nonzero (a tilted bed)."""
+    from dolfinx import fem
+
+    msh = dmesh.create_box(MPI.COMM_WORLD, [[0.0, 0.0, 0.0], [2.0, 1.0, 1.0]], [6, 3, 3])
+    V = fem.functionspace(msh, ("Lagrange", 1))
+    tf, top_dofs, _ztop = _top_facets_dofs(msh, V)
+    edges, L_e, T_e, A_i = build_top_facet_edge_graph(V, msh, tf)
+
+    n = V.dofmap.index_map.size_local
+    coords = V.tabulate_dof_coordinates()
+    rng = np.random.default_rng(1)
+    z_b = 0.05 * coords[:n, 0] + 0.02 * coords[:n, 1]          # tilted bed -> non-flat H
+    d = np.zeros(n)
+    d[top_dofs] = 0.01 + 0.02 * rng.random(len(top_dofs))      # random positive surface depths
+
+    R = edge_flux_residual(d, z_b, d, 0.0, 1.0, edges, L_e, T_e, A_i, N_MAN, 1e-3, 1e-3)
+
+    assert abs(R.sum()) < 1e-12, f"lateral flux did not telescope to zero: sum={R.sum():.3e}"
+    assert np.abs(R).max() > 1e-6, "flux is trivially zero -- the test is not exercising redistribution"
+
+
+def test_top_facet_lake_at_rest_residual_at_roundoff_floor_3d():
+    """Well-balancedness on the top-facet graph: a still pond (uniform head H = z_b + d) over a
+    TILTED bed produces NO spurious downslope flux. The scheme differences H, not d, so every edge
+    head drop is zero up to the ~1e-16 roundoff in summing the two separately-stored fields z_b + d;
+    the conveyance amplifies that to a tiny residual (~1e-9 here), NOT the O(1e3-1e4) a depth-
+    differencing scheme would spuriously drive down the bed slope. (The pond's DEPTH being held to
+    machine precision is a SOLVE property -- a Part-B coupled test once the solver drives this
+    residual to its floor; see the standalone module docstring.)"""
+    from dolfinx import fem
+
+    msh = dmesh.create_box(MPI.COMM_WORLD, [[0.0, 0.0, 0.0], [2.0, 1.0, 1.0]], [6, 3, 3])
+    V = fem.functionspace(msh, ("Lagrange", 1))
+    tf, top_dofs, _ztop = _top_facets_dofs(msh, V)
+    edges, L_e, T_e, A_i = build_top_facet_edge_graph(V, msh, tf)
+
+    n = V.dofmap.index_map.size_local
+    coords = V.tabulate_dof_coordinates()
+    z_b = 0.05 * coords[:n, 0] + 0.02 * coords[:n, 1]
+    d = np.zeros(n)
+    d[top_dofs] = 0.30 - z_b[top_dofs]                          # H = z_b + d = 0.30 (uniform to roundoff)
+
+    R = edge_flux_residual(d, z_b, d, 0.0, 1.0, edges, L_e, T_e, A_i, N_MAN, 1e-3, 1e-3)
+
+    # roundoff-amplified floor, NOT a spurious O(1e3-1e4) downslope flux: well-balanced on H.
+    assert np.abs(R).max() < 1e-6, f"spurious downslope flux: max|R| = {np.abs(R).max():.3e}"
