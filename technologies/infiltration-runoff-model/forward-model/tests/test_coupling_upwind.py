@@ -15,6 +15,7 @@ in all dimensions.
 import numpy as np
 import pytest
 from mpi4py import MPI
+from petsc4py import PETSc
 from dolfinx import mesh as dmesh, fem
 from dolfinx.fem.petsc import assemble_vector
 
@@ -60,3 +61,87 @@ def test_upwind_reduced_Fd_omits_lateral_flux():
     bu = assemble_vector(fem.form(u.F_d)); bu.assemble()
     assert np.abs(bg.getArray() - bu.getArray()).max() > 1e-3
     bg.destroy(); bu.destroy()
+
+
+# -- Task B2: the custom block-SNES (residual + Picard d-d Jacobian) -----------
+
+def test_upwind_step_converges_3d():
+    """A coupled upwind step solves cleanly (the custom block-SNES residual + Picard Jacobian
+    drive the [psi,d,lam] Newton to convergence) on a tilted ponding box."""
+    prob = CoupledProblem(_box(5, 5, 3), SOIL, overland_scheme="upwind")
+    prob.set_topography(lambda x: 0.05 * (2.0 - x[0]))
+    prob.set_initial_condition(lambda x: -1.0 + 0.0 * x[0], d_value=0.05)
+    prob.add_rain(0.3)
+    converged, iters = prob.step(1e-3)
+    assert converged and prob.last_reason > 0
+    assert np.all(np.isfinite(prob.d.x.array))
+
+
+def test_upwind_block_jacobian_no_malloc_3d():
+    """Codex blocker #1 DISSOLVED: the consistent ds_top storage-mass Jacobian already preallocates
+    every top-facet d-d coupling, so the Picard edge-flux Jacobian inserts with NO new allocation.
+    Setting NEW_NONZERO_ALLOCATION_ERR before the first solve makes a missing slot raise loudly."""
+    prob = CoupledProblem(_box(5, 5, 3), SOIL, overland_scheme="upwind")
+    prob.set_topography(lambda x: 0.05 * (2.0 - x[0]))
+    prob.set_initial_condition(lambda x: -1.0 + 0.0 * x[0], d_value=0.05)
+    prob.add_rain(0.3)
+    prob._ensure_problem()                                  # build _A + wire callbacks (no solve yet)
+    prob._problem._A.setOption(PETSc.Mat.Option.NEW_NONZERO_ALLOCATION_ERR, True)
+    converged, _ = prob.step(1e-3)                          # first Jacobian assembly inserts edge entries
+    assert converged                                       # completed -> the edge nonzeros were preallocated
+
+
+def test_upwind_closed_conservation_3d():
+    """The key solver gate: a CLOSED tilted box (no outlet/drainage) under ponding rain conserves
+    total water EXACTLY -- Delta total == cumulative rain. Exercises infiltration + the monotone
+    lateral edge flux (water ponds and routes downslope, accumulating; nothing leaves) and confirms
+    the edge flux telescopes to zero (no spurious mass) without the limiter clipping."""
+    Lx, Ly = 2.0, 1.0
+    prob = CoupledProblem(_box(6, 6, 4, Lx=Lx, Ly=Ly), SOIL, overland_scheme="upwind")
+    prob.set_topography(lambda x: 0.05 * (Lx - x[0]))      # tilt toward x=0 -> lateral routing
+    prob.set_initial_condition(lambda x: -2.0 + 0.0 * x[0], d_value=0.0)
+    w0 = prob.total_water()
+    rate, t_end = 0.5, 0.1                                  # > Ks=0.25 -> mild ponding + routing
+    prob.add_rain(rate)
+    prob.advance(t_end=t_end, dt=1e-3, dt_max=0.02)
+    cum_rain = rate * Lx * Ly * t_end
+
+    assert abs((prob.total_water() - w0) - cum_rain) / cum_rain < 1e-6
+    assert prob.total_water() - w0 > 0.5 * cum_rain        # rain genuinely entered
+    assert prob.d.x.array.min() >= -1e-12                  # monotone: no negative depth
+    assert abs(prob.clip_mass_adjust) < 1e-9              # the limiter never had to clip
+    assert np.all(np.isfinite(prob.d.x.array)) and np.all(np.isfinite(prob.psi.x.array))
+
+
+def test_upwind_coupled_jacobian_matches_fd_smoke_3d():
+    """Codex should-fix: a COUPLED-level Jacobian check (the kernel FD-verify is necessary but NOT
+    sufficient -- it cannot catch block-offset / sign / BC bugs in the edge block once inserted into
+    the [psi,d,lam] block matrix). At a plausible solved state, the assembled block Jacobian action
+    J*delta matches a central finite-difference of the FULL assembled coupled residual along a random
+    direction, with the interior pins active."""
+    prob = CoupledProblem(_box(5, 5, 3), SOIL, overland_scheme="upwind")
+    prob.set_topography(lambda x: 0.05 * (2.0 - x[0]))
+    prob.set_initial_condition(lambda x: -1.0 + 0.0 * x[0], d_value=0.05)
+    prob.add_rain(0.3)
+    prob.step(1e-3)                                         # advance to a plausible coupled state
+
+    snes = prob._problem.solver
+    A = prob._problem._A
+    x = snes.getSolution().copy()
+    snes.computeJacobian(x, A, A)                           # assemble J (UFL + edge block) at x
+
+    rng = np.random.default_rng(3)
+    delta = x.duplicate()
+    with delta.localForm() as dl:
+        dl.array[:] = rng.standard_normal(dl.array.size)
+    delta.scale(1.0 / delta.norm())
+
+    Jd = x.duplicate(); A.mult(delta, Jd)                   # J * delta
+    eps = 1e-6
+    Fp = x.duplicate(); Fm = x.duplicate()
+    xp = x.copy(); xp.axpy(eps, delta); snes.computeFunction(xp, Fp)
+    xm = x.copy(); xm.axpy(-eps, delta); snes.computeFunction(xm, Fm)
+    fd = Fp - Fm; fd.scale(1.0 / (2.0 * eps))              # central FD of the full coupled residual
+
+    rel = (Jd - fd).norm() / max(fd.norm(), 1e-30)
+    assert rel < 1e-5, f"coupled J*delta vs FD mismatch: rel err {rel:.2e}"

@@ -40,7 +40,11 @@ from petsc4py import PETSc
 
 from .richards import richards_bulk_residual
 from .overland import overland_conveyance, SECONDS_PER_DAY
-from .overland_edge_kernel import build_top_facet_edge_graph, edge_flux_residual
+from .overland_edge_kernel import (
+    build_top_facet_edge_graph,
+    edge_flux_jacobian_dd,
+    edge_flux_residual,
+)
 
 
 def _fischer_burmeister(a, b, eps):
@@ -543,6 +547,75 @@ class CoupledProblem:
                 petsc_options_prefix="coupled_", petsc_options=self._petsc_options,
                 kind="mpi",  # monolithic block AIJ so a single LU factorizes the coupled operator
             )
+            if self.overland_scheme == "upwind":
+                self._wire_upwind_callbacks(self._problem)
+
+    # -- upwind lateral flux (Convergent-flow P2): inject into the coupled block-SNES ----------
+    def _wire_upwind_callbacks(self, problem) -> None:
+        """Override the coupled block-SNES residual/Jacobian callbacks to carry the monotone edge
+        flux on the d-block (the lateral conveyance the reduced UFL F_d omits, P2-B1).
+
+        The galerkin path solves [psi,d,lam] with DOLFINx's auto-Jacobian over the UFL forms. The
+        upwind path REUSES that machinery: DOLFINx's own ``assemble_residual``/``assemble_jacobian``
+        run first (they update psi,d,lam from x, do the block assembly + BC lifting), then we ADD --
+        on the d-block only -- the non-UFL lateral edge-flux residual and a frozen-mobility (Picard)
+        d-d Jacobian (the exact analytic Jacobian is Part C). Because the reduced F_d KEEPS the
+        consistent ds_top surface-storage mass, the auto-Jacobian already preallocates every
+        top-facet d-d coupling, so the Picard block inserts into existing nonzeros (no MALLOC; pinned
+        by test). Conservation stays structural (the edge flux telescopes to zero; lambda pairing
+        untouched). The edge graph is geometry-only (built in __init__), so set_topography/add_rain
+        invalidating the problem (->None) re-wires automatically.
+
+        SERIAL-ONLY (P2): the top-facet edge graph + the [psi|d|lam] block d-offset assume
+        single-rank ownership (no ghost top edges); multi-rank is a guarded future item.
+        """
+        if self.mesh.comm.size > 1:
+            raise NotImplementedError(
+                "overland_scheme='upwind' is serial-only for now (the top-facet edge graph + block "
+                "d-offset assume single-rank ownership). Multi-rank needs ownership-aware edges + "
+                "ghosted reads -- deferred; run serial.")
+        from dolfinx.fem.petsc import assemble_residual as _ar, assemble_jacobian as _aj
+        snes = problem.solver
+        u, Fforms, Jforms, pre = problem._u, problem._F, problem._J, problem._preconditioner
+        bcs = self._bcs
+        N = self.Vd.dofmap.index_map.size_local   # d is block field 1 of 3 equal-size fields -> [N:2N]
+
+        def _residual(snes_, x, b):
+            _ar(u, Fforms, Jforms, bcs, snes_, x, b)   # parent: assign x->u, assemble block F, lift BCs
+            d = self.d.x.array                         # now the current iterate (assigned above)
+            flux = edge_flux_residual(                 # storage/rain/outlet already in UFL -> d_n=d,
+                d[:N], self.z_b.x.array, d[:N], 0.0, 1.0,   # rain=0, no outflow => the PURE lateral flux
+                self._upwind_edges, self._upwind_L_e, self._upwind_T_e, self._upwind_A_i,
+                self.n_man, self.eps_S, self.eps_H, ())
+            with b.localForm() as bl:
+                bl.array[N:2 * N] += flux              # add to the d-block (0 on pinned interior rows)
+
+        def _jacobian(snes_, x, J, P):
+            _aj(u, Jforms, pre, bcs, snes_, x, J, P)   # parent: assign x->u, auto-J (storage/lam), assemble
+            self._add_edge_jacobian(J, N)              # + numerical d-d edge-flux block (no malloc)
+
+        snes.setFunction(_residual, problem._b)
+        snes.setJacobian(_jacobian, problem._A, problem._P_mat)
+
+    def _add_edge_jacobian(self, J, N) -> None:
+        """Add the numerical edge-flux Jacobian to the d-d block of J at offset (N,N).
+
+        The shipped P2 coupled-Newton block (Convergent-flow P2; Codex-recommended numerical edge
+        Jacobian). The frozen-mobility Picard form was tried first and STALLED on ponding fronts
+        (it drops dM/dd + the tanh-selector derivative, which sharpen at wet/dry fronts -- reason-4
+        line-search stall at all dt); the vectorized per-edge central-FD Jacobian (``edge_flux_
+        jacobian_dd``, FD-verified vs the residual) converges. The (N+i,N+j) slots already exist
+        (consistent ds_top storage mass) -> ADD_VALUES, no new allocation. (Hand-analytic Jacobian
+        is a documented future performance optimization; the per-edge FD is O(n_edges).)
+        """
+        rows, cols, vals = edge_flux_jacobian_dd(
+            self.d.x.array, self.z_b.x.array, self._upwind_edges, self._upwind_L_e,
+            self._upwind_T_e, self.n_man, self.eps_S, self.eps_H)
+        add = PETSc.InsertMode.ADD_VALUES
+        sv = J.setValue
+        for r, c, v in zip(rows, cols, vals):
+            sv(N + int(r), N + int(c), float(v), addv=add)  # serial: global == block idx; dups accumulate
+        J.assemble()
 
     # -- positivity limiter ---------------------------------------------------
     def _enforce_positivity(self) -> float:

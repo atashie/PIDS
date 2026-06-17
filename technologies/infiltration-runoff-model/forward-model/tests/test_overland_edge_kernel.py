@@ -19,6 +19,7 @@ from pids_forward.physics.overland_upwind import UpwindOverlandProblem
 from pids_forward.physics.overland_edge_kernel import (
     build_edge_graph_2d,
     build_top_facet_edge_graph,
+    edge_flux_jacobian_dd,
     edge_flux_residual,
 )
 
@@ -208,3 +209,36 @@ def test_top_facet_lake_at_rest_residual_at_roundoff_floor_3d():
 
     # roundoff-amplified floor, NOT a spurious O(1e3-1e4) downslope flux: well-balanced on H.
     assert np.abs(R).max() < 1e-6, f"spurious downslope flux: max|R| = {np.abs(R).max():.3e}"
+
+
+# -- the d-d edge-flux Jacobian (the coupled block-SNES Newton block, P2-B2) ---
+
+def test_edge_flux_jacobian_dd_matches_full_central_fd_2d():
+    """The shipped numerical edge Jacobian (vectorized per-edge FD) must assemble the CORRECT full
+    d-d Jacobian: dense(edge_flux_jacobian_dd) == a full central finite-difference of the pure
+    lateral edge-flux residual, at a random non-flat positive state. This is the Newton block the
+    coupled block-SNES inserts; the per-edge locality (Q_e depends only on its two endpoints) is
+    what the comparison validates."""
+    msh = dmesh.create_rectangle(MPI.COMM_WORLD, [(0.0, 0.0), (2.0, 1.0)], [8, 4], cell_type=TRI)
+    prob = UpwindOverlandProblem(msh, n_man=N_MAN)
+    edges, L_e, T_e, A_i = build_edge_graph_2d(prob.V, msh)
+    n = prob.n_dofs
+    rng = np.random.default_rng(2)
+    coords = prob.V.tabulate_dof_coordinates()
+    z_b = 0.05 * coords[:n, 0] + 0.03 * coords[:n, 1]
+    d = 0.01 + 0.05 * rng.random(n)                          # positive, non-flat
+
+    rows, cols, vals = edge_flux_jacobian_dd(d, z_b, edges, L_e, T_e, N_MAN, 1e-3, 1e-3)
+    J = np.zeros((n, n))
+    np.add.at(J, (rows, cols), vals)
+
+    def _flux(dd):
+        return edge_flux_residual(dd, z_b, dd, 0.0, 1.0, edges, L_e, T_e, A_i, N_MAN, 1e-3, 1e-3)
+    h = 1e-6
+    Jfd = np.zeros((n, n))
+    for k in range(n):
+        dp = d.copy(); dp[k] += h
+        dm = d.copy(); dm[k] -= h
+        Jfd[:, k] = (_flux(dp) - _flux(dm)) / (2.0 * h)
+
+    assert np.abs(J - Jfd).max() < 1e-4, f"edge Jacobian vs full central-FD: max diff {np.abs(J-Jfd).max():.2e}"

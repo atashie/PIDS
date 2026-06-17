@@ -245,3 +245,43 @@ def edge_flux_residual(d, z_b, d_n, rain, dt, edges, L_e, T_e, A_i, n_man, eps_S
         np.add.at(R, dofs, q_out)
 
     return R
+
+
+def edge_flux_jacobian_dd(d, z_b, edges, L_e, T_e, n_man, eps_S, eps_H, h=1e-6):
+    """Numerical (vectorized per-edge central-FD) Jacobian of the lateral edge flux w.r.t. depth.
+
+    The shipped P2 coupled-Newton d-d block (Convergent-flow P2; Codex-recommended numerical edge
+    Jacobian -- the standalone uses a colored-FD Jacobian and the hand-analytic form is a later perf
+    optimization). Each edge flux ``Q_e = T_e*M(d_up)*(H_i-H_j)`` depends ONLY on its two endpoint
+    depths (via ``H=z_b+d``, ``slope=dH/L_e``, and the smoothed-upwind ``d_up``), so ``dQ_e/dd_i``
+    and ``dQ_e/dd_j`` come from central-differencing each endpoint of EVERY edge at once (four
+    vectorized flux evals; O(n_edges)). With ``R_i = +Q_e``, ``R_j = -Q_e`` the per-edge 2x2 is
+    ``[[+dQ/dd_i, +dQ/dd_j], [-dQ/dd_i, -dQ/dd_j]]``.
+
+    Returns COO ``(rows, cols, vals)`` in the d-field dof index space (the four entries per edge land
+    on the (i,i),(i,j),(j,i),(j,j) slots; the caller offsets into the coupled block and ADD_VALUES
+    -- repeated indices accumulate). Pinned vs a full central FD of ``edge_flux_residual`` by test.
+    """
+    i = edges[:, 0]
+    j = edges[:, 1]
+    di = d[i]
+    dj = d[j]
+    zbi = z_b[i]
+    zbj = z_b[j]
+
+    def _Q(a, b):  # per-edge flux from edge-local endpoint depths (a at i, b at j)
+        dH = (zbi + a) - (zbj + b)
+        slope = dH / L_e
+        w = 0.5 * (1.0 + np.tanh(dH / eps_H))
+        d_up = np.maximum(w * a + (1.0 - w) * b, 0.0)
+        slope_root = (slope * slope + eps_S ** 2) ** 0.25
+        M = SECONDS_PER_DAY * d_up ** (5.0 / 3.0) / (n_man * slope_root)
+        return T_e * M * dH
+
+    dQ_di = (_Q(di + h, dj) - _Q(di - h, dj)) / (2.0 * h)
+    dQ_dj = (_Q(di, dj + h) - _Q(di, dj - h)) / (2.0 * h)
+
+    rows = np.concatenate([i, i, j, j])
+    cols = np.concatenate([i, j, i, j])
+    vals = np.concatenate([dQ_di, dQ_dj, -dQ_di, -dQ_dj])
+    return rows, cols, vals
