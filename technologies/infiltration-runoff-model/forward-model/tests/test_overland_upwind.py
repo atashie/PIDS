@@ -651,19 +651,39 @@ def test_v_outlet_line_discharge_matches_analytic_2d():
 
 
 def test_tilted_v_plateau_reaches_Qeq_2d():
-    """THE decisive O1 gate: the convergent tilted-V storm plateau reaches Q_eq within +-3%.
+    """THE decisive O1 gate: convergent-V CONSERVATION + flat/lifted/positive plateau on the V.
 
     Drives UpwindOverlandProblem over the canonical tilted-V (dry start, constant storm rain, the
-    y=LY normal-depth LINE outlet) through the storm window and asserts the late-storm outlet
-    discharge plateau Q/Q_eq is within +-3% of 1.0 -- the gap the galerkin path could not close
-    (P0 §8.3: galerkin plateau 0.676-0.996 with dt pinned ~5e-5; the limiter<->Newton sawtooth).
+    y=LY normal-depth LINE outlet) through the storm window. What it pins -- the real, valuable
+    O1 wins on the convergent tilted-V the galerkin path could not deliver (P0 §8.3: galerkin
+    plateau 0.676-0.996 with dt PINNED ~5e-5 / 60k rejections / 39.5 h, the limiter<->Newton
+    sawtooth):
+      (1) the LUMPED outlet plateau == 1.000*Q_eq, asserted within +-3% -- a CONSERVATION /
+          steady-state-equilibrium check, NOT a discharge-accuracy gate. Honest framing (B5b,
+          scratch/_b5b_valley_concentration.py): the lumped outflow_rate() and the outlet residual
+          sink share the SAME control-length weights B_k, so summing the node residuals telescopes
+          every interior edge flux to zero and FORCES sum_k q_out*B_k == rain*sum_i A_i == Q_eq for
+          ANY converged STEADY field -- the discrete steady-state mass balance, independent of the
+          solution's SHAPE. So this assertion confirms the books CLOSE and the field reached
+          equilibrium; it is (by construction) NOT an independent measurement of outlet-flux
+          accuracy (the galerkin path's lumped plateau is likewise ~1.0 for the same reason).
+          The genuine accuracy measure is the CONSISTENT ds-integral discharge (B5b): on the
+          idealized KINK V it reads ~0.85*Q_eq and DIVERGES under refinement -- a measure-zero
+          (1-cell d^(5/3) spike) channel artifact a smooth P1 functional can't integrate, shared by
+          BOTH schemes and following the Manning thin-channel normal-depth law exactly, NOT an
+          upwind-flux defect -- while a RESOLVED finite-width swale (the real PIDS use case)
+          converges UPWARD to ~0.99 (<=~1% error). See B5b + parent plan §8.7.
+      (2) the plateau is FLAT: oscillation RMS <= 2% (the sawtooth O1 removes) -- a real accuracy/
+          stability win on the field shape.
+      (3) the books close to machine precision (telescoping flux network is conservative).
+      (4) the V undershoot is sub-mm (the mild 2% valley -- MEASURED, not assumed d>=0, per the B3
+          conditionality).
     48x30 = the ParFlow B6 grid, storm window only (the rising limb saturates within the storm),
     DT_MAX=1e-3 -- the well-resolved choice (~0.4s; the runner shows dt climbs to 1e-2 if the cap is
-    raised, i.e. the galerkin pin is LIFTED, not a stiffness floor). Also asserts: the plateau
-    oscillation RMS <= 2% (the sawtooth O1 removes), the books close to machine precision (the
-    telescoping flux network is conservative), and the V undershoot is sub-mm (the mild 2% valley --
-    MEASURED, not assumed d>=0, per the B3 conditionality). The runner _v2d_upwind_V.py carries the
-    full mesh-convergence + field-scale + dt-distribution measurement; this is the Tier-1 pin.
+    raised, i.e. the galerkin pin is LIFTED, not a stiffness floor). The runner _v2d_upwind_V.py
+    carries the full mesh-convergence + field-scale + dt-distribution measurement, and B5b carries
+    the consistent-discharge accuracy picture (kink artifact + finite-width-swale resolution); this
+    is the Tier-1 pin.
     """
     nx, ny = 48, 30
     msh = dmesh.create_rectangle(MPI.COMM_WORLD, [[0.0, 0.0], [_VX, _VY]], [nx, ny],
@@ -704,9 +724,18 @@ def test_tilted_v_plateau_reaches_Qeq_2d():
     plateau_rms = float(np.sqrt(np.mean((plateau_q - plateau_mean) ** 2)))
     books_gap = cum_rain - cum_out - (prob.total_water() - 0.0)
 
-    # (1) THE HEADLINE: the convergent-V plateau reaches Q_eq within +-3% (galerkin: gap-corrupted).
+    # (1) CONSERVATION / EQUILIBRIUM (NOT a discharge-accuracy gate -- B5b): the LUMPED plateau
+    # == Q_eq within +-3%. The lumped outflow_rate() shares the outlet sink's B_k weights, so at a
+    # converged STEADY state the telescoped residual FORCES sum_k q_out*B_k == rain*area == Q_eq for
+    # ANY field shape -- this asserts the books close + the field reached equilibrium, NOT that the
+    # outlet flux is accurate. (The real accuracy measure = the consistent ds-integral: ~0.85 on the
+    # idealized kink V [measure-zero-channel artifact, shared with galerkin], ~0.99 on a resolved
+    # finite-width swale -- B5b / parent §8.7.) The galerkin path here is gap-corrupted not on this
+    # lumped identity but on the dt-pin/sawtooth/positivity that items (2)-(4) + the runner cover.
     assert plateau_mean == pytest.approx(1.0, abs=0.03), (
-        f"V plateau Q/Q_eq = {plateau_mean:.4f} not within +-3% of 1.0 (galerkin gave 0.676-0.996)"
+        f"V lumped plateau Q/Q_eq = {plateau_mean:.4f} not within +-3% of 1.0 -- the steady-state "
+        f"conservation identity FAILED (books not closing / field not at equilibrium), not an "
+        f"accuracy miss (see B5b for the consistent-discharge accuracy picture)"
     )
     # (2) the plateau is FLAT: oscillation RMS <= 2% (the sawtooth the monotone scheme removes).
     assert plateau_rms <= 0.02, f"plateau oscillation RMS {100*plateau_rms:.2f}% exceeds the 2% bar"

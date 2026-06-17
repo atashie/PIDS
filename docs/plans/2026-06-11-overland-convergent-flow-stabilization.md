@@ -323,20 +323,29 @@ The §6 efficiency bar (canonical ≤2 h) should be read as a **post-P1 target**
 > **Numbering note:** the originally-planned §8.6 (the A5 "residual-gate efficiency" write-up) was
 > never produced — Part A (the gate rework) was DEFERRED 2026-06-15 (§5 P1-PREREQUISITE; A1's census
 > proved no residual gate can reject the dirty-V stalls, so O1 dissolves the problem instead). This
-> §8.6 is therefore the O1 spike result (the P1-plan called it "§8.7"; renumbered to close the gap).
+> §8.6 is therefore the O1 spike result.
+>
+> **⚠ ACCURACY-FRAMING CORRECTION (B6 capstone, 2026-06-16): this §8.6 was written BEFORE the B5b
+> diagnostic and over-claimed the V plateau as discharge ACCURACY (gate 9: "0.99994·Q_eq / 0.006%
+> err / PASS by ~500×").** That is wrong: the LUMPED plateau ≈Q_eq is a mass-CONSERVATION identity
+> (forced for any converged steady field), not an accuracy measurement. Gate 9 below is corrected
+> in place, and the honest accuracy picture (consistent ds-integral ~0.85 on the idealized kink V =
+> a measure-zero-channel artifact; ~0.99 on a resolved swale) + the final reconciled verdict are in
+> **§8.7**. Read §8.6 as the gate inventory; §8.7 is the corrected close.
 
 **Verdict: O1 — a MONOTONE, well-balanced upwind-mobility two-point edge flux on a custom FD-Jacobian
 SNES (`pids_forward/physics/overland_upwind.py`, `UpwindOverlandProblem`) — is the convergent-flow fix.
-It meets EVERY §5 P1 gate, most by 2–3 orders of magnitude, and it does so on the validated galerkin
-path's terms WITHOUT touching that path (separate class; the galerkin MMS/regression reference is
-bit-identical).** Each §5 P1 gate (and the P1-plan acceptance bars 6–11), pass/fail + number + evidence:
+It meets EVERY §5 P1 gate (the dt/oscillation/robustness gates by orders of magnitude; the V-plateau
+accuracy framing corrected per §8.7), and it does so on the validated galerkin path's terms WITHOUT
+touching that path (separate class; the galerkin MMS/regression reference is bit-identical).** Each §5
+P1 gate (and the P1-plan acceptance bars 6–11), pass/fail + number + evidence:
 
 | # | §5 P1 gate / P1-plan bar | Verdict | Evidence |
 |---|--------------------------|---------|----------|
 | 6 | Lake-at-rest & near-flat exact (well-balanced); books machine-tight | **PASS** | upwind lake-at-rest held EXACTLY 1-D + 2-D (head differenced on edges → ~1e-16, depth held to machine through the solve), `eps_H`-independent (structural, can't be tuned to pass); closed-domain conservation ~2e-16; V books gap **−2.7e-10 m³** (48×30), **−2.4e-10** (96×60), **−1.7e-11** (field), vs `cum_rain` 26244 / 262 m³ — i.e. ≤1e-13·cum_rain (target was 1e-8). Galerkin near-flat/MMS untouched (separate class). Tests `test_lake_at_rest_is_held_exactly_{1d,2d}`, `test_lake_at_rest_independent_of_eps_H_1d`, `test_closed_domain_conserves_multistep_1d`, `test_tilted_v_catchment_conserves_2d`. |
 | 7 | **d ≥ −1e-12 WITHOUT any limiter** (the monotonicity headline) | **PASS** (1 characterized caveat) | the class carries NO positivity machinery. STEEP 5% front strict `d ≥ −1e-12` 1-D + 2-D (exactly where the galerkin path must engage its clip). On the canonical V (the 2% mild valley) the measured `run_min_d = −0.0` at all three meshes/scales — **no undershoot in practice.** **Honest caveat (not a fail, characterized):** the smoothed (tanh) selector is bit-strict monotone only where the front head-drop ≫ `eps_H`; on adversarially-sharp *mild-2%* mounds it shows a **geometry-dependent SUB-MM undershoot, 0 .. ~0.9 mm at `eps_H=1e-3`** (controller adjudication sweep, 24 geometries), with conservation machine-tight throughout — vs the galerkin limiter's cm-scale clip-and-rescale pathology it replaces. Sharpening `eps_H` to remove the last sub-mm hits a ~15× Newton-cost cliff for zero accuracy gain (B3), so 1e-3 is the chosen balance; semismooth Newton is the P2 fallback if a future fixture needs strict mild-front positivity (not indicated). Tests `test_front_advance_positive_without_limiter_1d`, `test_steep_front_positive_without_limiter_2d`. |
 | 8 | 1-D kinematic rising-limb analytic matched (to O(h)) | **PASS** | `d/d_eq = 1.000`, front position 20.00 m on the 100 m plane. Test `test_kinematic_wave_plane_hydrograph_1d`. |
-| 9 | V plateau → Q_eq ±3% at ≈48×30, mesh-convergent, oscillation ≤2% RMS; field-scale ≈1.0 where galerkin gave 0.876 | **PASS (by ~500×)** | **48×30: plateau 0.99994·Q_eq (0.006% err), oscillation RMS 0.013%.** 96×60: 0.99999, RMS 0.0036% — both error AND RMS shrink with h (mesh-convergent). **Field-scale (SCALE=0.1): 1.0000 exactly, vs galerkin's under-resolved 0.876** — the §8.3/F10 accuracy claim confirmed. Test `test_tilted_v_plateau_reaches_Qeq_2d` (pins ±3% at 48×30); runner `scratch/_v2d_upwind_V.py`, npz `scratch/v2d_upwind_{48x30,96x60,48x30_s0.1}.npz`. |
+| 9 | V plateau → Q_eq ±3% at ≈48×30, mesh-convergent, oscillation ≤2% RMS; field-scale ≈1.0 where galerkin gave 0.876 | **PASS** (accuracy framing corrected — see §8.7) | **48×30: LUMPED plateau 0.99994·Q_eq, oscillation RMS 0.013%.** 96×60: 0.99999, RMS 0.0036% — RMS shrinks with h (mesh-convergent on the oscillation). **⚠ Framing correction (B5b, §8.7): the LUMPED plateau ≈Q_eq is a mass-CONSERVATION identity (the lumped `outflow_rate()` shares the outlet sink's weights → a converged steady field FORCES Q_out = rain·area = Q_eq for any shape), NOT discharge accuracy** — the original "0.006% err / PASS by ~500×" read it as accuracy and is WITHDRAWN. The genuine accuracy measure (the *consistent* ds-integral discharge) is ~0.85 on the idealized kink V (a measure-zero-channel artifact shared with galerkin, B5b) and ~0.99 (≤1%) on a resolved finite-width swale. **Field-scale (SCALE=0.1): lumped 1.0000 vs galerkin's under-resolved 0.876** — confirms O1 *equilibrates/resolves* the field-scale V where the oscillatory galerkin scheme does not (the §8.3/F10 win), again read as conservation+equilibrium, not an accuracy digit. Test `test_tilted_v_plateau_reaches_Qeq_2d` (pins the ±3% conservation/equilibrium identity + the ≤2% oscillation + machine-tight books + sub-mm undershoot at 48×30); runner `scratch/_v2d_upwind_V.py`, npz `scratch/v2d_upwind_{48x30,96x60,48x30_s0.1}.npz`; accuracy diagnosis `scratch/_b5b_valley_concentration.py`. |
 | 10 | dt no longer pinned (measured vs galerkin ~5e-5) | **PASS — the tractability fix** | median dt at DT_MAX **1e-3** (min 1e-5), **0 rejected steps** on all three runs, vs the galerkin V pinned ~5e-5 (P0 full-window: ~1.5e-6) with **60,008 rejections / 39.5 h**. Upwind canonical V wall-clock: **0.43 s** (48×30), 2.3 s (96×60), 0.36 s (field) — the 39.5 h / 20×-over-bar cost (§8.4) is GONE because the sawtooth that drove the reason-4 churn is gone (V converges via reason 2/3; reason-4 here is benign floor stagnation, 0 rejections). |
 | 11 | Galerkin `OverlandProblem` path UNTOUCHED; full suite green | **PASS** | new scheme is a separate class `UpwindOverlandProblem`; `overland.py` not modified. Full suite **154 passed** (`pytest tests/` exit 0; = 136 P0 baseline + the 18 new `tests/test_overland_upwind.py`, all green). |
 
@@ -355,6 +364,86 @@ the sub-mm mild-front undershoot (gate 7 caveat) — quantify on the P3 swale an
 only if it hurts that answer; the M-matrix guard is structured-mesh-only (unstructured/obtuse `T_e` is
 P2/P3, §7); O(h) upwind smearing on mm sheet flow (FCT/O3 is the P4 escape hatch if it measurably hurts
 the swale). **NEXT = P2** (productionize in `CoupledProblem`).
+
+### 8.7 O1 spike VERDICT (P1 Part B close, 2026-06-16) — corrected accuracy framing + final result
+
+> This is the integrity capstone of the O1 spike (B6). §8.6 (above) is the gate inventory, written
+> before the B5b diagnostic; this §8.7 carries the **corrected accuracy framing** (an over-claim was
+> caught in B5 review and investigated in B5b, both verified) and the **final verdict**. It is written
+> at branch head **`6e1f63f`** (B5b) + this B6 commit.
+
+**Headline — the spike's central question, "does O1 fix the convergent tilted-V?", is answered YES.**
+On the canonical 2-D tilted-V where the validated galerkin `OverlandProblem` develops the never-settling
+wet/dry sawtooth (Defect A, §8.3), the O1 monotone upwind-mobility two-point edge flux
+(`pids_forward/physics/overland_upwind.py`, `UpwindOverlandProblem`) removes the pathology at the source:
+the **sawtooth is GONE** (plateau oscillation RMS 0.013% / 0.0036%, mesh-convergent), the **dt-pin is
+LIFTED ≈370×** (median dt at DT_MAX 1e-3 with **0 rejected steps** vs the galerkin V's ~5e-5 pin / 60k
+rejections / 39.5 h — wall-clock 0.4 s vs 39.5 h), the scheme is **monotone** (NO limiter; the V's
+measured run-min depth was −0.0) and **conservative** (books ≤1e-13·cum_rain), and **its convergence-line
+flux is CORRECT** (B5b, below). It does this on a **separate class**, leaving the galerkin MMS/regression
+path bit-identical.
+
+**Gate-by-gate vs the P1 acceptance bars (P1 plan §"Acceptance bars" 6–11; mirrors §8.6's table, with
+the gate-9 accuracy framing corrected):**
+
+| # | P1 bar (Part B) | Result | Number |
+|---|-----------------|--------|--------|
+| 6 | Lake-at-rest + near-flat exact (well-balanced); closed conservation machine-tight | **✓** | lake-at-rest held EXACTLY 1-D + 2-D (head differenced on edges → ~1e-16, depth held to machine through the solve), `eps_H`-independent (structural — cannot be tuned to pass); closed-domain conservation ~2e-16; V books gap **≤1e-13·cum_rain** (−2.7e-10/−2.4e-10/−1.7e-11 m³ at 48×30 / 96×60 / field). |
+| 7 | **d ≥ −1e-12 WITHOUT any limiter** (the monotonicity headline) | **✓ + 1 characterized caveat** | class has NO positivity machinery. STEEP 5% front strict `d ≥ −1e-12` 1-D + 2-D; on the canonical V (mild 2% valley) measured **run-min = −0.0** at all meshes/scales. CAVEAT (characterized, conservation machine-tight throughout): adversarially-sharp *mild-2%* mounds show a geometry-dependent **SUB-MM undershoot, 0 .. ~0.9 mm at `eps_H=1e-3`** (B3, 24-geometry sweep) — vs the galerkin limiter's cm-scale clip-and-rescale it replaces. |
+| 8 | 1-D kinematic rising-limb analytic matched (to O(h)) | **✓** | `d/d_eq = 1.000`, front 20.00 m on the 100 m plane. |
+| 9 | V plateau → Q_eq ±3%, mesh-convergent, oscillation ≤2% RMS; field-scale ≈1.0 where galerkin gave 0.876 | **✓ (framing corrected)** | LUMPED plateau **0.99994 / 0.99999·Q_eq** (= conservation/equilibrium identity, see below — *not* accuracy); **oscillation RMS 0.013% → 0.0036%** (mesh-convergent, the real stability win); **field-scale lumped 1.0000 vs galerkin 0.876** (O1 equilibrates/resolves the field-scale V). Genuine accuracy (consistent ds-integral): **~0.85 idealized kink V** (artifact), **~0.99 resolved swale** (≤1%). |
+| 10 | dt no longer pinned (vs galerkin ~5e-5) — the tractability fix | **✓ (≈370×)** | median dt at DT_MAX 1e-3, **0 rejected steps** on all three runs; **0.4 s** (48×30) vs the galerkin V's 39.5 h / 60k rejections. The §8.4 39.5-h / 20×-over-bar cost is GONE (the sawtooth that drove the reason-4 churn is gone; the V converges via reason 2/3). |
+| 11 | Galerkin `OverlandProblem` UNTOUCHED (separate class); full suite green | **✓** | new scheme = separate class `UpwindOverlandProblem`; `overland.py` unmodified. Full suite green (`pytest tests/` exit 0; the 18 `tests/test_overland_upwind.py` + the P0 baseline). |
+
+**The corrected accuracy framing (B5 review + B5b investigation, `scratch/_b5b_valley_concentration.py`,
+both verified):**
+- **LUMPED plateau = CONSERVATION, not accuracy.** The §8.6 commit framed "plateau = 1.000·Q_eq" as
+  discharge *accuracy* ("essentially exact / PASS by ~500×"). That is WITHDRAWN. The lumped
+  `outflow_rate()` and the outlet residual sink share the **same** control-length weights `B_k`, so
+  summing the node residuals telescopes every interior edge flux to zero and FORCES
+  `Σ_k q_out·B_k = rain·area = Q_eq` for **any** converged STEADY field, independent of its shape. The
+  lumped 1.000 is therefore the discrete steady-state **mass balance** (machine-tight books,
+  ParFlow-comparable) — it confirms CONSERVATION + that the field reached equilibrium, NOT outlet-flux
+  accuracy. The `±3%` test assertion (`test_tilted_v_plateau_reaches_Qeq_2d` item 1) is correspondingly
+  a conservation/equilibrium check, relabelled as such; it is kept (the conservation + flat-plateau +
+  dt-lifted + sub-mm-undershoot checks it bundles are real and valuable). The galerkin path's lumped
+  plateau is likewise ≈1.0 for the same identity.
+- **The genuine accuracy measure** is the CONSISTENT ds-integral discharge `∫ 86400·(1/n)·d^(5/3)·√S ds`
+  over the outlet (the P1-interpolated functional). On the idealized **KINK V** it reads **~0.85·Q_eq and
+  DIVERGES under refinement** (0.85 → 0.84 at 48×30 → 96×60, valley peak growing). **B5b verdict (A) =
+  measurement artifact, NOT a scheme defect:** the idealized V channel is a measure-ZERO line (the bed
+  kink), so its "channel" is 1 cell wide → a tall narrow `d^(5/3)` spike that a smooth P1 functional
+  cannot integrate. The valley depth follows the Manning thin-channel normal-depth law EXACTLY (growth
+  `2^(3/5)` per dx-halving, measured to 3 sig figs; channel throughput constant to 0.15%), the deficit
+  is **quadrature-degree-independent** (even exact quadrature of the coarse P1 field reads ~0.85), and
+  the **galerkin scheme shows the SAME** lumped≫consistent split — so it is generic to a thin P1 channel,
+  not an upwind-flux defect.
+- **A real finite-width swale (the actual PIDS use case) RESOLVES CLEANLY.** With a flat valley floor of
+  width W carrying several cells the consistent discharge converges **UPWARD to ~0.99 (≤~1% error)** and
+  the depth stabilizes (W=324 m: 0.971 → 0.982 → 0.990 over 48×30 → 96×60 → 192×120; peak 8.7 → 8.0 mm).
+  **Conclusion: O1's convergence-line flux is CORRECT;** the 0.85/depth-growth on the kink V is a
+  characterized artifact of an idealized measure-zero channel (shared by both schemes), and the resolved
+  swale + Manning-law evidence validates the flux. **No convergence-line flux fix is warranted.**
+
+**Carried items (inputs to P2/P3, none a P1 blocker):**
+- **Positivity:** the sub-mm geometry-dependent mild-front undershoot (gate-7 caveat) — quantify on the
+  P3 swale; semismooth Newton is the P2 fallback only if a fixture needs strict mild-front positivity
+  (not indicated; conservation is machine-tight regardless).
+- **Solver:** the **FD-Jacobian + direct LU is a deliberate spike choice** (`snes.setUseFD(True)`, the
+  ParFlow `UseJacobian False` precedent — proving the *scheme*, not an exact J; trivially cheap at spike
+  sizes, 0.4–2.3 s). The hand/analytic Jacobian is a **P2 performance** item.
+- **Productionization:** `UpwindOverlandProblem` is a **standalone** Module-2 class; **P2 productionizes
+  the same edge scheme into `CoupledProblem`** (realization-A top-facet ridge graph; λ/NCP/outlet/inlet
+  terms unchanged; galerkin limiter demoted to a tripwire assert).
+- **Mesh:** the M-matrix `T_e ≥ 0` guard is structured-mesh-only; unstructured/obtuse `T_e` is P2/P3 (§7).
+- **Accuracy:** O(h) upwind smearing on the mm sheet — FCT/O3 (§4) is the P4 escape hatch only if it
+  measurably hurts the swale answer.
+
+**Bottom line: the spike validates O1 as the production fix for the convergence-line regime.** The
+central question is answered YES with rigorous evidence (after an accuracy over-claim was caught and
+corrected): O1 fixes the convergent-V pathology, its convergence-line flux is correct on the regime
+that matters (the resolved swale), and the only carried items are perf (hand-Jacobian) + the
+characterized sub-mm mild-front undershoot. **NEXT = P2.**
 
 ## 9. Artifacts
 - This plan; B6 deck `parflow/cases/tilted_v_catchment.py`; harness `benchmarks/build_comparison_tiltedv.py`

@@ -11,6 +11,22 @@ The galerkin baseline to beat (P0, parent §8.3): canonical plateau ~0.676-0.996
 oscillatory scheme). The O1 target (parent §5 P1 gate): plateau -> Q_eq +-3%, mesh-convergent,
 oscillation <=2% RMS, dt-pin LIFTED, field-scale ~1.0.
 
+WHAT THE PLATEAU Q/Q_eq NUMBER IS (honest framing, B5b -- scratch/_b5b_valley_concentration.py).
+This runner reports the LUMPED outlet discharge (outflow_rate(): sum_k q_out(d_k)*B_k, the nodal
+length-weighted sum). The lumped sink and the outlet RESIDUAL sink share the same weights B_k, so
+at a converged STEADY field the telescoped node residuals FORCE lumped Q_out == rain*area == Q_eq
+for ANY field shape -- a CONSERVATION / steady-state-mass-balance identity, machine-tight books,
+ParFlow-comparable -- NOT an independent measurement of outlet-flux ACCURACY (the galerkin path's
+lumped plateau is ~1.0 for the same reason). The genuine accuracy measure is the CONSISTENT
+ds-integral discharge (B5b): on the idealized KINK V it reads ~0.85*Q_eq and DIVERGES under
+refinement -- a measure-zero (1-cell d^(5/3) spike) channel artifact a smooth P1 functional can't
+integrate, following the Manning thin-channel normal-depth law exactly and shared by BOTH schemes,
+NOT an upwind-flux defect -- while a RESOLVED finite-width swale (the real PIDS swale use case)
+converges UPWARD to ~0.99 (<=~1% error). So read the plateau number below as "conservation closes
++ field reached equilibrium"; the oscillation RMS, the dt distribution, the books gap, and the
+field-scale-vs-galerkin contrast ARE the accuracy/robustness wins; the consistent-discharge accuracy
+picture lives in B5b + parent plan §8.7.
+
 THE 2-D OUTLET SUBTLETY (handled in the engine, B5): the V outlet is a LINE of nodes; the discharge
 is the INTEGRAL of the per-unit-width Manning flux over the outlet length, so each outlet node carries
 its boundary-edge control length (``UpwindOverlandProblem.add_outflow_bc`` assembles ``int phi_k ds``;
@@ -152,8 +168,9 @@ def main():
     reasons, counts = np.unique(a["reason"][acc], return_counts=True)
     print(f"\n[plateau] window t in [{plateau_lo:.5f},{plateau_hi:.5f}] d, n={int(pm.sum())} steps",
           flush=True)
-    print(f"[plateau] Q/Q_eq mean = {plateau_mean:.4f}   last-step Q/Q_eq = {plateau_last:.4f}",
-          flush=True)
+    print(f"[plateau] LUMPED Q/Q_eq mean = {plateau_mean:.4f}   last-step = {plateau_last:.4f}   "
+          f"(== conservation/equilibrium identity, NOT discharge accuracy -- B5b; "
+          f"consistent ds-integral: ~0.85 idealized kink V, ~0.99 resolved swale)", flush=True)
     print(f"[plateau] oscillation RMS = {plateau_rms:.4f} ({100*plateau_rms:.2f}%)  "
           f"[bar <=2%]", flush=True)
     print(f"[dt] over the run: min={dts.min():.2e} median={np.median(dts):.2e} max={dts.max():.2e}  "

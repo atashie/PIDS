@@ -6,15 +6,26 @@ sawtooth (the "Defect A" Galerkin instability on convergence lines, B6 P0). This
 touch ``overland.py`` -- that galerkin path stays the MMS/regression reference; this is a
 separate scheme on its own class so the two can be compared head-to-head.
 
-P1 SPIKE VERDICT (B6, 2026-06-16): the scheme PASSES every parent-plan §5 P1 gate, most by orders
-of magnitude. On the canonical 2-D tilted-V it gives plateau 0.99994*Q_eq (oscillation RMS 0.013%,
-mesh-convergent), field-scale (SCALE=0.1) 1.0000*Q_eq vs the galerkin 0.876, books gap <=1e-13*cum_rain,
-the dt-pin LIFTED (median dt at DT_MAX, 0 rejected steps, 0.4 s vs the galerkin V's 39.5 h / 60k
-rejections), and NO limiter. The one characterized caveat is the sub-mm geometry-dependent mild-front
-undershoot (Positivity section below) -- on the actual V the measured run-min depth was -0.0. Full
-verdict + the P2 readiness/risks = parent plan `docs/plans/2026-06-11-overland-convergent-flow-stabilization.md`
-section 8.6. NEXT = P2 (productionize the same edge scheme on the realization-A top-facet ridge graph
-of ``CoupledProblem``; galerkin limiter demoted to a tripwire assert).
+P1 SPIKE VERDICT (B6, 2026-06-16): the scheme PASSES every parent-plan §5 P1 gate. On the canonical
+2-D tilted-V it FIXES the convergent-flow pathology -- the sawtooth is GONE (oscillation RMS 0.013%,
+mesh-convergent), the dt-pin is LIFTED (median dt at DT_MAX, 0 rejected steps, 0.4 s vs the galerkin
+V's 39.5 h / 60k rejections), the scheme is monotone (NO limiter; the V's measured run-min depth was
+-0.0) and conservative (books gap <=1e-13*cum_rain), and field-scale (SCALE=0.1) it resolves where the
+galerkin path is under-resolved. CONSERVATION/EQUILIBRIUM vs ACCURACY -- the honest framing (B5b):
+the LUMPED plateau == 1.000*Q_eq is a mass-conservation identity (the lumped outflow_rate() shares the
+outlet sink's weights, so a converged steady field FORCES Q_out == rain*area == Q_eq for any shape;
+machine-tight books, ParFlow-comparable) -- it confirms CONSERVATION, NOT discharge accuracy (the
+galerkin lumped plateau is ~1.0 for the same reason). The genuine accuracy measure is the CONSISTENT
+ds-integral discharge: on the idealized KINK V ~0.85*Q_eq (a measure-zero 1-cell-d^(5/3)-spike channel
+artifact a smooth P1 functional can't integrate -- shared by BOTH schemes, following the Manning
+thin-channel normal-depth law exactly, NOT an upwind-flux defect), and on a RESOLVED finite-width swale
+(the real PIDS use case) it converges UPWARD to ~0.99 (<=~1% error). The one characterized POSITIVITY
+caveat is the sub-mm geometry-dependent mild-front undershoot (Positivity section below). Full verdict
+(gate-by-gate) + the corrected accuracy framing + P2 readiness/risks = parent plan
+`docs/plans/2026-06-11-overland-convergent-flow-stabilization.md` §8.7 (the B5b-reconciled close; §8.6
+is the pre-B5b verdict, accuracy line corrected to point here). NEXT = P2 (productionize the same edge
+scheme on the realization-A top-facet ridge graph of ``CoupledProblem``; galerkin limiter demoted to a
+tripwire assert).
 
 The scheme (per the P1 plan, docs/plans/2026-06-14-overland-convergent-flow-P1.md, Part B).
 Surface head ``H = z_b + d``. The lateral conveyance is assembled as a finite-volume two-point
