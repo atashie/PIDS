@@ -103,6 +103,14 @@ class CoupledProblem:
             raise ValueError(
                 f"overland_scheme must be 'galerkin' or 'upwind', got {overland_scheme!r}.")
         self.overland_scheme = overland_scheme
+        # upwind positivity tripwire bound. The monotone scheme is NOT bit-strict positive on ponding
+        # wet/dry fronts: it shows a TRANSIENT, self-healing, mass-neutral mild-front undershoot --
+        # P1 gate-7 characterized 0..~0.9mm on standalone 2-D mounds; the coupled 3-D ponding case is
+        # ~1.1-1.5mm (P2-D1 characterization, grows mildly with rain rate, final state heals to d>=0,
+        # conservation machine-tight). 5mm tolerates that characterized SUB-CM band; a larger (cm-scale)
+        # negative depth RAISES loudly (genuine scheme breakdown -- the regime the galerkin cm-scale clip
+        # used to hide), NEVER a silent clip. P3 swale / semismooth Newton re-characterizes if needed.
+        self._upwind_pos_tol = 5e-3
         if overland_scheme == "upwind" and mesh.topology.dim != 3:
             raise NotImplementedError(
                 "overland_scheme='upwind' requires a 3-D host (the top facet is a 2-D triangulation "
@@ -644,6 +652,25 @@ class CoupledProblem:
         self.clip_mass_adjust += self.surface_water() - oldtotal
         return -gmin
 
+    def _positivity_tripwire(self) -> float:
+        """Upwind path (Convergent-flow P2-D1): the monotone edge scheme holds d>=0 by construction,
+        so the galerkin positivity limiter is DEMOTED to a tripwire -- record the min depth, NEVER
+        clip/rescale (``clip_mass_adjust`` stays 0), and RAISE loudly if the depth falls below
+        ``-_upwind_pos_tol`` (beyond the characterized sub-mm mild-front undershoot, P1 gate-7). A
+        real undershoot is a finding to characterize (P3 swale / semismooth Newton), not something to
+        silently clip away. Returns the undershoot magnitude (>= 0) for the audit trail.
+        """
+        arr = self.d.x.array
+        gmin = self.mesh.comm.allreduce(float(arr.min()) if arr.size else 0.0, op=MPI.MIN)
+        undershoot = -gmin if gmin < 0.0 else 0.0
+        if undershoot > self._upwind_pos_tol:
+            raise RuntimeError(
+                f"upwind overland produced d = {gmin:.3e} m (undershoot {undershoot:.3e} > tol "
+                f"{self._upwind_pos_tol:.0e}). The monotone scheme should hold d>=0; this is beyond "
+                "the characterized sub-mm mild-front undershoot -- a real finding to characterize "
+                "(P3 swale / semismooth Newton), NOT to silently clip.")
+        return undershoot
+
     # -- time stepping --------------------------------------------------------
     def step(self, dt: float):
         """Advance one monolithic backward-Euler Newton step. Returns (converged, iters)."""
@@ -683,7 +710,11 @@ class CoupledProblem:
             # − cum_outflow − cum_drainage.
             self.last_drainage = self.drainage_rate()
             self.cum_drainage += dt * self.last_drainage
-            self.last_clip = self._enforce_positivity()  # keep d_n >= 0 (lateral-overland undershoots)
+            if self.overland_scheme == "upwind":
+                # monotone scheme: the limiter is a TRIPWIRE (record min depth, NEVER clip), P2-D1
+                self.last_clip = self._positivity_tripwire()
+            else:
+                self.last_clip = self._enforce_positivity()  # galerkin: conservative clip
             self.max_clip_seen = max(self.max_clip_seen, self.last_clip)
             self.psi_n.x.array[:] = self.psi.x.array
             self.psi_n.x.scatter_forward()

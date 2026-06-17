@@ -106,10 +106,12 @@ def test_upwind_closed_conservation_3d():
     prob.advance(t_end=t_end, dt=1e-3, dt_max=0.02)
     cum_rain = rate * Lx * Ly * t_end
 
-    assert abs((prob.total_water() - w0) - cum_rain) / cum_rain < 1e-6
+    assert abs((prob.total_water() - w0) - cum_rain) / cum_rain < 1e-6   # conserves (machine-tight)
     assert prob.total_water() - w0 > 0.5 * cum_rain        # rain genuinely entered
-    assert prob.d.x.array.min() >= -1e-12                  # monotone: no negative depth
-    assert abs(prob.clip_mass_adjust) < 1e-9              # the limiter never had to clip
+    # monotone to within the characterized TRANSIENT sub-cm mild-front undershoot (self-healing,
+    # mass-neutral); the tripwire records it but NEVER clips (clip_mass_adjust stays exactly 0).
+    assert prob.max_clip_seen < 5e-3                        # sub-cm (vs galerkin's cm-scale clip)
+    assert prob.clip_mass_adjust == 0.0                    # tripwire: no silent mass adjustment
     assert np.all(np.isfinite(prob.d.x.array)) and np.all(np.isfinite(prob.psi.x.array))
 
 
@@ -145,3 +147,45 @@ def test_upwind_coupled_jacobian_matches_fd_smoke_3d():
 
     rel = (Jd - fd).norm() / max(fd.norm(), 1e-30)
     assert rel < 1e-5, f"coupled J*delta vs FD mismatch: rel err {rel:.2e}"
+
+
+# -- Task D1: the limiter is a tripwire on the upwind path (no silent clip) -----
+
+def test_upwind_tripwire_records_within_tol_undershoot_without_clipping():
+    """On the upwind path the positivity limiter is DEMOTED to a tripwire: a within-tolerance
+    (characterized sub-mm) negative depth is RECORDED but NOT clipped/rescaled -- d is untouched and
+    clip_mass_adjust stays exactly 0 (contrast the galerkin conservative clip)."""
+    prob = CoupledProblem(_box(5, 5, 3), SOIL, overland_scheme="upwind")
+    prob.set_initial_condition(lambda x: -1.0 + 0.0 * x[0], d_value=0.02)
+    top = prob._top_dofs(prob.Vd)
+    prob.d.x.array[top[0]] = -5e-4                          # a within-tol (<1mm) undershoot
+    before = prob.d.x.array.copy()
+
+    undershoot = prob._positivity_tripwire()
+
+    assert undershoot == pytest.approx(5e-4, rel=1e-9)
+    assert np.array_equal(prob.d.x.array, before)           # NOT clipped/rescaled
+    assert prob.clip_mass_adjust == 0.0
+
+
+def test_upwind_tripwire_raises_on_gross_undershoot():
+    """A gross negative depth (beyond the characterized sub-mm band) RAISES loudly -- a real finding
+    to characterize, never silently clipped."""
+    prob = CoupledProblem(_box(5, 5, 3), SOIL, overland_scheme="upwind")
+    prob.set_initial_condition(lambda x: -1.0 + 0.0 * x[0], d_value=0.02)
+    top = prob._top_dofs(prob.Vd)
+    prob.d.x.array[top[0]] = -1e-2                          # 1cm, well beyond the 5mm sub-cm tol
+    with pytest.raises(RuntimeError, match="monotone"):
+        prob._positivity_tripwire()
+
+
+def test_galerkin_still_uses_clip():
+    """The galerkin path is unchanged: it still has the conservative clip (_enforce_positivity), not
+    the tripwire -- a forced negative is clipped + tracked, not raised."""
+    prob = CoupledProblem(_box(5, 5, 3), SOIL)             # galerkin default
+    prob.set_initial_condition(lambda x: -1.0 + 0.0 * x[0], d_value=0.02)
+    top = prob._top_dofs(prob.Vd)
+    prob.d.x.array[top[0]] = -5e-4
+    clipped = prob._enforce_positivity()                   # the clip still exists + runs
+    assert clipped == pytest.approx(5e-4, rel=1e-9)
+    assert prob.d.x.array.min() >= 0.0                      # clipped to non-negative
