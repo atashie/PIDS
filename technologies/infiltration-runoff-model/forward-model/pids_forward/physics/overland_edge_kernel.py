@@ -31,6 +31,23 @@ from dolfinx import fem
 SECONDS_PER_DAY = 86400.0
 
 
+def _check_m_matrix(T_e, edges):
+    """Loud M-matrix guard: monotonicity REQUIRES T_e >= 0 on every edge. Raises naming the
+    offending edge if any T_e < -1e-14 (an obtuse opposite angle gives cot < 0 -> an anti-diffusive
+    edge that breaks the discrete maximum principle). Shared by the 2-D and top-facet builders."""
+    if T_e.min() < -1e-14:
+        bad = int(np.argmin(T_e))
+        i, j = int(edges[bad, 0]), int(edges[bad, 1])
+        raise ValueError(
+            "M-matrix property violated: the cotangent transmissibility is NEGATIVE on edge "
+            f"(dofs {i}, {j}), T_e = {T_e[bad]:.6e} < -1e-14. The monotone upwind scheme REQUIRES "
+            "T_e >= 0 for every edge (an obtuse opposite angle gives cot < 0 -> an anti-diffusive "
+            "edge that breaks the discrete maximum principle). The upwind scheme is restricted "
+            "to structured-box / Delaunay NON-OBTUSE triangulations; remesh (a structured box, or a "
+            "Delaunay mesh) so all opposite angles are <= 90 degrees."
+        )
+
+
 def build_edge_graph_2d(V, mesh):
     """Build the 2-D triangle-mesh edge graph for the P1 space ``V`` on ``mesh``.
 
@@ -85,18 +102,7 @@ def build_edge_graph_2d(V, mesh):
             s += 0.5 * _cot_opposite(c2v.links(c), vi, vj)
         T_e[e] = s
 
-    # M-MATRIX GUARD: loud failure on any negative transmissibility (obtuse triangle / bad split).
-    if T_e.min() < -1e-14:
-        bad = int(np.argmin(T_e))
-        i, j = int(edges[bad, 0]), int(edges[bad, 1])
-        raise ValueError(
-            "M-matrix property violated: the cotangent transmissibility is NEGATIVE on edge "
-            f"(dofs {i}, {j}), T_e = {T_e[bad]:.6e} < -1e-14. The monotone upwind scheme REQUIRES "
-            "T_e >= 0 for every edge (an obtuse opposite angle gives cot < 0 -> an anti-diffusive "
-            "edge that breaks the discrete maximum principle). The upwind scheme is restricted "
-            "to structured-box / Delaunay NON-OBTUSE triangulations; remesh (a structured "
-            "create_rectangle box, or a Delaunay mesh) so all opposite angles are <= 90 degrees."
-        )
+    _check_m_matrix(T_e, edges)
 
     # A_i = lumped P1 mass int phi_i dx (vertex quadrature); sum_i A_i = domain area.
     v = ufl.TestFunction(V)
@@ -108,6 +114,92 @@ def build_edge_graph_2d(V, mesh):
     A_i = bm.getArray()[:n_dofs].copy()
     bm.destroy()
 
+    return edges, L_e, T_e, A_i
+
+
+def build_top_facet_edge_graph(V, mesh, top_facets):
+    """Build the surface edge graph on the TOP-FACET sub-triangulation of a 3-D (or 2-D) host mesh.
+
+    The coupled productionization (P2) of ``build_edge_graph_2d``: the overland surface lives on the
+    host's top facets (located at z=ztop in ``CoupledProblem``). The host top is a FLAT plane and
+    topography is carried by the ``z_b`` field (head ``H = z_b + d``), so the cotangent
+    transmissibility is computed in the planar (x,y) geometry of the top facets -- equal to the
+    negated off-diagonal of the assembled ``ds_top`` TANGENTIAL-GRADIENT stiffness (pinned by
+    ``test_top_facet_cotangent_equals_negated_ds_top_stiffness_3d``).
+
+    Returns ``(edges, L_e, T_e, A_i)``: top-surface P1-dof pairs; planar edge lengths; cotangent
+    ``T_e`` (>= 0, M-matrix guarded); lumped surface control areas ``A_i`` (each top vertex gets
+    1/3 of every incident top-facet's planar area -> ``sum A_i = top area``; interior dofs are 0, so
+    ``total_water = sum d_i A_i`` is the lumped surface integral, conservation-consistent). The
+    lateral flux telescopes over the surface edges exactly as in 2-D.
+
+    ``top_facets`` = the located codim-1 boundary entities at z=ztop (``CoupledProblem._top_facets``).
+    Restriction (shared with the 2-D builder): structured-box / Delaunay NON-OBTUSE top triangulation.
+    """
+    tdim = mesh.topology.dim
+    fdim = tdim - 1
+    top = mesh.topology
+    top.create_connectivity(tdim, 0)   # cell -> vertices (global vtx -> dof map)
+    top.create_connectivity(fdim, 0)   # facet -> vertices
+    top.create_connectivity(fdim, 1)   # facet -> edges
+    top.create_connectivity(1, 0)      # edge -> vertices
+    c2v = top.connectivity(tdim, 0)
+    f2v = top.connectivity(fdim, 0)
+    f2e = top.connectivity(fdim, 1)
+    e2v = top.connectivity(1, 0)
+    n_cells = top.index_map(tdim).size_local
+    n_verts = top.index_map(0).size_local
+    n_dofs = V.dofmap.index_map.size_local
+    x = mesh.geometry.x
+
+    # global vertex -> P1 dof (cell-local correspondence; works for any vertex incl. top-facet ones).
+    vtx_to_dof = np.full(n_verts, -1, dtype=np.int64)
+    for c in range(n_cells):
+        verts = c2v.links(c)
+        dofs = V.dofmap.cell_dofs(c)
+        for k in range(len(verts)):
+            vtx_to_dof[verts[k]] = dofs[k]
+
+    def _cot_opposite_xy(fverts, vi, vj):
+        """planar (x,y) cotangent of the angle opposite edge (vi, vj) within facet ``fverts``."""
+        vk = [v for v in fverts if v != vi and v != vj]
+        k = int(vk[0])
+        u = x[vi][:2] - x[k][:2]
+        w = x[vj][:2] - x[k][:2]
+        cross = u[0] * w[1] - u[1] * w[0]
+        dot = u[0] * w[0] + u[1] * w[1]
+        return dot / abs(cross)
+
+    edge_T: dict[int, float] = {}
+    edge_vp: dict[int, tuple[int, int]] = {}
+    A_i = np.zeros(n_dofs, dtype=np.float64)
+    for f in top_facets:
+        f = int(f)
+        fverts = [int(v) for v in f2v.links(f)]   # 3 triangle vertices
+        # lumped surface mass: 1/3 of the planar facet area to each of its 3 vertex dofs.
+        p0, p1, p2 = x[fverts[0]][:2], x[fverts[1]][:2], x[fverts[2]][:2]
+        area = 0.5 * abs((p1[0] - p0[0]) * (p2[1] - p0[1]) - (p1[1] - p0[1]) * (p2[0] - p0[0]))
+        for v in fverts:
+            A_i[int(vtx_to_dof[v])] += area / 3.0
+        for e in f2e.links(f):
+            e = int(e)
+            ev = [int(v) for v in e2v.links(e)]
+            vi, vj = ev[0], ev[1]
+            edge_T[e] = edge_T.get(e, 0.0) + 0.5 * _cot_opposite_xy(fverts, vi, vj)
+            edge_vp[e] = (vi, vj)
+
+    surf_edges = sorted(edge_T.keys())
+    n_edges = len(surf_edges)
+    edges = np.empty((n_edges, 2), dtype=np.int32)
+    L_e = np.empty(n_edges, dtype=np.float64)
+    T_e = np.empty(n_edges, dtype=np.float64)
+    for idx, e in enumerate(surf_edges):
+        vi, vj = edge_vp[e]
+        edges[idx] = (int(vtx_to_dof[vi]), int(vtx_to_dof[vj]))
+        L_e[idx] = float(np.linalg.norm(x[vi][:2] - x[vj][:2]))
+        T_e[idx] = edge_T[e]
+
+    _check_m_matrix(T_e, edges)
     return edges, L_e, T_e, A_i
 
 
