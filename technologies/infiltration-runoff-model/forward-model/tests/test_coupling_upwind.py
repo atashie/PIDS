@@ -179,6 +179,29 @@ def test_upwind_tripwire_raises_on_gross_undershoot():
         prob._positivity_tripwire()
 
 
+def test_upwind_lateral_redistribution_downslope_3d():
+    """The lateral edge flux ROUTES water downslope: on a closed tilted box under ponding rain, the
+    monotone scheme moves ponded water down the bed-slope so it accumulates at the LOW end -- surface
+    depth is much greater downhill than uphill (the coupled analogue of the galerkin
+    test_2d_lateral_redistribution_downslope), while rain still reaches the whole surface."""
+    Lx, Ly = 2.0, 1.0
+    prob = CoupledProblem(_box(8, 4, 4, Lx=Lx, Ly=Ly), SOIL, overland_scheme="upwind")
+    prob.set_topography(lambda x: 0.05 * x[0])             # z_b high at x=Lx, low at x=0 -> flows to x=0
+    prob.set_initial_condition(lambda x: -1.0 + 0.0 * x[0], d_value=0.0)
+    prob.add_rain(0.5)                                      # > Ks -> ponds + routes
+    prob.advance(t_end=0.1, dt=1e-3, dt_max=0.02)
+
+    coords = prob.Vd.tabulate_dof_coordinates()
+    top = prob._top_dofs(prob.Vd)
+    xt = coords[top, 0]
+    d_top = prob.d.x.array[top]
+    downhill = d_top[xt < 0.5 * Lx * 0.5].mean()           # the low quarter (x < Lx/4)
+    uphill = d_top[xt > Lx - 0.5 * Lx * 0.5].mean()        # the high quarter (x > 3Lx/4)
+    assert downhill > 1.5 * uphill                          # water routed downslope (accumulated low)
+    assert uphill > 0.0                                    # rain reached the whole surface
+    assert prob.d.x.array.min() >= -prob._upwind_pos_tol   # within the characterized band
+
+
 def test_galerkin_still_uses_clip():
     """The galerkin path is unchanged: it still has the conservative clip (_enforce_positivity), not
     the tripwire -- a forced negative is clipped + tracked, not raised."""
