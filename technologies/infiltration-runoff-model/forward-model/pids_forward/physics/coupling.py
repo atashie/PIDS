@@ -40,6 +40,7 @@ from petsc4py import PETSc
 
 from .richards import richards_bulk_residual
 from .overland import overland_conveyance, SECONDS_PER_DAY
+from .overland_edge_kernel import build_top_facet_edge_graph, edge_flux_residual
 
 
 def _fischer_burmeister(a, b, eps):
@@ -80,7 +81,8 @@ class CoupledProblem:
     }
 
     def __init__(self, mesh, soil, *, ell_c: float | None = None, eps_ncp: float = 1e-4,
-                 n_man: float = 0.05, eps_S: float = 1e-3,
+                 n_man: float = 0.05, eps_S: float = 1e-3, eps_H: float = 1e-3,
+                 overland_scheme: str = "galerkin",
                  degree: int = 1, lumped: bool = True, quadrature_degree: int = 8,
                  petsc_options=None):
         self.mesh = mesh
@@ -88,6 +90,20 @@ class CoupledProblem:
         self.eps_ncp = float(eps_ncp)
         self.n_man = float(n_man)   # Manning roughness for the lateral overland flux (SI s.m^-1/3)
         self.eps_S = float(eps_S)   # diffusion-wave slope floor
+        self.eps_H = float(eps_H)   # smoothed-upwind head width (upwind scheme only; P1 default 1e-3)
+        # Lateral-overland discretization (Convergent-flow P2): "galerkin" = the validated UFL
+        # tangential-gradient diffusion-wave (default; unchanged + bit-identical); "upwind" = the
+        # monotone edge-flux on the top-facet graph (the P1 fix for the convergent-V sawtooth),
+        # supplied by a custom block-SNES (Part B). Opt-in until an Arik-gated default flip.
+        if overland_scheme not in ("galerkin", "upwind"):
+            raise ValueError(
+                f"overland_scheme must be 'galerkin' or 'upwind', got {overland_scheme!r}.")
+        self.overland_scheme = overland_scheme
+        if overland_scheme == "upwind" and mesh.topology.dim != 3:
+            raise NotImplementedError(
+                "overland_scheme='upwind' requires a 3-D host (the top facet is a 2-D triangulation "
+                f"for the cotangent edge graph); got topology.dim = {mesh.topology.dim}. The 2-D "
+                "top-edge upwind path is a future extension.")
         # CAP the nonlinear (van Genuchten / Manning / Kirchhoff) integration degree. FFCX's auto
         # estimate balloons on these fractional-power integrands (residual ~26, Jacobian ~41); on 3-D
         # TETRAHEDRA that is O(deg^3) quadrature points -> ~1000x slower assembly (a 6x6x5 box smoke
@@ -216,9 +232,19 @@ class CoupledProblem:
         # is unstabilized Galerkin advection of the kinematic (slope) flux and needs a stabilized/monotone
         # scheme -- deferred (docs/plans/2026-06-05-module3-realization-ffcx-bug.md §8). Kept consistent
         # here (clean, validated) since lumping did not cleanly resolve it.
-        self._F_d_bulk = ((self.d - self.d_n) / self.dt) * vd * self._ds_top \
-            + overland_flux \
-            + self.lam * vd * self._ds_top
+        if self.overland_scheme == "galerkin":
+            self._F_d_bulk = ((self.d - self.d_n) / self.dt) * vd * self._ds_top \
+                + overland_flux \
+                + self.lam * vd * self._ds_top
+        else:
+            # UPWIND (P2): the lateral conveyance is NOT a UFL term -- it is the monotone edge-flux
+            # residual on the top-facet graph, added to the d-rows by the custom block-SNES (Part B).
+            # The UFL F_d keeps ONLY storage + sign-paired lambda (+ rain/outlet via _finalize_forms);
+            # conservation stays structural (the edge flux telescopes to zero; lambda pairing intact).
+            self._F_d_bulk = ((self.d - self.d_n) / self.dt) * vd * self._ds_top \
+                + self.lam * vd * self._ds_top
+            self._upwind_edges, self._upwind_L_e, self._upwind_T_e, self._upwind_A_i = \
+                build_top_facet_edge_graph(self.Vd, mesh, self._top_facets)
         self._F_lam_bulk = _fischer_burmeister(self.d, self._tau_c * g, self.eps_ncp) * vlam * self._ds_top
 
         # Pinned interior d/λ vertices: their rows are Dirichlet-pinned to 0 but need a MATRIX DIAGONAL
