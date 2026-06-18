@@ -64,8 +64,41 @@ python make_comparison_tiltedv_html.py data/tilted_v__canonical__2026-06-17.nc \
 Inspect: outlet hydrograph Q(t) vs Q_eq (cold-start shaded); cumulative-outflow mass check; dt
 distribution (pin lifted); runtime; the kink-V undershoot annotation. **Arik signs off here.**
 
-## Verdict: P2 implementation COMPLETE + conserving + dt-lifted, but Tier-3 sign-off PENDING two
-open findings (cm-scale kink-V undershoot → P3 resolved swale; coupled Newton health → hand-analytic
-Jacobian). Recommend dispositioning these before the default-flip (DP-3). Upwind stays OPT-IN meanwhile.
+## DISPOSITION of findings 1 & 2 (2026-06-18) — RESOLVED on the real PIDS geometry
 
-- **Human sign-off:** Arik — PENDING.
+Both findings were dispositioned (Arik-chosen "disposition first"): (a) the **hand-analytic edge
+Jacobian** (`edge_flux_jacobian_dd_analytic`, FD-verified) was implemented + shipped as the production
+d-d block; (b) the coupled tilted-V was re-run on a **RESOLVED finite-width swale** (`SWALE_W=324`m
+flat valley floor — the real PIDS geometry, vs the 1-cell KINK) at 48×16×3 canonical.
+
+| geometry (canonical 1.62 km, upwind) | max undershoot | rejections | conservation | runtime |
+|--------------------------------------|----------------|------------|--------------|---------|
+| idealized KINK V (artifact) | **28.5 mm** | 98 | −0.0000% | 3.9 min |
+| RESOLVED swale W=324 m (real PIDS) | **0.5 mm** | 60 | +0.0000% | 4.2 min |
+| resolved swale at PRODUCTION tol (5mm, NO override) | 0.5 mm | 60 | +0.0000% | 4.2 min — **completes cleanly (tripwire does NOT fire)** |
+
+- **Finding 1 (positivity) — RESOLVED.** The undershoot drops **28.5mm → 0.5mm (57×)** on the resolved
+  swale — SUB-MM, exactly the B5b prediction (the cm-scale was the measure-zero-channel artifact of the
+  1-cell kink, not the scheme). The **production config (tripwire tol 5mm) runs the realistic swale
+  WITHOUT the tripwire firing.** The idealized kink V remains an acknowledged artifact geometry.
+- **Finding 2 (Newton health) — characterized + improved.** The **analytic Jacobian gives IDENTICAL
+  Newton health to the numerical FD** (kink V 98 rejections either way) — confirming the FD was already
+  ~exact and the kink rejections are GENUINE STIFFNESS, not Jacobian error. The analytic is shipped for
+  exactness/robustness (no FD step at the sharp front) + perf (DP-1), not as a Newton-health fix. On the
+  RESOLVED swale the rejections drop to 60 (the realistic geometry is less stiff); still ~560× faster
+  than galerkin's 39.5 h / 60k rejections. Full P3-swale Newton tuning (controller / linesearch) is the
+  residual perf item, not a correctness blocker.
+
+**Net:** on the geometry the product actually ships into (a resolved swale), the coupled upwind scheme
+is sub-mm-positive, machine-tight conserving, dt-pin-lifted, and runs cleanly at the production tripwire
+— the convergent-flow fix works in the engine. Tests: 174 + analytic-Jacobian = green.
+
+## Tier 3 — visual artifact (built 2026-06-18)
+Self-contained HTML `validation/sanity/viz/coupled_upwind_tiltedv__2026-06-18.html` (kink-V vs resolved
+swale, upwind): outlet hydrograph q/Q_eq, dt distribution (pin lifted), max-undershoot-over-time
+(28.5mm kink vs 0.5mm swale), conservation gap. **Arik opens it + signs off.**
+
+## Verdict: P2 COMPLETE + both Tier-3 findings DISPOSITIONED on the real (resolved-swale) geometry —
+sub-mm positive, conserving, dt-lifted, clean at production tol. Tier-3 visual sign-off ready.
+
+- **Human sign-off:** Arik — PENDING (visual review of the HTML).

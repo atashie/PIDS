@@ -20,6 +20,7 @@ from pids_forward.physics.overland_edge_kernel import (
     build_edge_graph_2d,
     build_top_facet_edge_graph,
     edge_flux_jacobian_dd,
+    edge_flux_jacobian_dd_analytic,
     edge_flux_residual,
 )
 
@@ -242,3 +243,28 @@ def test_edge_flux_jacobian_dd_matches_full_central_fd_2d():
         Jfd[:, k] = (_flux(dp) - _flux(dm)) / (2.0 * h)
 
     assert np.abs(J - Jfd).max() < 1e-4, f"edge Jacobian vs full central-FD: max diff {np.abs(J-Jfd).max():.2e}"
+
+
+def test_edge_flux_jacobian_dd_analytic_matches_numerical_2d():
+    """The hand-analytic edge Jacobian (DP-1 perf/robustness item) assembles the SAME d-d block as
+    the numerical per-edge FD Jacobian (which is itself FD-verified vs the full residual), at a
+    random non-flat positive state -- the exact chain rule through the tanh selector + Manning
+    mobility, to FD precision."""
+    msh = dmesh.create_rectangle(MPI.COMM_WORLD, [(0.0, 0.0), (2.0, 1.0)], [8, 4], cell_type=TRI)
+    prob = UpwindOverlandProblem(msh, n_man=N_MAN)
+    edges, L_e, T_e, A_i = build_edge_graph_2d(prob.V, msh)
+    n = prob.n_dofs
+    rng = np.random.default_rng(5)
+    coords = prob.V.tabulate_dof_coordinates()
+    z_b = 0.05 * coords[:n, 0] + 0.03 * coords[:n, 1]
+    d = 0.01 + 0.05 * rng.random(n)
+
+    ra, ca, va = edge_flux_jacobian_dd_analytic(d, z_b, edges, L_e, T_e, N_MAN, 1e-3, 1e-3)
+    rf, cf, vf = edge_flux_jacobian_dd(d, z_b, edges, L_e, T_e, N_MAN, 1e-3, 1e-3)
+    Ja = np.zeros((n, n)); np.add.at(Ja, (ra, ca), va)
+    Jf = np.zeros((n, n)); np.add.at(Jf, (rf, cf), vf)
+    # RELATIVE tolerance: the d-d Jacobian entries are huge (~1e5-1e6, the Manning mobility derivative),
+    # so the analytic (exact) and the central-FD (O(h^2) truncation) agree only to FD precision in a
+    # RELATIVE sense -- the analytic is the more accurate of the two. Per-entry rel err < 1e-5.
+    rel = np.abs(Ja - Jf) / (np.abs(Jf) + 1.0)
+    assert rel.max() < 1e-5, f"analytic vs numerical edge Jacobian: max rel diff {rel.max():.2e}"

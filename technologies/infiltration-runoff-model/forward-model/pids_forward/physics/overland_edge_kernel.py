@@ -285,3 +285,48 @@ def edge_flux_jacobian_dd(d, z_b, edges, L_e, T_e, n_man, eps_S, eps_H, h=1e-6):
     cols = np.concatenate([i, j, i, j])
     vals = np.concatenate([dQ_di, dQ_dj, -dQ_di, -dQ_dj])
     return rows, cols, vals
+
+
+def edge_flux_jacobian_dd_analytic(d, z_b, edges, L_e, T_e, n_man, eps_S, eps_H):
+    """EXACT analytic d-d edge-flux Jacobian (the DP-1 hand-Jacobian) -- vectorized 2x2-per-edge.
+
+    The exact chain rule through ``Q_e = T_e*M(d_up)*(H_i-H_j)``, ``H=z_b+d``, ``slope=dH/L_e``,
+    ``w=½(1+tanh(dH/eps_H))``, ``d_up=w*d_i+(1-w)*d_j``, ``M=C*max(d_up,0)^(5/3)*(slope²+eps_S²)^(-1/4)``,
+    ``C=SECONDS_PER_DAY/n_man``. Returns COO ``(rows, cols, vals)`` in the d-field dof index space (the
+    (i,i),(i,j),(j,i),(j,j) slots), identical in shape/use to ``edge_flux_jacobian_dd`` (the numerical
+    per-edge FD version) and matching it to FD precision (pinned by test). Exact + assembly-free of the
+    FD's extra flux evals; the production alternative to the numerical Jacobian (DP-1 perf/robustness).
+    """
+    i = edges[:, 0]
+    j = edges[:, 1]
+    di = d[i]
+    dj = d[j]
+    dH = (z_b[i] + di) - (z_b[j] + dj)
+    slope = dH / L_e
+    t = np.tanh(dH / eps_H)
+    w = 0.5 * (1.0 + t)
+    wprime = (1.0 - t * t) / (2.0 * eps_H)         # dw/d(dH); dH/dd_i = +1, dH/dd_j = -1
+    d_up = w * di + (1.0 - w) * dj
+    pos = d_up > 0.0
+    d_up_pos = np.where(pos, d_up, 0.0)
+    C = SECONDS_PER_DAY / n_man
+    s2 = slope * slope + eps_S ** 2
+    slope_root = s2 ** 0.25
+    M = C * d_up_pos ** (5.0 / 3.0) / slope_root
+    # dM/dd_up (subgradient 0 where d_up<=0) and dM/dslope
+    M_dup = np.where(pos, C * (5.0 / 3.0) * d_up_pos ** (2.0 / 3.0) / slope_root, 0.0)
+    M_slope = -C * d_up_pos ** (5.0 / 3.0) * slope / (2.0 * s2 ** 1.25)
+    # d_up derivatives (chain through w and the explicit d_i/d_j)
+    ddup_di = w + (di - dj) * wprime
+    ddup_dj = (1.0 - w) - (di - dj) * wprime
+    # dM/dd_i = M_dup*ddup_di + M_slope*dslope/dd_i; dslope/dd_i = +1/L_e, dd_j = -1/L_e
+    dM_di = M_dup * ddup_di + M_slope * (1.0 / L_e)
+    dM_dj = M_dup * ddup_dj - M_slope * (1.0 / L_e)
+    # dQ/dd_i = T_e*(dM/dd_i*dH + M*dH/dd_i); dH/dd_i=+1, dH/dd_j=-1
+    dQ_di = T_e * (dM_di * dH + M)
+    dQ_dj = T_e * (dM_dj * dH - M)
+
+    rows = np.concatenate([i, i, j, j])
+    cols = np.concatenate([i, j, i, j])
+    vals = np.concatenate([dQ_di, dQ_dj, -dQ_di, -dQ_dj])
+    return rows, cols, vals

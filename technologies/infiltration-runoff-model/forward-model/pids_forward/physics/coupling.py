@@ -42,7 +42,7 @@ from .richards import richards_bulk_residual
 from .overland import overland_conveyance, SECONDS_PER_DAY
 from .overland_edge_kernel import (
     build_top_facet_edge_graph,
-    edge_flux_jacobian_dd,
+    edge_flux_jacobian_dd_analytic,
     edge_flux_residual,
 )
 
@@ -606,17 +606,16 @@ class CoupledProblem:
         snes.setJacobian(_jacobian, problem._A, problem._P_mat)
 
     def _add_edge_jacobian(self, J, N) -> None:
-        """Add the numerical edge-flux Jacobian to the d-d block of J at offset (N,N).
+        """Add the analytic edge-flux Jacobian to the d-d block of J at offset (N,N).
 
-        The shipped P2 coupled-Newton block (Convergent-flow P2; Codex-recommended numerical edge
-        Jacobian). The frozen-mobility Picard form was tried first and STALLED on ponding fronts
-        (it drops dM/dd + the tanh-selector derivative, which sharpen at wet/dry fronts -- reason-4
-        line-search stall at all dt); the vectorized per-edge central-FD Jacobian (``edge_flux_
-        jacobian_dd``, FD-verified vs the residual) converges. The (N+i,N+j) slots already exist
-        (consistent ds_top storage mass) -> ADD_VALUES, no new allocation. (Hand-analytic Jacobian
-        is a documented future performance optimization; the per-edge FD is O(n_edges).)
+        The shipped P2 coupled-Newton block (Convergent-flow P2). History: the frozen-mobility Picard
+        form STALLED on ponding fronts (drops dM/dd + the tanh-selector derivative -> reason-4 stall at
+        all dt); a numerical per-edge central-FD Jacobian converged; and this EXACT analytic Jacobian
+        (``edge_flux_jacobian_dd_analytic``, FD-verified) is the production form -- exact (no FD step
+        sensitivity at the sharp kink front) + assembly-free of the FD's extra flux evals (DP-1).
+        The (N+i,N+j) slots already exist (consistent ds_top storage mass) -> ADD_VALUES, no new alloc.
         """
-        rows, cols, vals = edge_flux_jacobian_dd(
+        rows, cols, vals = edge_flux_jacobian_dd_analytic(
             self.d.x.array, self.z_b.x.array, self._upwind_edges, self._upwind_L_e,
             self._upwind_T_e, self.n_man, self.eps_S, self.eps_H)
         add = PETSc.InsertMode.ADD_VALUES

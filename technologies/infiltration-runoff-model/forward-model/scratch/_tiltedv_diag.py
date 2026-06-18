@@ -52,8 +52,17 @@ GROW_AT = int(os.environ.get("GROW_AT", "3"))
 SHRINK_AT = int(os.environ.get("SHRINK_AT", "8"))
 
 
+# SWALE_W>0 = a RESOLVED finite-width FLAT-bottomed valley of width SWALE_W (the real PIDS geometry,
+# B5b), vs the default 1-cell KINK |x-XC| (the measure-zero-channel artifact). z_b is flat within
+# +/- SWALE_W/2 of the valley center and slopes up outside.
+SWALE_W = float(os.environ.get("SWALE_W", "0.0"))
+
+
 def z_b(x):
-    return SY * (LY - x[1]) + SX * np.abs(x[0] - XC)
+    cross = np.abs(x[0] - XC)
+    if SWALE_W > 0.0:
+        cross = np.maximum(cross - 0.5 * SWALE_W, 0.0)
+    return SY * (LY - x[1]) + SX * cross
 
 
 def main():
