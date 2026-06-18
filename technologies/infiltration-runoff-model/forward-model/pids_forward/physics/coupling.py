@@ -40,6 +40,11 @@ from petsc4py import PETSc
 
 from .richards import richards_bulk_residual
 from .overland import overland_conveyance, SECONDS_PER_DAY
+from .overland_edge_kernel import (
+    build_top_facet_edge_graph,
+    edge_flux_jacobian_dd_analytic,
+    edge_flux_residual,
+)
 
 
 def _fischer_burmeister(a, b, eps):
@@ -65,6 +70,14 @@ class CoupledProblem:
         "snes_linesearch_type": "bt",
         "snes_rtol": 1e-10,
         "snes_atol": 1e-12,
+        # stol pinned explicitly (PETSc default): CONVERGED_SNORM_RELATIVE (4) is the STAGNATION
+        # verdict -- the iterate stopped moving. Legitimate at the residual floor (states whose
+        # assembly floor sits above atol; stol=0 turns those into max-it grinds + dt death
+        # spirals), but it certifies NOTHING about balance: a stalled line search far from the
+        # root also returns 4, and booking it injects the unbalanced residual into the mass
+        # budget (B6 convergent-V P0). step() books reason 4 only below the absolute bar
+        # ``stall_accept_fnorm``; dirty stalls become honest rejections (dt cut).
+        "snes_stol": 1e-8,
         "snes_max_it": 50,
         "ksp_type": "preonly",
         "pc_type": "lu",
@@ -72,7 +85,8 @@ class CoupledProblem:
     }
 
     def __init__(self, mesh, soil, *, ell_c: float | None = None, eps_ncp: float = 1e-4,
-                 n_man: float = 0.05, eps_S: float = 1e-3,
+                 n_man: float = 0.05, eps_S: float = 1e-3, eps_H: float = 1e-3,
+                 overland_scheme: str = "galerkin",
                  degree: int = 1, lumped: bool = True, quadrature_degree: int = 8,
                  petsc_options=None):
         self.mesh = mesh
@@ -80,6 +94,28 @@ class CoupledProblem:
         self.eps_ncp = float(eps_ncp)
         self.n_man = float(n_man)   # Manning roughness for the lateral overland flux (SI s.m^-1/3)
         self.eps_S = float(eps_S)   # diffusion-wave slope floor
+        self.eps_H = float(eps_H)   # smoothed-upwind head width (upwind scheme only; P1 default 1e-3)
+        # Lateral-overland discretization (Convergent-flow P2): "galerkin" = the validated UFL
+        # tangential-gradient diffusion-wave (default; unchanged + bit-identical); "upwind" = the
+        # monotone edge-flux on the top-facet graph (the P1 fix for the convergent-V sawtooth),
+        # supplied by a custom block-SNES (Part B). Opt-in until an Arik-gated default flip.
+        if overland_scheme not in ("galerkin", "upwind"):
+            raise ValueError(
+                f"overland_scheme must be 'galerkin' or 'upwind', got {overland_scheme!r}.")
+        self.overland_scheme = overland_scheme
+        # upwind positivity tripwire bound. The monotone scheme is NOT bit-strict positive on ponding
+        # wet/dry fronts: it shows a TRANSIENT, self-healing, mass-neutral mild-front undershoot --
+        # P1 gate-7 characterized 0..~0.9mm on standalone 2-D mounds; the coupled 3-D ponding case is
+        # ~1.1-1.5mm (P2-D1 characterization, grows mildly with rain rate, final state heals to d>=0,
+        # conservation machine-tight). 5mm tolerates that characterized SUB-CM band; a larger (cm-scale)
+        # negative depth RAISES loudly (genuine scheme breakdown -- the regime the galerkin cm-scale clip
+        # used to hide), NEVER a silent clip. P3 swale / semismooth Newton re-characterizes if needed.
+        self._upwind_pos_tol = 5e-3
+        if overland_scheme == "upwind" and mesh.topology.dim != 3:
+            raise NotImplementedError(
+                "overland_scheme='upwind' requires a 3-D host (the top facet is a 2-D triangulation "
+                f"for the cotangent edge graph); got topology.dim = {mesh.topology.dim}. The 2-D "
+                "top-edge upwind path is a future extension.")
         # CAP the nonlinear (van Genuchten / Manning / Kirchhoff) integration degree. FFCX's auto
         # estimate balloons on these fractional-power integrands (residual ~26, Jacobian ~41); on 3-D
         # TETRAHEDRA that is O(deg^3) quadrature points -> ~1000x slower assembly (a 6x6x5 box smoke
@@ -208,9 +244,19 @@ class CoupledProblem:
         # is unstabilized Galerkin advection of the kinematic (slope) flux and needs a stabilized/monotone
         # scheme -- deferred (docs/plans/2026-06-05-module3-realization-ffcx-bug.md §8). Kept consistent
         # here (clean, validated) since lumping did not cleanly resolve it.
-        self._F_d_bulk = ((self.d - self.d_n) / self.dt) * vd * self._ds_top \
-            + overland_flux \
-            + self.lam * vd * self._ds_top
+        if self.overland_scheme == "galerkin":
+            self._F_d_bulk = ((self.d - self.d_n) / self.dt) * vd * self._ds_top \
+                + overland_flux \
+                + self.lam * vd * self._ds_top
+        else:
+            # UPWIND (P2): the lateral conveyance is NOT a UFL term -- it is the monotone edge-flux
+            # residual on the top-facet graph, added to the d-rows by the custom block-SNES (Part B).
+            # The UFL F_d keeps ONLY storage + sign-paired lambda (+ rain/outlet via _finalize_forms);
+            # conservation stays structural (the edge flux telescopes to zero; lambda pairing intact).
+            self._F_d_bulk = ((self.d - self.d_n) / self.dt) * vd * self._ds_top \
+                + self.lam * vd * self._ds_top
+            self._upwind_edges, self._upwind_L_e, self._upwind_T_e, self._upwind_A_i = \
+                build_top_facet_edge_graph(self.Vd, mesh, self._top_facets)
         self._F_lam_bulk = _fischer_burmeister(self.d, self._tau_c * g, self.eps_ncp) * vlam * self._ds_top
 
         # Pinned interior d/λ vertices: their rows are Dirichlet-pinned to 0 but need a MATRIX DIAGONAL
@@ -243,6 +289,14 @@ class CoupledProblem:
         # (oldtotal<=0) drying branch; 0 in the normal conservative-rescale branch
         self.last_outflow = 0.0   # outlet discharge at the SOLVED state (pre-limiter), for accounting
         self.cum_outflow = 0.0    # cumulative outflow volume ∫ outflow dt over accepted steps
+        self.last_reason = 0      # SNES converged reason of the last step() solve (audit trail)
+        self.last_fnorm = np.nan  # |F| at that solve's exit: what residual the books accepted
+        self.stall_accept_fnorm = 3e-6  # reason-4 (stagnation) bookable only if |F| <= this
+        # ABSOLUTE bar = the geometric mean of the two measured populations: legitimate floors
+        # <= ~1.2e-6 (Tier-1 MMS/near-flat) vs dirty stalled line searches >= ~1e-5..3e-3 (B6
+        # P0 convergent V) -- ~2.5x margin to each. The bar is in assembled-residual units
+        # (mesh/area dependent): override per problem if its floor differs; mis-set it LOW and
+        # the failure is a loud dt_min error, never silent booking.
         self._drains: list = []          # (drain_facets, conductance, external_head) per add_drainage_bc
         self._drainage_forms: list = []  # compiled q_n*ds GHB forms (subsurface Darcy/head drainage)
         self.last_drainage = 0.0  # net drainage across ALL sinks at the SOLVED state (+ = out)
@@ -656,6 +710,74 @@ class CoupledProblem:
                 petsc_options_prefix="coupled_", petsc_options=self._petsc_options,
                 kind="mpi",  # monolithic block AIJ so a single LU factorizes the coupled operator
             )
+            if self.overland_scheme == "upwind":
+                self._wire_upwind_callbacks(self._problem)
+
+    # -- upwind lateral flux (Convergent-flow P2): inject into the coupled block-SNES ----------
+    def _wire_upwind_callbacks(self, problem) -> None:
+        """Override the coupled block-SNES residual/Jacobian callbacks to carry the monotone edge
+        flux on the d-block (the lateral conveyance the reduced UFL F_d omits, P2-B1).
+
+        The galerkin path solves [psi,d,lam] with DOLFINx's auto-Jacobian over the UFL forms. The
+        upwind path REUSES that machinery: DOLFINx's own ``assemble_residual``/``assemble_jacobian``
+        run first (they update psi,d,lam from x, do the block assembly + BC lifting), then we ADD --
+        on the d-block only -- the non-UFL lateral edge-flux residual and a frozen-mobility (Picard)
+        d-d Jacobian (the exact analytic Jacobian is Part C). Because the reduced F_d KEEPS the
+        consistent ds_top surface-storage mass, the auto-Jacobian already preallocates every
+        top-facet d-d coupling, so the Picard block inserts into existing nonzeros (no MALLOC; pinned
+        by test). Conservation stays structural (the edge flux telescopes to zero; lambda pairing
+        untouched). The edge graph is geometry-only (built in __init__), so set_topography/add_rain
+        invalidating the problem (->None) re-wires automatically.
+
+        SERIAL-ONLY (P2): the top-facet edge graph + the [psi|d|lam] block d-offset assume
+        single-rank ownership (no ghost top edges); multi-rank is a guarded future item.
+        """
+        if self.mesh.comm.size > 1:
+            raise NotImplementedError(
+                "overland_scheme='upwind' is serial-only for now (the top-facet edge graph + block "
+                "d-offset assume single-rank ownership). Multi-rank needs ownership-aware edges + "
+                "ghosted reads -- deferred; run serial.")
+        from dolfinx.fem.petsc import assemble_residual as _ar, assemble_jacobian as _aj
+        snes = problem.solver
+        u, Fforms, Jforms, pre = problem._u, problem._F, problem._J, problem._preconditioner
+        bcs = self._bcs
+        N = self.Vd.dofmap.index_map.size_local   # d is block field 1 of 3 equal-size fields -> [N:2N]
+
+        def _residual(snes_, x, b):
+            _ar(u, Fforms, Jforms, bcs, snes_, x, b)   # parent: assign x->u, assemble block F, lift BCs
+            d = self.d.x.array                         # now the current iterate (assigned above)
+            flux = edge_flux_residual(                 # storage/rain/outlet already in UFL -> d_n=d,
+                d[:N], self.z_b.x.array, d[:N], 0.0, 1.0,   # rain=0, no outflow => the PURE lateral flux
+                self._upwind_edges, self._upwind_L_e, self._upwind_T_e, self._upwind_A_i,
+                self.n_man, self.eps_S, self.eps_H, ())
+            with b.localForm() as bl:
+                bl.array[N:2 * N] += flux              # add to the d-block (0 on pinned interior rows)
+
+        def _jacobian(snes_, x, J, P):
+            _aj(u, Jforms, pre, bcs, snes_, x, J, P)   # parent: assign x->u, auto-J (storage/lam), assemble
+            self._add_edge_jacobian(J, N)              # + numerical d-d edge-flux block (no malloc)
+
+        snes.setFunction(_residual, problem._b)
+        snes.setJacobian(_jacobian, problem._A, problem._P_mat)
+
+    def _add_edge_jacobian(self, J, N) -> None:
+        """Add the analytic edge-flux Jacobian to the d-d block of J at offset (N,N).
+
+        The shipped P2 coupled-Newton block (Convergent-flow P2). History: the frozen-mobility Picard
+        form STALLED on ponding fronts (drops dM/dd + the tanh-selector derivative -> reason-4 stall at
+        all dt); a numerical per-edge central-FD Jacobian converged; and this EXACT analytic Jacobian
+        (``edge_flux_jacobian_dd_analytic``, FD-verified) is the production form -- exact (no FD step
+        sensitivity at the sharp kink front) + assembly-free of the FD's extra flux evals (DP-1).
+        The (N+i,N+j) slots already exist (consistent ds_top storage mass) -> ADD_VALUES, no new alloc.
+        """
+        rows, cols, vals = edge_flux_jacobian_dd_analytic(
+            self.d.x.array, self.z_b.x.array, self._upwind_edges, self._upwind_L_e,
+            self._upwind_T_e, self.n_man, self.eps_S, self.eps_H)
+        add = PETSc.InsertMode.ADD_VALUES
+        sv = J.setValue
+        for r, c, v in zip(rows, cols, vals):
+            sv(N + int(r), N + int(c), float(v), addv=add)  # serial: global == block idx; dups accumulate
+        J.assemble()
 
     # -- positivity limiter ---------------------------------------------------
     def _enforce_positivity(self) -> float:
@@ -684,14 +806,52 @@ class CoupledProblem:
         self.clip_mass_adjust += self.surface_water() - oldtotal
         return -gmin
 
+    def _positivity_tripwire(self) -> float:
+        """Upwind path (Convergent-flow P2-D1): the monotone edge scheme holds d>=0 by construction,
+        so the galerkin positivity limiter is DEMOTED to a tripwire -- record the min depth, NEVER
+        clip/rescale (``clip_mass_adjust`` stays 0), and RAISE loudly if the depth falls below
+        ``-_upwind_pos_tol`` (beyond the characterized sub-mm mild-front undershoot, P1 gate-7). A
+        real undershoot is a finding to characterize (P3 swale / semismooth Newton), not something to
+        silently clip away. Returns the undershoot magnitude (>= 0) for the audit trail.
+        """
+        arr = self.d.x.array
+        gmin = self.mesh.comm.allreduce(float(arr.min()) if arr.size else 0.0, op=MPI.MIN)
+        undershoot = -gmin if gmin < 0.0 else 0.0
+        if undershoot > self._upwind_pos_tol:
+            raise RuntimeError(
+                f"upwind overland produced d = {gmin:.3e} m (undershoot {undershoot:.3e} > tol "
+                f"{self._upwind_pos_tol:.0e}). The monotone scheme should hold d>=0; this is beyond "
+                "the characterized sub-mm mild-front undershoot -- a real finding to characterize "
+                "(P3 swale / semismooth Newton), NOT to silently clip.")
+        return undershoot
+
     # -- time stepping --------------------------------------------------------
     def step(self, dt: float):
         """Advance one monolithic backward-Euler Newton step. Returns (converged, iters)."""
         self.dt.value = dt
+        lam_save = self.lam.x.array.copy()  # λ has no _n shadow; stash for honest rejection restore
         self._ensure_problem()
         self._problem.solve()
         snes = self._problem.solver
-        converged = snes.getConvergedReason() > 0
+        self.last_reason = int(snes.getConvergedReason())
+        self.last_fnorm = float(snes.getFunctionNorm())
+        if self.last_reason == 4:
+            # PETSc's failed-line-search SNORM exit can return BEFORE the cached norm is updated
+            # (snes->norm then belongs to the PREVIOUS iterate while x sits at the failed trial
+            # point) -- recompute ||F|| at the RETURNED iterate so the floor gate below never
+            # books on a stale norm. Rare path; one extra residual evaluation.
+            x = snes.getSolution()
+            r = x.duplicate()
+            snes.computeFunction(x, r)
+            self.last_fnorm = float(r.norm())
+            r.destroy()
+        # bookable = residual-tested (reasons 2/3), or stagnation AT the residual floor: reason 4
+        # only certifies the iterate stopped moving. With a numerically tiny leftover residual that
+        # is the legitimate floor exit; far from balance it is a stalled line search whose booking
+        # injects the unbalanced residual into the mass budget (B6 P0) -- those must be honest
+        # rejections so the caller cuts dt.
+        converged = self.last_reason > 0 and (
+            self.last_reason != 4 or self.last_fnorm <= self.stall_accept_fnorm)
         iters = int(snes.getIterationNumber())
         if converged:
             # Record the outlet discharge at the SOLVED state (before the limiter rescales d): this
@@ -704,7 +864,10 @@ class CoupledProblem:
             # SOLVED state: Δtotal = cum_rain − cum_outflow − cum_drainage. Per-sink split kept in
             # last_sinks/cum_sinks; the lists AUTO-EXTEND so script-level forms appended directly
             # to _drainage_forms (the pre-API injection pattern, e.g. m4_hillslope_drain_dual.py
-            # at 63145e2) keep working and report under 'ghb'.
+            # at 63145e2) keep working and report under 'ghb'. (Convergent-flow merge 2026-06-18:
+            # this per-sink accounting [main's 8a891c2] now sits INSIDE the hardened O5 acceptance
+            # gate -- a rejected reason-4 stall never books sinks; it subsumes the old single
+            # drainage_rate() sum.)
             total = 0.0
             for kind, forms in (("ghb", self._drainage_forms),
                                 ("interior_drain", self._interior_forms),
@@ -719,7 +882,11 @@ class CoupledProblem:
                     total += r
             self.last_drainage = total
             self.cum_drainage += dt * total
-            self.last_clip = self._enforce_positivity()  # keep d_n >= 0 (lateral-overland undershoots)
+            if self.overland_scheme == "upwind":
+                # monotone scheme: the limiter is a TRIPWIRE (record min depth, NEVER clip), P2-D1
+                self.last_clip = self._positivity_tripwire()
+            else:
+                self.last_clip = self._enforce_positivity()  # galerkin: conservative clip
             self.max_clip_seen = max(self.max_clip_seen, self.last_clip)
             self.psi_n.x.array[:] = self.psi.x.array
             self.psi_n.x.scatter_forward()
@@ -730,6 +897,10 @@ class CoupledProblem:
             self.psi.x.scatter_forward()
             self.d.x.array[:] = self.d_n.x.array
             self.d.x.scatter_forward()
+            # λ too: leaving the stalled multiplier would seed the retry's Newton with a wrong
+            # NCP active-set guess and leak the dirty value into exchange_flux() diagnostics.
+            self.lam.x.array[:] = lam_save
+            self.lam.x.scatter_forward()
         return converged, iters
 
     def advance(self, t_end, dt, *, dt_min=1e-9, dt_max=None, grow=1.5, cut=0.5,
