@@ -472,11 +472,11 @@ solver wiring in `coupling.py` (`_wire_upwind_callbacks`, `_add_edge_jacobian`, 
 | 1 | Opt-in + galerkin bit-identical | **✓** | `overland_scheme` (galerkin default); every pre-existing test unchanged; suite 174 passed. |
 | 2 | Lateral term only; monolithic block + λ-conservation | **✓** | only `overland_flux` removed from UFL `F_d`; ψ/λ/NCP/outlet/drainage/pin untouched; one `[ψ,d,λ]` Newton (no operator-split). |
 | 3 | Conservation structural | **✓** | closed tilted 3-D box, ponding rain: `Δtotal = cum_rain` to **1e-13**; `clip_mass_adjust = 0`. |
-| 4 | Positivity WITHOUT the clip (tripwire) | **✓ + characterized caveat** | limiter demoted to a loud tripwire on the upwind path (never clips). **Coupled mild-front undershoot is TRANSIENT, self-healing, mass-neutral, ~1.1–1.5mm** (grows mildly with rain rate; final state heals to d≥0) — the P1 gate-7 caveat at coupled scale (vs galerkin's cm-scale clip). Tripwire tol 5mm tolerates the characterized sub-cm band; raises on cm-scale breakdown. |
+| 4 | Positivity WITHOUT the clip (tripwire) | **✓ + GEOMETRY-DEPENDENT caveat (one CM-scale)** | limiter demoted to a loud tripwire on the upwind path (never clips). **The mild-front undershoot is GEOMETRY-DEPENDENT (§8.8 E1 finding-1): ~1.1–1.5mm on a SMOOTH tilted box (transient, self-healing, mass-neutral), but CM-SCALE on the idealized 1-cell-wide KINK tilted-V (7.7mm field 162m → 28.5mm canonical 1.62km, scaling with domain)** — the positivity side of the B5b measure-zero-channel artifact. The tripwire (tol 5mm) correctly REJECTS the kink-V run (loud, by design). The absolute bound on a RESOLVED swale is **P3**; do NOT read "sub-cm" as holding on the idealized kink V. |
 | 5 | Jacobian correct (kernel + coupled) | **✓** | numerical per-edge central-FD edge Jacobian; kernel FD-verify (== full central FD) AND coupled-level `J·δ` vs FD smoke (block offset/sign/BC). |
 | 6 | Coupled accuracy = operator equivalence; absolute swale = P3 | **✓** | operator-equivalence to the validated standalone is STRUCTURAL (same extracted kernel + A2 cotangent==ds_top-stiffness + A3 conservation root); downslope routing reproduced (downhill > 1.5× uphill). Absolute resolved-swale discharge accuracy is the **P3** fixture (per §8.7). |
 | 7 | Top-facet graph guarded | **✓** | cotangent `T_e == −(ds_top tangential-gradient stiffness off-diag)`; `Σ A_i == top area`; M-matrix guard (raises on obtuse). |
-| 8 | Regression + Tier-3 | **✓ suite / Tier-3 PENDING** | full suite 174 passed (galerkin bit-identical). **Tier-3 B4/B5/B6 upwind re-baseline = SET UP (§8.8 below), pending Arik visual sign-off** — record `validation/sanity/coupled_upwind__2026-06-17.md`. |
+| 8 | Regression + Tier-3 | **✓ suite / Tier-3 RUN, sign-off PENDING (2 open findings)** | full suite 174 passed (galerkin bit-identical). Coupled tilted-V re-baseline EXECUTED (`_tiltedv_diag.py OVERLAND_SCHEME=upwind`): **dt-pin LIFTED + conservation machine-tight + canonical 3.8 min vs galerkin 39.5 h (~600×)** — BUT two open findings (cm-scale kink undershoot → P3; coupled Newton health → hand-analytic Jacobian). Record `validation/sanity/coupled_upwind__2026-06-17.md`; Arik sign-off pending. |
 
 **The two key findings (Codex-reviewed):**
 - **The planned Picard (frozen-mobility) Jacobian is non-viable: it STALLS on ponding fronts** (reason-4
@@ -487,8 +487,10 @@ solver wiring in `coupling.py` (`_wire_upwind_callbacks`, `_add_edge_jacobian`, 
   Jacobian is a documented future PERFORMANCE optimization** (DP-1 resolved this way). The numerical
   Jacobian converges but at higher iteration counts than galerkin on stiff ponding — the lever for when
   hand-analytic gets pulled in.
-- **The mild-front undershoot is real in the coupled setting (~1.1–1.5mm)** — bar-4 above. Honest,
-  characterized, sub-cm, transient, mass-neutral; flagged for Arik + P3 swale re-characterization.
+- **The mild-front undershoot is GEOMETRY-DEPENDENT (E1, §8.8 below)** — ~1.1–1.5mm on a smooth tilted
+  box, but **CM-SCALE on the idealized kink tilted-V (7.7mm field → 28.5mm canonical, domain-scaling)**,
+  the positivity side of the B5b measure-zero-channel artifact. The tripwire correctly rejects it; the
+  resolved-swale bound is P3. Flagged for Arik (the "sub-cm" claim holds only on smooth/resolved geom).
 
 **Carried decisions (inputs to P3):** numerical per-edge central-FD edge Jacobian (hand-analytic =
 perf); tripwire tol 5mm; **serial-only** (multi-rank guarded — ownership-aware edges + ghosted reads
@@ -500,18 +502,27 @@ mode either way. **Proposed:** flip the `CoupledProblem` default `galerkin → "
 Tier-3 visual sign-off (§8.8 re-baseline) and (b) the P3 resolved-swale absolute-accuracy validation —
 not before. Until then, upwind is opt-in.
 
-**Tier-3 re-baseline setup (E1, for Arik sign-off).** The B4 (1-D coupled column) / B5 (3-D coupled
-hillslope) / B6 (coupled tilted-V) runners + the solver-independent HTML builders are in
-`forward-model/viz/` + `benchmarks/`. The upwind re-runs are wired via an `OVERLAND_SCHEME=upwind`
-env knob on the coupled runners; the decisive artifact is the **coupled 3-D tilted-V** (the convergence
-line where galerkin pinned dt → 39.5 h) re-run with upwind. See `validation/sanity/coupled_upwind__2026-06-17.md`
-for the run commands + the metrics to inspect; Arik opens the HTMLs and signs off.
+**Tier-3 re-baseline (E1) — RUN; two findings surfaced; sign-off PENDING.** The coupled tilted-V runner
+`_tiltedv_diag.py` is wired for upwind (`OVERLAND_SCHEME=upwind`, `POS_TOL` to relax the tripwire for
+the diagnostic). Executed at field (162m) + canonical (1.62km) scale, coarse 24×16×3, storm window
+(record `validation/sanity/coupled_upwind__2026-06-17.md`):
+- **WINS:** dt-pin LIFTED (reaches DT_MAX 1e-3 vs galerkin ~1.5e-6); conservation machine-tight
+  (canonical ext_gap −1e-7 m³ = −0.0000%); **canonical 3.8 min vs galerkin 39.5 h (~600×)**; sawtooth gone.
+- **FINDING 1 (positivity):** the kink-V undershoot is CM-SCALE + domain-scaling (7.7mm→28.5mm), the
+  B5b measure-zero-channel artifact; the tripwire correctly rejects it. Resolved-swale bound = P3.
+- **FINDING 2 (Newton health):** the coupled upwind has rejections/reason-4 stalls (canonical 98/175)
+  the standalone (0) did not — the coupling + numerical Jacobian is stiffer; the hand-analytic Jacobian
+  is the lever. Still completes + conserves + lifts the pin.
+The decisive HTML (in-house upwind vs galerkin vs ParFlow) is built after the two findings are
+dispositioned; Arik opens it + signs off.
 
-**Bottom line: P2 ships the convergent-flow fix into the product engine.** The coupled upwind solver is
-functional, opt-in, galerkin-bit-identical, conserving, monotone-to-sub-cm, and Codex-reviewed. The only
-open items are the (honest) characterized mild-front undershoot, the hand-analytic Jacobian (perf), the
-serial/3-D scoping, and the Tier-3 visual sign-off + the b6→main merge. **NEXT = P3** (re-benchmark +
-the permanent PIDS-swale Tier-2 fixture — the absolute-accuracy fixture per §8.7).
+**Bottom line: P2 ships the convergent-flow fix into the product engine, OPT-IN, with two honest open
+findings.** The coupled upwind solver is functional, galerkin-bit-identical, conserving, dt-lifted
+(~600× on the canonical tilted-V), and Codex-reviewed. Open before a clean Tier-3 sign-off / the
+default-flip: (1) the **cm-scale kink-V positivity undershoot** (the B5b artifact geometry → P3 resolved
+swale), (2) the **coupled Newton health** (→ the hand-analytic edge Jacobian, the DP-1 perf item), plus
+the serial/3-D scoping and the b6→main merge. **NEXT = disposition findings 1–2, then P3** (the
+permanent PIDS-swale Tier-2 fixture — the absolute-accuracy + real-geometry positivity fixture per §8.7).
 
 ## 9. Artifacts
 - This plan; B6 deck `parflow/cases/tilted_v_catchment.py`; harness `benchmarks/build_comparison_tiltedv.py`

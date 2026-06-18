@@ -46,6 +46,7 @@ if len(sys.argv) >= 4:
     T_END = float(sys.argv[3])
 
 STOL0 = os.environ.get("STOL0", "0") == "1"
+SCHEME = os.environ.get("OVERLAND_SCHEME", "galerkin")  # "galerkin" (default) or "upwind" (P2 re-baseline)
 DT_MAX = float(os.environ.get("DT_MAX", "1e-3"))
 GROW_AT = int(os.environ.get("GROW_AT", "3"))
 SHRINK_AT = int(os.environ.get("SHRINK_AT", "8"))
@@ -61,13 +62,19 @@ def main():
     opts = dict(CoupledProblem._DEFAULT_PETSC_OPTIONS)
     if STOL0:
         opts["snes_stol"] = 0.0   # O5: forbid SNORM_RELATIVE (reason 4) acceptance
-    prob = CoupledProblem(msh, SOIL, n_man=N_MAN, petsc_options=opts)
+    prob = CoupledProblem(msh, SOIL, n_man=N_MAN, petsc_options=opts, overland_scheme=SCHEME)
+    if SCHEME == "upwind" and os.environ.get("POS_TOL"):
+        # relax the positivity tripwire for the DIAGNOSTIC (kink-V is the B5b measure-zero-channel
+        # artifact worst case; this lets the run complete so we can CHARACTERIZE the max undershoot
+        # + confirm the dt-pin/conservation, instead of aborting). NOT a production setting.
+        prob._upwind_pos_tol = float(os.environ["POS_TOL"])
     prob.set_initial_condition(lambda x: -1.0 + 0.0 * x[2], d_value=0.0)
     prob.set_topography(z_b)
     rain = prob.add_rain(0.0)
     prob.add_outflow_bc(lambda x: np.isclose(x[1], LY), slope=SY)
     print(f"[setup] mesh {NX}x{NY}x{NZ} on {LX:g}x{LY:g}x{H:g} m  Ks={KS:g}  ell_c={prob.ell_c:.3f}  "
-          f"Q_eq={Q_EQ:.0f} m^3/day  STOL0={int(STOL0)}  setup={time.time()-t0:.1f}s", flush=True)
+          f"Q_eq={Q_EQ:.0f} m^3/day  scheme={SCHEME}  STOL0={int(STOL0)}  setup={time.time()-t0:.1f}s",
+          flush=True)
 
     rec = {k: [] for k in ("t", "dt", "reason", "iters", "fnorm", "rainA", "qout", "dW",
                            "dsoil", "dsurf", "dclip", "gap", "clipdepth", "accepted")}
@@ -156,11 +163,12 @@ def main():
               f"{int(a['iters'][i]):3d} {a['fnorm'][i]:9.2e} {a['gap'][i]:+10.3e} "
               f"{a['dclip'][i]:+9.2e}", flush=True)
 
-    out = os.environ.get("OUT", f"scratch/tiltedv_diag_{NX}x{NY}{'_stol0' if STOL0 else ''}.npz")
+    out = os.environ.get(
+        "OUT", f"scratch/tiltedv_diag_{NX}x{NY}_{SCHEME}{'_stol0' if STOL0 else ''}.npz")
     np.savez(out, **a, cum_rain=cum_rain, cum_out=cum_out, dW_total=dW_total, ext_gap=ext_gap,
              clip_mass_adjust=prob.clip_mass_adjust, n_acc=n_acc, n_rej=n_rej, run_s=run_s,
              NX=NX, NY=NY, NZ=NZ, Q_eq=Q_EQ, storm=STORM, t_end=T_END, stol0=int(STOL0),
-             Ks=KS, scale=SCALE,
+             Ks=KS, scale=SCALE, scheme=SCHEME,
              grow_at=GROW_AT, shrink_at=SHRINK_AT, dt_max=DT_MAX, comm_size=MPI.COMM_WORLD.size)
     print(f"[done] -> {out}", flush=True)
 
