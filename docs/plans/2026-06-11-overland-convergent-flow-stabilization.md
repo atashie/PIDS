@@ -445,6 +445,74 @@ corrected): O1 fixes the convergent-V pathology, its convergence-line flux is co
 that matters (the resolved swale), and the only carried items are perf (hand-Jacobian) + the
 characterized sub-mm mild-front undershoot. **NEXT = P2.**
 
+### 8.8 P2 productionization result (2026-06-17) — the upwind scheme shipped in `CoupledProblem`
+
+**Headline — O1 is productionized in the coupled `[ψ, d, λ]` solver as an OPT-IN scheme, and it
+works.** `CoupledProblem(..., overland_scheme="upwind")` runs the monotone upwind edge flux on the
+realization-A top-facet graph as the lateral-overland operator, converging + conserving on the coupled
+storm; the galerkin default is bit-identical. Full suite **174 passed**. Plan
+`docs/plans/2026-06-16-overland-convergent-flow-P2.md`; commits A1 `0bb10be` → D2 `d7707a1` on
+`b6-tilted-v-convergent-flow`. The implementation was **Codex-reviewed twice** (the plan + the mid-build
+Jacobian finding); both reviews' blockers/should-fixes are folded in.
+
+**Architecture (the irreducible decision).** The coupled solve is a monolithic block Newton (DOLFINx
+0.10 `NonlinearProblem`, auto-Jacobian over UFL forms). The upwind edge flux is NOT UFL-expressible,
+so the upwind path **overrides the SNES residual/Jacobian callbacks**: DOLFINx's own
+`assemble_residual`/`assemble_jacobian` run first (block assembly + BC lifting), then the non-UFL
+lateral edge-flux residual + the d–d edge Jacobian are ADDED on the d-block only. `ψ`, `λ`/NCP,
+outlet, drainage, and the interior-pin stay UFL and untouched; the monolithic block + λ sign-pairing
+are preserved, so conservation stays structural (the edge flux telescopes to zero over the surface).
+Kernel `pids_forward/physics/overland_edge_kernel.py` (extracted DRY from the standalone, bit-identical);
+solver wiring in `coupling.py` (`_wire_upwind_callbacks`, `_add_edge_jacobian`, `_positivity_tripwire`).
+
+**Gate-by-gate vs the §5 P2 acceptance list (P2-plan acceptance bars 1–8):**
+
+| # | P2 bar | Result | Evidence |
+|---|--------|--------|----------|
+| 1 | Opt-in + galerkin bit-identical | **✓** | `overland_scheme` (galerkin default); every pre-existing test unchanged; suite 174 passed. |
+| 2 | Lateral term only; monolithic block + λ-conservation | **✓** | only `overland_flux` removed from UFL `F_d`; ψ/λ/NCP/outlet/drainage/pin untouched; one `[ψ,d,λ]` Newton (no operator-split). |
+| 3 | Conservation structural | **✓** | closed tilted 3-D box, ponding rain: `Δtotal = cum_rain` to **1e-13**; `clip_mass_adjust = 0`. |
+| 4 | Positivity WITHOUT the clip (tripwire) | **✓ + characterized caveat** | limiter demoted to a loud tripwire on the upwind path (never clips). **Coupled mild-front undershoot is TRANSIENT, self-healing, mass-neutral, ~1.1–1.5mm** (grows mildly with rain rate; final state heals to d≥0) — the P1 gate-7 caveat at coupled scale (vs galerkin's cm-scale clip). Tripwire tol 5mm tolerates the characterized sub-cm band; raises on cm-scale breakdown. |
+| 5 | Jacobian correct (kernel + coupled) | **✓** | numerical per-edge central-FD edge Jacobian; kernel FD-verify (== full central FD) AND coupled-level `J·δ` vs FD smoke (block offset/sign/BC). |
+| 6 | Coupled accuracy = operator equivalence; absolute swale = P3 | **✓** | operator-equivalence to the validated standalone is STRUCTURAL (same extracted kernel + A2 cotangent==ds_top-stiffness + A3 conservation root); downslope routing reproduced (downhill > 1.5× uphill). Absolute resolved-swale discharge accuracy is the **P3** fixture (per §8.7). |
+| 7 | Top-facet graph guarded | **✓** | cotangent `T_e == −(ds_top tangential-gradient stiffness off-diag)`; `Σ A_i == top area`; M-matrix guard (raises on obtuse). |
+| 8 | Regression + Tier-3 | **✓ suite / Tier-3 PENDING** | full suite 174 passed (galerkin bit-identical). **Tier-3 B4/B5/B6 upwind re-baseline = SET UP (§8.8 below), pending Arik visual sign-off** — record `validation/sanity/coupled_upwind__2026-06-17.md`. |
+
+**The two key findings (Codex-reviewed):**
+- **The planned Picard (frozen-mobility) Jacobian is non-viable: it STALLS on ponding fronts** (reason-4
+  line-search stall at all dt — it drops dM/dd + the tanh-selector derivative that sharpen at wet/dry
+  fronts). Codex's prescribed discriminators (the J-vs-P risk ruled out; a numerical edge Jacobian
+  converges) confirmed Jacobian exactness is the lever. **Shipped = a vectorized per-edge central-FD edge
+  Jacobian** (correctness-first, Codex-endorsed, the standalone's FD precedent); the **hand-analytic
+  Jacobian is a documented future PERFORMANCE optimization** (DP-1 resolved this way). The numerical
+  Jacobian converges but at higher iteration counts than galerkin on stiff ponding — the lever for when
+  hand-analytic gets pulled in.
+- **The mild-front undershoot is real in the coupled setting (~1.1–1.5mm)** — bar-4 above. Honest,
+  characterized, sub-cm, transient, mass-neutral; flagged for Arik + P3 swale re-characterization.
+
+**Carried decisions (inputs to P3):** numerical per-edge central-FD edge Jacobian (hand-analytic =
+perf); tripwire tol 5mm; **serial-only** (multi-rank guarded — ownership-aware edges + ghosted reads
+deferred); **3-D host only** (the 2-D top-edge upwind is a trivial future extension, guarded). DP-2
+(kernel extraction) done with the standalone staying bit-identical.
+
+**DP-3 — the default-flip proposal (Arik's call at sign-off):** keep galerkin as a PERMANENT fallback
+mode either way. **Proposed:** flip the `CoupledProblem` default `galerkin → "upwind"` AFTER (a) Arik's
+Tier-3 visual sign-off (§8.8 re-baseline) and (b) the P3 resolved-swale absolute-accuracy validation —
+not before. Until then, upwind is opt-in.
+
+**Tier-3 re-baseline setup (E1, for Arik sign-off).** The B4 (1-D coupled column) / B5 (3-D coupled
+hillslope) / B6 (coupled tilted-V) runners + the solver-independent HTML builders are in
+`forward-model/viz/` + `benchmarks/`. The upwind re-runs are wired via an `OVERLAND_SCHEME=upwind`
+env knob on the coupled runners; the decisive artifact is the **coupled 3-D tilted-V** (the convergence
+line where galerkin pinned dt → 39.5 h) re-run with upwind. See `validation/sanity/coupled_upwind__2026-06-17.md`
+for the run commands + the metrics to inspect; Arik opens the HTMLs and signs off.
+
+**Bottom line: P2 ships the convergent-flow fix into the product engine.** The coupled upwind solver is
+functional, opt-in, galerkin-bit-identical, conserving, monotone-to-sub-cm, and Codex-reviewed. The only
+open items are the (honest) characterized mild-front undershoot, the hand-analytic Jacobian (perf), the
+serial/3-D scoping, and the Tier-3 visual sign-off + the b6→main merge. **NEXT = P3** (re-benchmark +
+the permanent PIDS-swale Tier-2 fixture — the absolute-accuracy fixture per §8.7).
+
 ## 9. Artifacts
 - This plan; B6 deck `parflow/cases/tilted_v_catchment.py`; harness `benchmarks/build_comparison_tiltedv.py`
   + `make_comparison_tiltedv_html.py`; in-house runner `forward-model/scratch/_tiltedv_spike.py` (to be
