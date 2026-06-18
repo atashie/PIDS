@@ -99,6 +99,9 @@ swale, upwind): outlet hydrograph q/Q_eq, dt distribution (pin lifted), max-unde
 (28.5mm kink vs 0.5mm swale), conservation gap. **Arik opens it + signs off.**
 
 ## Verdict: P2 COMPLETE + both Tier-3 findings DISPOSITIONED on the real (resolved-swale) geometry —
-sub-mm positive, conserving, dt-lifted, clean at production tol. Tier-3 visual sign-off ready.
+sub-mm positive, conserving, dt-lifted, clean at production tol. **Tier-3 SIGNED OFF.**
 
-- **Human sign-off:** Arik — PENDING (visual review of the HTML).
+- **Human sign-off:** Arik — **APPROVED 2026-06-18** (visual review of
+  `validation/sanity/viz/coupled_upwind_tiltedv__2026-06-18.html`). The opt-in coupled upwind scheme
+  is accepted; default stays galerkin (DP-3 default-flip remains gated on the P3 resolved-swale
+  absolute-accuracy run).
