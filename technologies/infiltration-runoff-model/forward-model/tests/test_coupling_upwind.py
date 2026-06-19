@@ -24,6 +24,26 @@ from pids_forward.physics.coupling import CoupledProblem
 
 SOIL = VanGenuchten(theta_r=0.078, theta_s=0.43, alpha=3.6, n=1.56, Ks=0.25)
 
+# -- P3 Part A: resolved-swale ABSOLUTE accuracy (depth-field), Gate-A framing (Arik 2026-06-19) ----
+# The coupled outlet is conservation-FORCED to Q_eq (it IS the outlet sink), so it proves conservation
+# NOT accuracy. Absolute accuracy is the DEPTH FIELD, proven by (a) operator-equivalence to the
+# validated standalone UpwindOverlandProblem (carries B5b's resolved-swale consistent-discharge ~0.99
+# into the coupled engine) + (b) a DIRECT coupled plane -> analytic Manning normal-depth check. The
+# convergent tilted-V floor is edge/corner-heavy (NOT the uniform 1-D normal-depth idealization), so
+# its floor depth is reported MESH-CONVERGENT (vs the kink's measure-zero divergence) rather than
+# matched to d_n. Framing = parent plan 8.7/8.8 ("coupled accuracy = operator equivalence"). The
+# measurement/evidence harness is scratch/_p3_swale_accuracy.py.
+from scratch._p3_swale_accuracy import (   # noqa: E402  (the Part-A measurement helpers)
+    RAIN, drive_coupled_swale, drive_standalone_swale, depth_field_reldiff,
+    measure_floor_depth, normal_depth, plane_normal_depth, outlet_row_mean_depth,
+)
+
+# the fast in-suite Part-A config (small + coarse + large-dt -> ~10-16 s/run, near-impermeable bed,
+# inlet OFF, canonical full-edge outlet). The floor W=48 spans >=6 cells at nx=16 (resolved swale).
+_PA_CFG = dict(LX=120.0, LY=80.0, H=1.0, SX=0.04, SY=0.02, n_man=0.015,
+               dt0=1e-4, dt_max=1e-2, t_end=0.04)
+_PA_W = 48.0
+
 
 def _box(nx=6, ny=3, nz=3, Lx=2.0, Ly=1.0, Lz=1.0):
     return dmesh.create_box(MPI.COMM_WORLD, [[0.0, 0.0, 0.0], [Lx, Ly, Lz]], [nx, ny, nz])
@@ -212,3 +232,76 @@ def test_galerkin_still_uses_clip():
     clipped = prob._enforce_positivity()                   # the clip still exists + runs
     assert clipped == pytest.approx(5e-4, rel=1e-9)
     assert prob.d.x.array.min() >= 0.0                      # clipped to non-negative
+
+
+# == P3 Part A: resolved-swale absolute accuracy (depth field) =================================
+@pytest.fixture(scope="module")
+def part_a_runs():
+    """Drive the Part-A coupled swale (coarse + fine), the matching STANDALONE upwind surface, and a
+    tilted PLANE ONCE (canonical full-edge outlet, near-impermeable bed, inlet OFF) -- the Part-A pins
+    assert on the cached plateau fields. ~50 s total (amortized across the four pins)."""
+    coarse = drive_coupled_swale(_PA_W, 16, 12, 2, outlet="edge", **_PA_CFG)[2]
+    fine = drive_coupled_swale(_PA_W, 24, 16, 2, outlet="edge", **_PA_CFG)[2]
+    scfg = {k: v for k, v in _PA_CFG.items() if k != "H"}
+    std = drive_standalone_swale(_PA_W, 24, 16, outlet="edge", **scfg)[2]
+    pcfg = dict(_PA_CFG)
+    pcfg["SX"] = 0.0                                        # no cross-slope -> a clean tilted plane
+    plane = drive_coupled_swale(0.0, 24, 16, 2, outlet="edge", **pcfg)[2]
+    return dict(coarse=coarse, fine=fine, std=std, plane=plane)
+
+
+def test_coupled_outlet_is_conservation_forced_not_accuracy(part_a_runs):
+    """A1.1 (the §8.7 trap, pinned): the coupled outlet outflow_rate() -> ~Q_eq at the storm plateau
+    REGARDLESS of resolution -- it IS the outlet sink (summing the d-residual telescopes the edge flux
+    to zero, forcing int q_out = rain*area - int lambda), so it proves CONSERVATION, NOT accuracy, and
+    it cannot expose the depth-field accuracy. Resolution-INDEPENDENT confirms the conservation-forcing.
+    Near-impermeable bed -> ~0.5% infiltration; the surface+soil books close machine-tight."""
+    c, f = part_a_runs["coarse"], part_a_runs["fine"]
+    assert abs(c["q_over_Qeq"] - 1.0) < 0.02 and abs(f["q_over_Qeq"] - 1.0) < 0.02   # both ~Q_eq
+    assert abs(c["q_over_Qeq"] - f["q_over_Qeq"]) < 5e-3       # resolution-INDEPENDENT (conservation)
+    assert abs(f["export_gap"]) < 1e-6 * f["cum_rain"]        # surface+soil balance machine-tight
+
+
+def test_coupled_upwind_depth_matches_standalone_on_resolved_swale(part_a_runs):
+    """A1.2 operator-equivalence (the INHERITED accuracy): on the same resolved swale + near-impermeable
+    bed, the coupled-upwind surface depth field matches the validated STANDALONE UpwindOverlandProblem
+    field to ~0.1% in the INTERIOR -- the coupling adds only the small lambda infiltration, and the SAME
+    extracted edge kernel drives both. This carries B5b's standalone resolved-swale discharge accuracy
+    (consistent ds-integral ~0.99) into the coupled engine. (The outlet-row nodes differ by the coupled
+    codim-2-ridge vs standalone lumped-nodal outlet-sink treatment -- excluded by interior_only.)"""
+    d = depth_field_reldiff(part_a_runs["fine"], part_a_runs["std"], interior_only=True)
+    assert d["max"] < 0.01, f"interior coupled-vs-standalone max reldiff = {d['max']:.4f} (want <1%)"
+
+
+def test_coupled_plane_depth_matches_analytic_normal_depth(part_a_runs):
+    """A2 DIRECT absolute accuracy: on a clean tilted PLANE (no cross-slope -> uniform flow, where the
+    Manning normal-depth idealization is VALID), the coupled outlet depth matches the analytic
+    d_n = (rain*LY*n/(86400*sqrt(S)))^(3/5) to <1%. The convergent tilted-V floor is edge/corner-heavy
+    (NOT uniform), so d_n is the wrong ruler there; the plane is where 'coupled depth -> analytic normal
+    depth' is well-posed. This is the direct coupled-vs-analytic absolute-accuracy result the (edge-heavy)
+    tilted-V floor cannot give."""
+    p = part_a_runs["plane"]
+    d_n = plane_normal_depth(RAIN, _PA_CFG["LY"], _PA_CFG["n_man"], _PA_CFG["SY"])
+    d_out = outlet_row_mean_depth(p, 24, 16)
+    assert abs(d_out - d_n) / d_n < 0.05, (
+        f"plane outlet depth {1e3*d_out:.3f} mm vs analytic d_n {1e3*d_n:.3f} mm "
+        f"(err {abs(d_out-d_n)/d_n:.4f})")
+
+
+def test_resolved_swale_floor_is_mesh_convergent(part_a_runs):
+    """A2 mesh-convergence: the resolved-swale floor depth is MESH-CONVERGENT (its error vs the analytic
+    d_n SHRINKS with refinement, and it stays finite/positive/bounded) -- the resolved swale resolves the
+    convergent flow. This CONTRASTS the idealized kink V (W=0, a measure-zero 1-cell channel) whose floor
+    depth DIVERGES (grows ~2^(3/5) per dx-halving -- the B5b artifact; characterized in
+    scratch/_p3_swale_accuracy.py). NB the absolute accuracy is the plane + operator-equivalence above,
+    NOT this (edge-heavy) tilted-V floor vs d_n -- d_n is only a convergence yardstick here."""
+    c, f = part_a_runs["coarse"], part_a_runs["fine"]
+    d_n = normal_depth(c["Q_eq"], _PA_W, _PA_CFG["n_man"], _PA_CFG["SY"])
+    flc = measure_floor_depth(c["top_x"], c["top_y"], c["d_top"], c["XC"], _PA_W,
+                              c["LX"], c["LY"], 16, 12)
+    flf = measure_floor_depth(f["top_x"], f["top_y"], f["d_top"], f["XC"], _PA_W,
+                              f["LX"], f["LY"], 24, 16)
+    err_c = abs(flc["floor_mean"] - d_n) / d_n
+    err_f = abs(flf["floor_mean"] - d_n) / d_n
+    assert 0.0 < flf["floor_mean"] < 3.0 * d_n        # finite, positive, physically bounded
+    assert err_f < err_c, f"swale floor error not shrinking: coarse {err_c:.3f} -> fine {err_f:.3f}"
