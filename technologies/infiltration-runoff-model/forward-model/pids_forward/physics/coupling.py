@@ -912,6 +912,15 @@ class CoupledProblem:
         self.dt.value = dt
         t_used = self._t if t is None else float(t)
         lam_save = self.lam.x.array.copy()  # λ has no _n shadow; stash for honest rejection restore
+        # embedded-feature drivers: read the resolved coupled ψ at the start of the step and set each
+        # feature's prescribed ridge rate (the F_psi source). pre_step mutates only driver scratch
+        # (Omega/_last_rate) -- the cumulative state advances only in post_step (accepted-only), so a
+        # rejected retry simply re-runs pre_step from the restored ψ_n (reject-safe).
+        feat_rates = []
+        for _feat, _drv, _rate_const, _mask in self._features:
+            r = _drv.pre_step(_feat, self.psi, t_used, dt)
+            _rate_const.value = r / _feat.length            # per unit length on the ridge
+            feat_rates.append(r)
         self._ensure_problem()
         self._problem.solve()
         snes = self._problem.solver
@@ -964,6 +973,20 @@ class CoupledProblem:
                     total += r
             self.last_drainage = total
             self.cum_drainage += dt * total
+            # embedded-feature exchange: book the prescribed host-ward volume (a SIGNED source -- NOT
+            # summed into cum_drainage) + advance each driver. INSIDE the accept gate, so a rejected
+            # reason-4 stall never books a feature. cum_feature == the volume that crossed Γ (= the
+            # driver's inj); the host balance is Δtotal = cum_rain - cum_outflow - cum_drainage
+            # + cum_feature (+ clip_mass_adjust).
+            fr_total = 0.0
+            for i, (_feat, _drv, _rate_const, _mask) in enumerate(self._features):
+                r = feat_rates[i]
+                self.last_sinks["feature"][i] = r
+                self.cum_sinks["feature"][i] += dt * r
+                _drv.post_step(_feat, self.psi, t_used, dt)
+                fr_total += r
+            self.last_feature = fr_total
+            self.cum_feature += dt * fr_total
             if self._effective_overland_scheme == "upwind":
                 # monotone scheme: the limiter is a TRIPWIRE (record min depth, NEVER clip), P2-D1
                 self.last_clip = self._positivity_tripwire()

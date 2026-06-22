@@ -46,11 +46,13 @@ def _feature_coupled_box(R_out=2.0, n=12, nx=4, psi_i=-1.0, psi_wall=0.0):
 # ---------------------------------------------------------------------------
 # Increment 4: add_embedded_exchange API + the F_psi ridge SOURCE (the - sign)
 # ---------------------------------------------------------------------------
-def test_add_embedded_exchange_requires_catchment_and_weaves_signed_source():
-    """``add_embedded_exchange(feat, driver, catchment_cells, ctx=...)`` registers the driver, sets it
-    up (catchment threaded in), and weaves the ridge SOURCE ``- rate/length * vpsi * feat.dGamma`` into
-    F_psi. catchment_cells is REQUIRED (no silent whole-domain default). The - sign is verified
-    directly: a manual prescribed DISPERSE rate (no driver hooks yet) ADDS soil water ~ rate*dt."""
+def test_add_embedded_exchange_requires_catchment_and_registers():
+    """``add_embedded_exchange(feat, driver, catchment_cells, ctx=...)`` sets up the driver (catchment
+    threaded in), weaves the ridge SOURCE ``- rate/length * vpsi * feat.dGamma`` into F_psi, registers a
+    'feature' accounting slot, and returns the per-unit-length rate Constant. ``catchment_cells`` is
+    REQUIRED (no silent whole-domain default). (The ``-`` sign + the source delivery are pinned by the
+    closed-box conservation test below: a wrong sign makes ΔW negative while cum_feature stays positive,
+    breaking ``Δtotal == cum_feature``.)"""
     prob, feat, L = _feature_coupled_box()
     driver = WellIndexExchange()                              # disperse
     with pytest.raises(ValueError, match="catchment"):
@@ -59,18 +61,59 @@ def test_add_embedded_exchange_requires_catchment_and_weaves_signed_source():
     rate_const = prob.add_embedded_exchange(feat, driver, "all", ctx={"t0": 1e-4, "R_out": 2.0})
     assert isinstance(rate_const, fem.Constant)
     assert len(prob._features) == 1
-    assert prob.cum_sinks["feature"] == [0.0]
+    assert prob.cum_sinks["feature"] == [0.0] and prob.last_sinks["feature"] == [0.0]
 
-    # the - sign: a manual disperse rate ADDS water; a CLOSED box (no rain/outlet/drainage) conserves
-    # so the soil gain == the ridge source rate*dt to solver precision.
+
+# ---------------------------------------------------------------------------
+# Increment 5: step() pre/post hooks drive the feature + the host books close (cum_feature)
+# ---------------------------------------------------------------------------
+def test_step_hooks_drive_feature_and_conserve_closed_box():
+    """step() calls driver.pre_step BEFORE the solve (-> rate_const) and post_step INSIDE the accept
+    gate (-> books cum_feature), so a registered disperse feature is driven by the resolved coupled psi
+    and its host-ward volume is booked. On a CLOSED box (no rain/outlet/drainage) the feature is the
+    ONLY source, so the full balance is Δtotal == cum_feature (+clip), and the driver's clock advances."""
+    prob, feat, L = _feature_coupled_box(n=8)
+    driver = WellIndexExchange()                              # disperse (held saturated wall psi=0)
+    prob.add_embedded_exchange(feat, driver, "all", ctx={"t0": 1e-4, "R_out": 2.0})
     w0 = prob.total_water()
-    rate = 5.0                                                # m^3/day host-ward (disperse, +)
-    rate_const.value = rate / feat.length                    # per unit length, as the driver sets it
-    conv, _ = prob.step(1e-3)
-    assert conv
+    prob.advance(0.05, 5e-4, dt_max=5e-3)
+
+    assert prob.cum_feature > 0.0                            # disperse injected over the run
+    assert prob.cum_outflow == 0.0 and prob.cum_drainage == 0.0
+    assert prob.cum_sinks["feature"][0] == pytest.approx(prob.cum_feature)
+    # closed box: Δtotal == cum_feature + clip_mass_adjust (rain/outflow/drainage all 0)
     dW = prob.total_water() - w0
-    assert dW > 0.0                                          # disperse ADDED water (the - sign is right)
-    assert abs(dW - rate * 1e-3) < 1e-3 * (rate * 1e-3)      # == rate*dt (closed-box conservation)
+    assert dW > 0.0                                         # disperse ADDED soil water (pins the - weave)
+    expected = prob.cum_feature + prob.clip_mass_adjust
+    assert abs(dW - expected) < 1e-6 * max(abs(prob.cum_feature), 1e-12)
+    assert driver.I_total() > driver.seed_I                 # the sub-grid clock advanced (real uptake)
+
+
+def test_reduce_to_standalone_disperse_tracks_harness():
+    """Reduce-to-standalone: the SAME disperse closure driven through CoupledProblem.step() reproduces
+    the validated STANDALONE bare-Richards harness (run_embedded) I_total trajectory within tol -- the
+    coupled embedding is the validated closure on a richer host, not a new scheme. (~1-2 min: runs both
+    the harness and the coupled advance on a coarse n=8 box over a short window.)"""
+    from scratch.m4_phase4_embedded_harness import run_embedded
+    R_out, n = 2.0, 8
+    t_grid = np.array([1e-4, 0.01, 0.02, 0.03, 0.04])
+
+    out = run_embedded(WellIndexExchange(), "LOAM", R_out, n, t_grid, direction="disperse")
+    assert out is not None, "the standalone harness run did not complete"
+    I_std = np.asarray(out["I"])
+
+    prob, feat, L = _feature_coupled_box(R_out=R_out, n=n)
+    drv = WellIndexExchange()
+    prob.add_embedded_exchange(feat, drv, "all", ctx={"t0": float(t_grid[0]), "R_out": R_out})
+    prob._t = float(t_grid[0])                               # align the absolute clock to the seed age
+    I_cpl = [drv.I_total()]
+    for tm in t_grid[1:]:
+        prob.advance(float(tm) - prob._t, 5e-4, dt_max=5e-3)
+        I_cpl.append(drv.I_total())
+    I_cpl = np.asarray(I_cpl)
+
+    e = float(np.linalg.norm(I_cpl - I_std) / np.linalg.norm(I_std))
+    assert e < 0.05, f"reduce-to-standalone I_total rel-L2 = {e:.1%}\n coupled={I_cpl}\n std    ={I_std}"
 
 
 def _dry_coupled(nx=4, ny=2, nz=2, Lx=2.0):
