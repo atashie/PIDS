@@ -332,6 +332,10 @@ class CoupledProblem:
         # append raw forms only after ALL add_* calls (the dual-run script does).
         self.last_sinks = {"ghb": [], "interior_drain": [], "surface_inlet": []}
         self.cum_sinks = {"ghb": [], "interior_drain": [], "surface_inlet": []}
+        # Persistent ABSOLUTE time clock (Module-4 coupled embedding): each accepted step advances it;
+        # advance() continues from it (no per-call reset) so multi-advance sessions have monotone time.
+        # Embedded-feature drivers (WellIndexExchange) read it for the seed age / handover timestamp.
+        self._t = 0.0
         self._build_F_psi()       # ψ block: bulk + λ-top influx (+ drainage GHB) on one facet meshtags
         self._finalize_forms()    # build self.F_d, self.F_lam (+ outflow forms) with the shared dP
 
@@ -838,9 +842,14 @@ class CoupledProblem:
         return undershoot
 
     # -- time stepping --------------------------------------------------------
-    def step(self, dt: float):
-        """Advance one monolithic backward-Euler Newton step. Returns (converged, iters)."""
+    def step(self, dt: float, t: float | None = None):
+        """Advance one monolithic backward-Euler Newton step. Returns (converged, iters).
+
+        ``t`` = the absolute time at the START of the step (default = the persistent clock ``self._t``);
+        on an ACCEPTED step the clock advances to ``t + dt``. Embedded-feature drivers read this clock.
+        """
         self.dt.value = dt
+        t_used = self._t if t is None else float(t)
         lam_save = self.lam.x.array.copy()  # λ has no _n shadow; stash for honest rejection restore
         self._ensure_problem()
         self._problem.solve()
@@ -904,6 +913,7 @@ class CoupledProblem:
             self.psi_n.x.scatter_forward()
             self.d_n.x.array[:] = self.d.x.array
             self.d_n.x.scatter_forward()
+            self._t = t_used + dt            # advance the absolute clock on accept only
         else:
             self.psi.x.array[:] = self.psi_n.x.array
             self.psi.x.scatter_forward()
