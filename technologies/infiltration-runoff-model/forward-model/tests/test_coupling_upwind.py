@@ -49,12 +49,26 @@ def _box(nx=6, ny=3, nz=3, Lx=2.0, Ly=1.0, Lz=1.0):
     return dmesh.create_box(MPI.COMM_WORLD, [[0.0, 0.0, 0.0], [Lx, Ly, Lz]], [nx, ny, nz])
 
 
-def test_overland_scheme_default_is_galerkin():
-    assert CoupledProblem(_box(), SOIL).overland_scheme == "galerkin"
+def test_overland_scheme_default_is_auto_upwind_in_3d_serial():
+    """P3-D: the default is 'auto' -> the dimension/comm-aware resolution picks 'upwind' on a 3-D serial
+    host (the convergent-flow fix on-by-default where it applies). The REQUESTED mode (overland_scheme)
+    and the RESOLVED/effective mode (_effective_overland_scheme) are kept distinct."""
+    p = CoupledProblem(_box(), SOIL)
+    assert p.overland_scheme == "auto" and p._effective_overland_scheme == "upwind"
 
 
-def test_overland_scheme_upwind_flag_and_validation():
-    assert CoupledProblem(_box(), SOIL, overland_scheme="upwind").overland_scheme == "upwind"
+def test_auto_default_falls_back_to_galerkin_in_2d():
+    """'auto' falls back to galerkin where upwind does not apply (a 2-D host) -- NO raise, so 1-D/2-D/
+    MPI callers are not broken by the default flip (galerkin stays a permanent, explicit fallback)."""
+    msh2d = dmesh.create_rectangle(MPI.COMM_WORLD, [(0.0, 0.0), (2.0, 1.0)], [8, 4])
+    p = CoupledProblem(msh2d, SOIL)
+    assert p.overland_scheme == "auto" and p._effective_overland_scheme == "galerkin"
+
+
+def test_overland_scheme_explicit_modes_and_validation():
+    assert CoupledProblem(_box(), SOIL, overland_scheme="upwind")._effective_overland_scheme == "upwind"
+    g = CoupledProblem(_box(), SOIL, overland_scheme="galerkin")
+    assert g.overland_scheme == "galerkin" and g._effective_overland_scheme == "galerkin"
     with pytest.raises(ValueError, match="overland_scheme"):
         CoupledProblem(_box(), SOIL, overland_scheme="bogus")
 
@@ -71,7 +85,7 @@ def test_upwind_reduced_Fd_omits_lateral_flux():
     """The upwind path removes the UFL lateral conveyance from F_d (it is supplied by the edge-flux
     residual instead). At a NON-FLAT surface head, the galerkin F_d carries the lateral term on the
     top rows and the upwind F_d does not -> the assembled d-residual vectors differ."""
-    g = CoupledProblem(_box(), SOIL)
+    g = CoupledProblem(_box(), SOIL, overland_scheme="galerkin")   # explicit (default is now auto->upwind on 3-D)
     u = CoupledProblem(_box(), SOIL, overland_scheme="upwind")
     for p in (g, u):
         p.set_topography(lambda x: 0.05 * x[0] + 0.02 * x[1])    # tilted bed -> non-flat H = z_b + d
@@ -225,7 +239,7 @@ def test_upwind_lateral_redistribution_downslope_3d():
 def test_galerkin_still_uses_clip():
     """The galerkin path is unchanged: it still has the conservative clip (_enforce_positivity), not
     the tripwire -- a forced negative is clipped + tracked, not raised."""
-    prob = CoupledProblem(_box(5, 5, 3), SOIL)             # galerkin default
+    prob = CoupledProblem(_box(5, 5, 3), SOIL, overland_scheme="galerkin")   # explicit (default is auto->upwind)
     prob.set_initial_condition(lambda x: -1.0 + 0.0 * x[0], d_value=0.02)
     top = prob._top_dofs(prob.Vd)
     prob.d.x.array[top[0]] = -5e-4

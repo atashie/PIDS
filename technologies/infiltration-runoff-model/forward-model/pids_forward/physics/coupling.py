@@ -86,7 +86,7 @@ class CoupledProblem:
 
     def __init__(self, mesh, soil, *, ell_c: float | None = None, eps_ncp: float = 1e-4,
                  n_man: float = 0.05, eps_S: float = 1e-3, eps_H: float = 1e-3,
-                 overland_scheme: str = "galerkin",
+                 overland_scheme: str = "auto",
                  degree: int = 1, lumped: bool = True, quadrature_degree: int = 8,
                  petsc_options=None):
         self.mesh = mesh
@@ -95,14 +95,26 @@ class CoupledProblem:
         self.n_man = float(n_man)   # Manning roughness for the lateral overland flux (SI s.m^-1/3)
         self.eps_S = float(eps_S)   # diffusion-wave slope floor
         self.eps_H = float(eps_H)   # smoothed-upwind head width (upwind scheme only; P1 default 1e-3)
-        # Lateral-overland discretization (Convergent-flow P2): "galerkin" = the validated UFL
-        # tangential-gradient diffusion-wave (default; unchanged + bit-identical); "upwind" = the
-        # monotone edge-flux on the top-facet graph (the P1 fix for the convergent-V sawtooth),
-        # supplied by a custom block-SNES (Part B). Opt-in until an Arik-gated default flip.
-        if overland_scheme not in ("galerkin", "upwind"):
+        # Lateral-overland discretization. "galerkin" = the validated UFL tangential-gradient
+        # diffusion-wave; "upwind" = the monotone edge-flux on the top-facet graph (the convergent-flow
+        # fix, custom block-SNES). "auto" (DEFAULT, P3-D Arik-gated 2026-06-21) = dimension/comm-aware:
+        # resolves to "upwind" iff the host is 3-D AND serial (where the upwind scheme applies), else
+        # "galerkin" -- so 3-D-serial production gets the convergent-flow fix BY DEFAULT while 1-D/2-D/MPI
+        # callers transparently fall back (zero breakage). The REQUESTED mode (self.overland_scheme) and
+        # the RESOLVED/effective mode (self._effective_overland_scheme) are kept DISTINCT -- dispatch is
+        # on the effective mode -- so docs/tests/diagnostics never conflate "what was asked" with "what
+        # ran". galerkin stays a permanent, explicitly-selectable fallback. Explicit "upwind" still
+        # RAISES on a non-3-D host (below) / multi-rank (_wire_upwind_callbacks): the explicit request
+        # cannot be silently honored where the scheme doesn't apply; only "auto" falls back.
+        if overland_scheme not in ("auto", "galerkin", "upwind"):
             raise ValueError(
-                f"overland_scheme must be 'galerkin' or 'upwind', got {overland_scheme!r}.")
+                f"overland_scheme must be 'auto', 'galerkin' or 'upwind', got {overland_scheme!r}.")
         self.overland_scheme = overland_scheme
+        if overland_scheme == "auto":
+            self._effective_overland_scheme = (
+                "upwind" if (mesh.topology.dim == 3 and mesh.comm.size == 1) else "galerkin")
+        else:
+            self._effective_overland_scheme = overland_scheme
         # upwind positivity tripwire bound. The monotone scheme is NOT bit-strict positive on ponding
         # wet/dry fronts: it shows a TRANSIENT, self-healing, mass-neutral mild-front undershoot --
         # P1 gate-7 characterized 0..~0.9mm on standalone 2-D mounds; the coupled 3-D ponding case is
@@ -244,7 +256,7 @@ class CoupledProblem:
         # is unstabilized Galerkin advection of the kinematic (slope) flux and needs a stabilized/monotone
         # scheme -- deferred (docs/plans/2026-06-05-module3-realization-ffcx-bug.md §8). Kept consistent
         # here (clean, validated) since lumping did not cleanly resolve it.
-        if self.overland_scheme == "galerkin":
+        if self._effective_overland_scheme == "galerkin":
             self._F_d_bulk = ((self.d - self.d_n) / self.dt) * vd * self._ds_top \
                 + overland_flux \
                 + self.lam * vd * self._ds_top
@@ -710,7 +722,7 @@ class CoupledProblem:
                 petsc_options_prefix="coupled_", petsc_options=self._petsc_options,
                 kind="mpi",  # monolithic block AIJ so a single LU factorizes the coupled operator
             )
-            if self.overland_scheme == "upwind":
+            if self._effective_overland_scheme == "upwind":
                 self._wire_upwind_callbacks(self._problem)
 
     # -- upwind lateral flux (Convergent-flow P2): inject into the coupled block-SNES ----------
@@ -882,7 +894,7 @@ class CoupledProblem:
                     total += r
             self.last_drainage = total
             self.cum_drainage += dt * total
-            if self.overland_scheme == "upwind":
+            if self._effective_overland_scheme == "upwind":
                 # monotone scheme: the limiter is a TRIPWIRE (record min depth, NEVER clip), P2-D1
                 self.last_clip = self._positivity_tripwire()
             else:

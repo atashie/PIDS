@@ -66,7 +66,7 @@ def _balance_resid(prob, w0, cum_rain):
 
 def _make_hillslope(nx=10, ny=4, nz=5, L=5.0, S0=0.05, psi0=-1.0):
     msh = dmesh.create_box(MPI.COMM_WORLD, [[0.0, 0.0, 0.0], [L, 1.0, 1.0]], [nx, ny, nz])
-    prob = CoupledProblem(msh, LOAM, n_man=0.05)
+    prob = CoupledProblem(msh, LOAM, overland_scheme="galerkin", n_man=0.05)   # galerkin Tier-2 regression (default is auto->upwind)
     prob.set_initial_condition(lambda x: psi0 + 0.0 * x[0], d_value=0.0)
     prob.set_topography(lambda x: S0 * (L - x[0]))   # slope down toward the x=L outlet edge
     return prob, L, S0

@@ -37,7 +37,7 @@ def _top_area(prob):
 def _run_closed(nx, ny, nz, rate=0.1, t_end=0.5):
     """A flat closed 3-D box under uniform sub-Ks rain; return the solved problem + cum_rain."""
     msh = dmesh.create_box(MPI.COMM_WORLD, [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], [nx, ny, nz])
-    prob = CoupledProblem(msh, SOIL)
+    prob = CoupledProblem(msh, SOIL, overland_scheme="galerkin")
     prob.set_initial_condition(lambda x: -2.0 + 0.0 * x[0], d_value=0.0)
     w0 = prob.total_water()
     prob.add_rain(rate)
@@ -116,7 +116,7 @@ def test_3d_outflow_edge_discharge_magnitude():
     """
     L, W, n_man, S0, d0 = 4.0, 2.0, 0.05, 0.05, 0.06
     msh = dmesh.create_box(MPI.COMM_WORLD, [[0.0, 0.0, 0.0], [L, W, 1.0]], [8, 4, 5])
-    prob = CoupledProblem(msh, SOIL, n_man=n_man)
+    prob = CoupledProblem(msh, SOIL, overland_scheme="galerkin", n_man=n_man)
     prob.set_initial_condition(lambda x: -1.0 + 0.0 * x[0], d_value=d0)
     prob.add_outflow_bc(lambda x: np.isclose(x[0], L), slope=S0)  # downstream-top edge x=L, z=H
 
@@ -135,7 +135,7 @@ def test_3d_outflow_edge_discharge_nonuniform_quadrature():
     """
     L, W, n_man, S0, a, b = 4.0, 2.0, 0.05, 0.05, 0.02, 0.02   # d: 0.02 -> 0.06 along the edge
     msh = dmesh.create_box(MPI.COMM_WORLD, [[0.0, 0.0, 0.0], [L, W, 1.0]], [8, 4, 5])
-    prob = CoupledProblem(msh, SOIL, n_man=n_man)
+    prob = CoupledProblem(msh, SOIL, overland_scheme="galerkin", n_man=n_man)
     prob.set_initial_condition(lambda x: -1.0 + 0.0 * x[0], d_value=0.0)
     coords = prob.Vd.tabulate_dof_coordinates()
     topd = prob._top_dofs(prob.Vd)
@@ -158,7 +158,7 @@ def test_3d_outflow_jacobian_fd():
     from dolfinx.fem.petsc import assemble_vector, assemble_matrix
     L, W, n_man, S0 = 4.0, 2.0, 0.05, 0.05
     msh = dmesh.create_box(MPI.COMM_WORLD, [[0.0, 0.0, 0.0], [L, W, 1.0]], [6, 4, 5])
-    prob = CoupledProblem(msh, SOIL, n_man=n_man)
+    prob = CoupledProblem(msh, SOIL, overland_scheme="galerkin", n_man=n_man)
     prob.dt.value = 0.1
     prob.set_initial_condition(lambda x: -1.0 + 0.0 * x[0], d_value=0.0)
     prob.add_outflow_bc(lambda x: np.isclose(x[0], L), slope=S0)
@@ -213,7 +213,7 @@ def test_3d_outflow_jacobian_fd():
 def test_3d_outflow_rejects_nonpositive_slope():
     """slope<=0 is a caller error (slope=0 dams the outlet; slope<0 gives sqrt(<0)=NaN)."""
     msh = dmesh.create_box(MPI.COMM_WORLD, [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], [4, 4, 4])
-    prob = CoupledProblem(msh, SOIL)
+    prob = CoupledProblem(msh, SOIL, overland_scheme="galerkin")
     with pytest.raises(ValueError):
         prob.add_outflow_bc(lambda x: np.isclose(x[0], 1.0), slope=0.0)
     with pytest.raises(ValueError):
@@ -224,7 +224,7 @@ def test_3d_outflow_rejects_empty_edge():
     """A locator matching no top-boundary EDGE is a caller error -- fail loudly, not silently no-op.
     Exercises the new codim-2 (dim gdim-2 = 1) locate path + the global-count guard."""
     msh = dmesh.create_box(MPI.COMM_WORLD, [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], [4, 4, 4])
-    prob = CoupledProblem(msh, SOIL)
+    prob = CoupledProblem(msh, SOIL, overland_scheme="galerkin")
     with pytest.raises(ValueError):
         prob.add_outflow_bc(lambda x: np.isclose(x[0], 123456.0), slope=0.05)  # matches nothing
 
@@ -238,7 +238,7 @@ def test_3d_outflow_drains_routes_and_conserves():
     """
     L = 5.0
     msh = dmesh.create_box(MPI.COMM_WORLD, [[0.0, 0.0, 0.0], [L, 1.0, 1.0]], [8, 4, 4])
-    prob = CoupledProblem(msh, SOIL, n_man=0.05)
+    prob = CoupledProblem(msh, SOIL, overland_scheme="galerkin", n_man=0.05)
     prob.set_initial_condition(lambda x: -0.8 + 0.0 * x[0], d_value=0.0)
     prob.set_topography(lambda x: 0.05 * (L - x[0]))   # 5% slope down toward the x=L outlet edge
     rate = 0.6  # > Ks -> infiltration-excess ponding
@@ -287,7 +287,7 @@ def test_3d_surface_balance_is_structural():
     from dolfinx.fem.petsc import assemble_vector
     import ufl
     msh = dmesh.create_box(MPI.COMM_WORLD, [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], [4, 4, 4])
-    prob = CoupledProblem(msh, SOIL)
+    prob = CoupledProblem(msh, SOIL, overland_scheme="galerkin")
     prob.dt.value = 0.1
     prob.set_initial_condition(lambda x: -0.5 + 0.0 * x[0], d_value=0.0)
     topd = prob._top_dofs(prob.Vd)
@@ -311,7 +311,7 @@ def test_3d_drainage_side_face_conserves():
     x=0 side (no rain, no surface outlet): total water decreases by EXACTLY cum_drainage.
     """
     msh = dmesh.create_box(MPI.COMM_WORLD, [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], [4, 4, 6])
-    prob = CoupledProblem(msh, SOIL)
+    prob = CoupledProblem(msh, SOIL, overland_scheme="galerkin")
     prob.set_initial_condition(lambda x: -0.2 + 0.0 * x[0], d_value=0.0)   # moist-ish soil
     prob.add_drainage_bc(lambda x: np.isclose(x[0], 0.0), conductance=0.5, external_head=-1.0)
     w0 = prob.total_water()
@@ -338,7 +338,7 @@ def test_3d_two_outlets_sum_discharges():
     L, W, n_man, d0 = 4.0, 2.0, 0.05, 0.06
     S_lo, S_hi = 0.02, 0.05
     msh = dmesh.create_box(MPI.COMM_WORLD, [[0.0, 0.0, 0.0], [L, W, 1.0]], [8, 4, 5])
-    prob = CoupledProblem(msh, SOIL, n_man=n_man)
+    prob = CoupledProblem(msh, SOIL, overland_scheme="galerkin", n_man=n_man)
     prob.set_initial_condition(lambda x: -1.0 + 0.0 * x[0], d_value=d0)
     prob.add_outflow_bc(lambda x: np.isclose(x[0], L), slope=S_hi)
     prob.add_outflow_bc(lambda x: np.isclose(x[0], 0.0), slope=S_lo)   # disjoint second outlet edge
@@ -351,7 +351,7 @@ def test_3d_outflow_rejects_overlapping_outlets():
     """Two outlets on the SAME edge must raise -- overlapping locators would double-tag the ridge
     meshtags and silently drop one outlet's discharge (symmetric with add_drainage_bc's guard)."""
     msh = dmesh.create_box(MPI.COMM_WORLD, [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], [4, 4, 4])
-    prob = CoupledProblem(msh, SOIL)
+    prob = CoupledProblem(msh, SOIL, overland_scheme="galerkin")
     prob.add_outflow_bc(lambda x: np.isclose(x[0], 1.0), slope=0.05)
     with pytest.raises(ValueError):
         prob.add_outflow_bc(lambda x: np.isclose(x[0], 1.0), slope=0.03)  # same downstream edge
@@ -369,7 +369,7 @@ def test_3d_quadrature_cap_accuracy():
     from pids_forward.physics.richards import richards_bulk_residual
 
     msh = dmesh.create_box(MPI.COMM_WORLD, [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], [4, 4, 6])
-    qd = CoupledProblem(msh, SOIL)._quad_degree
+    qd = CoupledProblem(msh, SOIL, overland_scheme="galerkin")._quad_degree
     assert qd == 8   # default cap, sized by the Darcy bulk (the highest-auto-degree term)
     V = fem.functionspace(msh, ("Lagrange", 1))
     psi = fem.Function(V); psi_n = fem.Function(V); v = ufl.TestFunction(V)
