@@ -324,6 +324,10 @@ class CoupledProblem:
         self._inlets: list = []           # (top_facets, intake_coeff) per add_surface_inlet
         self._inlet_terms: list = []      # UFL F_d sink terms (re-added on every _finalize_forms)
         self._inlet_forms: list = []      # compiled scalar rate forms
+        # embedded-feature exchange drivers (Module-4 coupled embedding, prescribed-rate ridge SOURCE):
+        # (feat, driver, rate_const [=rate/length], catchment_mask) per add_embedded_exchange. The ridge
+        # term -rate_const*vpsi*feat.dGamma is re-added on every _build_F_psi.
+        self._features: list = []
         # per-sink accounting (rate / cumulative), keyed by kind, each list in add-order; sums
         # equal last_drainage / cum_drainage. Script-level forms appended directly to
         # _drainage_forms (the pre-API injection pattern) auto-extend the 'ghb' lists in step().
@@ -586,6 +590,10 @@ class CoupledProblem:
             self._drainage_forms.append(fem.form(q_n * ds(k)))
         for term in self._interior_terms:   # interior tile drains: static plain-dx DG-0 sink terms
             F_psi = F_psi + term
+        for _feat, _drv, _rate_const, _mask in self._features:   # embedded-feature ridge SOURCE
+            # -rate_const*vpsi*dΓ (per unit length) -- the SAME sign as the validated standalone harness
+            # (-rel_c*w*dΓ): disperse (rate>0) ADDS soil water, drain (rate<0) removes it.
+            F_psi = F_psi - _rate_const * self._vpsi * _feat.dGamma
         self.F_psi = F_psi
         self._problem = None
 
@@ -705,6 +713,51 @@ class CoupledProblem:
         self.cum_sinks["surface_inlet"].append(0.0)
         self._finalize_forms()   # re-weave F_d (the static inlet terms are re-added there)
         return C_const
+
+    def add_embedded_exchange(self, feat, driver, catchment_cells, ctx=None):
+        """Register an embedded-feature exchange ``driver`` (``wi_exchange.WellIndexExchange``) as a
+        PRESCRIBED-RATE ridge SOURCE on the coupled host (plan docs/plans/2026-06-22-embedded-feature-
+        coupled-integration.md, Capability A). The host residual carries
+        ``- rate/length · vpsi · feat.dGamma`` (the ``-`` matches the validated standalone harness, so
+        DISPERSE adds soil water / DRAIN removes it); the rate is set each step by ``driver.pre_step``
+        from the resolved coupled ψ field (step() hooks) and booked into ``cum_feature`` on accept.
+        ``H_f`` is HELD by the caller (no new block); ``feat`` must be co-located on THIS host mesh.
+
+        ``catchment_cells`` (REQUIRED, no silent default): the host CELLS whose ``feat.V`` dofs the
+        driver's whole-field reads (volume-mean θ + the disperse ``R_out/2`` ring) are restricted to --
+        the feature's catchment. Pass ``"all"`` for the whole domain (an explicit opt-in; the reads are
+        silently wrong on a host larger than one catchment). ``ctx`` carries the driver's setup keys
+        (``R_out`` [required]; ``t0`` for disperse); the catchment dof mask is injected into it here.
+        Returns the per-unit-length rate ``Constant`` (the driver/step() drive it).
+        """
+        if feat.mesh is not self.mesh:
+            raise ValueError("add_embedded_exchange: the feature must be co-located on THIS host mesh.")
+        if catchment_cells is None:
+            raise ValueError(
+                'add_embedded_exchange requires catchment_cells (the feature\'s catchment); pass "all" '
+                "for the whole domain -- never a silent default (the driver's R_out/2 ring + volume-mean "
+                "theta reads are silently wrong on a host larger than one catchment).")
+        nd = feat.V.dofmap.index_map.size_local
+        if isinstance(catchment_cells, str):
+            if catchment_cells != "all":
+                raise ValueError(f'catchment_cells string must be "all"; got {catchment_cells!r}.')
+            mask = np.ones(nd, dtype=bool)
+        else:
+            cells = np.asarray(catchment_cells, dtype=np.int32)
+            tdim = self.mesh.topology.dim
+            self.mesh.topology.create_connectivity(tdim, tdim)
+            dofs = fem.locate_dofs_topological(feat.V, tdim, cells)
+            mask = np.zeros(nd, dtype=bool)
+            mask[dofs[dofs < nd]] = True
+        ctx = dict(ctx or {})
+        ctx["catchment"] = mask
+        driver.setup(feat, self.soil, ctx)
+        rate_const = fem.Constant(self.mesh, PETSc.ScalarType(0.0))   # = rate/length (driver sets it)
+        self._features.append((feat, driver, rate_const, mask))
+        self.last_sinks["feature"].append(0.0)
+        self.cum_sinks["feature"].append(0.0)
+        self._build_F_psi()      # re-weave F_psi with the new feature ridge source
+        return rate_const
 
     def drainage_rate(self) -> float:
         """Net outward drainage across ALL sinks (GHB boundaries + interior tile drains + surface
