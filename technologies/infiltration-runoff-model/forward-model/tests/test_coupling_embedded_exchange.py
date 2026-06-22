@@ -19,12 +19,20 @@ from pids_forward.physics.sorptive_closure import R_W_DEFAULT
 
 SOIL = VanGenuchten(theta_r=0.078, theta_s=0.43, alpha=3.6, n=1.56, Ks=0.25)   # = test_wi_exchange LOAM
 
+# acceptance-impossible tolerances + a huge stol -> the SNES can ONLY return CONVERGED_SNORM_RELATIVE
+# (reason 4) far from balance, which step() must REJECT (mirrors test_step_acceptance._STALL_OPTIONS).
+_STALL_OPTIONS = {
+    "snes_type": "newtonls", "snes_linesearch_type": "bt",
+    "snes_rtol": 1e-30, "snes_atol": 1e-30, "snes_stol": 0.5, "snes_max_it": 50,
+    "ksp_type": "preonly", "pc_type": "lu",
+}
+
 
 def _box(nx=4, ny=2, nz=2, Lx=2.0, Ly=1.0, Lz=1.0):
     return dmesh.create_box(MPI.COMM_WORLD, [[0.0, 0.0, 0.0], [Lx, Ly, Lz]], [nx, ny, nz])
 
 
-def _feature_coupled_box(R_out=2.0, n=12, nx=4, psi_i=-1.0, psi_wall=0.0):
+def _feature_coupled_box(R_out=2.0, n=12, nx=4, psi_i=-1.0, psi_wall=0.0, petsc_options=None):
     """A CLOSED feature-box CoupledProblem host (ridge along x at the y-z centre, sized to R_out so the
     disperse R_out/2 ring resolves) -- the coupled analogue of the standalone run_embedded box. No rain,
     no outlet, no drainage -> the surface NCP is inert, so the coupled psi evolves like the harness's
@@ -33,7 +41,8 @@ def _feature_coupled_box(R_out=2.0, n=12, nx=4, psi_i=-1.0, psi_wall=0.0):
     h = L / n
     Lx = nx * h
     msh = dmesh.create_box(MPI.COMM_WORLD, [[0.0, 0.0, 0.0], [Lx, L, L]], [nx, n, n])
-    prob = CoupledProblem(msh, SOIL, overland_scheme="galerkin", n_man=0.05)
+    prob = CoupledProblem(msh, SOIL, overland_scheme="galerkin", n_man=0.05,
+                          petsc_options=petsc_options)
     prob.set_initial_condition(lambda x: psi_i + 0.0 * x[0], d_value=0.0)
     prob.add_rain(0.0)
     feat = EmbeddedFeature(msh, lambda x: np.isclose(x[1], L / 2) & np.isclose(x[2], L / 2),
@@ -114,6 +123,37 @@ def test_reduce_to_standalone_disperse_tracks_harness():
 
     e = float(np.linalg.norm(I_cpl - I_std) / np.linalg.norm(I_std))
     assert e < 0.05, f"reduce-to-standalone I_total rel-L2 = {e:.1%}\n coupled={I_cpl}\n std    ={I_std}"
+
+
+# ---------------------------------------------------------------------------
+# Increment 6: reject-safety + the driver's guards fire through the coupled path
+# ---------------------------------------------------------------------------
+def test_rejected_step_does_not_book_feature():
+    """A rejected reason-4 step must NOT book the feature: cum_feature, cum_sinks['feature'] and the
+    driver's own inj all stay put (post_step is accepted-only; the retry re-runs pre_step from the
+    restored ψ). Mirrors test_step_acceptance with a registered feature."""
+    prob, feat, L = _feature_coupled_box(n=8, petsc_options=_STALL_OPTIONS)
+    driver = WellIndexExchange()
+    prob.add_embedded_exchange(feat, driver, "all", ctx={"t0": 1e-4, "R_out": 2.0})
+    inj_before = driver.inj
+
+    converged, _ = prob.step(1e-3)
+
+    assert prob.last_reason == 4 and prob.last_fnorm > prob.stall_accept_fnorm   # a dirty stall
+    assert not converged                                    # step() refused to book it
+    assert prob.cum_feature == 0.0                          # nothing booked
+    assert prob.cum_sinks["feature"] == [0.0]
+    assert driver.inj == inj_before                         # the driver's own ledger did not advance
+
+
+def test_resolved_wall_fence_fires_through_coupled_path():
+    """The coupled integration does NOT bypass the driver's guards: a disperse feature in the
+    resolved-wall regime below the validated band (R_out < 40 r_w) is REFUSED by the honest fence
+    through add_embedded_exchange."""
+    prob, feat, L = _feature_coupled_box(R_out=0.5, n=12)   # 10 r_w, fine mesh -> resolved-wall, refused
+    driver = WellIndexExchange()
+    with pytest.raises(ValueError, match=r"resolved-wall|VALIDATED band|R_out"):
+        prob.add_embedded_exchange(feat, driver, "all", ctx={"t0": 1e-4, "R_out": 0.5})
 
 
 def _dry_coupled(nx=4, ny=2, nz=2, Lx=2.0):
