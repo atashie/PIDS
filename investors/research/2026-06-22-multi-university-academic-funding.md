@@ -50,16 +50,20 @@ disclosure/license and a faculty/student inventor. A VT or UVA faculty co-PI unl
 1. **CCF — Higher-Ed Proof-of-Concept (HE POC)** — *closest NCInnovation analog; fully faculty-gated.*
    Track 1 ≤**$75K**; Track 2 ≤**$150K**; discretionary Advanced Commercialization ≤**$300K**; 1:1 match
    required. **Applicant must be a VA university / IP foundation / nonprofit research institute — not a
-   private company.** Two cycles/yr (spring 2026 closed Apr 30; next ~fall 2026).
-   [vipc.org/funding/he-poc](https://vipc.org/funding/he-poc/)
-2. **CCF — Private-Sector track** — *founder-direct, but VA-residency-gated.* **$100K–$300K** across three
-   TRL tiers. Requires a for-profit **HQ'd in Virginia**, ≥50% senior management VA-resident, ≥50% founder
-   ownership held by VA residents, ≤1 prior VIPC grant. The VA-domicile tests are decisive if PIDS isn't VA-based.
-   [vipc.org/funding/commonwealth-commercialization-fund](https://vipc.org/funding/commonwealth-commercialization-fund/)
-3. **VIPC SBIR/STTR support — FFAP + "Phase 0" match** — *One-NC analog; founder-direct.* Up to ~**$3K**
-   Phase-0 prep + up to ~**$100K** post-award match for first-time Phase I/II (**both figures snippet-only —
-   the live VIPC page lists services, not dollars; confirm with VIPC**). STTR encouraged (and STTR itself
-   requires a research partner). [vipc.org/initiatives/sbir-sttr](https://vipc.org/initiatives/sbir-sttr/)
+   private company.** Two cycles/yr (spring 2026 closed Apr 30; next ~fall 2026). ✅ **Verified [C-008, C-009]**
+   (single-checked vs. live page + Guidelines PDF). [vipc.org/funding/he-poc](https://vipc.org/funding/he-poc/)
+2. **CCF — Lab-to-Launch (for-profit) track** — *VA-residency-gated **and** university-IP-gated.* Requires a
+   for-profit **HQ'd in Virginia**, ≥50% senior management VA-resident, ≥50% founder ownership held by VA
+   residents — **and** that the company be a **spinout licensing IP from one of VA's six R1 universities**.
+   ⚠️ **Verified w/ correction [C-011]:** the residency/HQ tests are real (single-checked), but this for-profit
+   path is itself a university-IP spinout track (not a clean founder-direct option), and the previously-claimed
+   "≤1 prior VIPC grant" cap is **refuted** (only prior-grant *performance* is weighed). VA-domicile tests are
+   decisive if PIDS isn't VA-based. [vipc.org/funding/commonwealth-commercialization-fund](https://vipc.org/funding/commonwealth-commercialization-fund/)
+3. **VIPC SBIR/STTR support — FFAP + "Phase 0"** — *founder-direct.* VIPC runs a Federal Funding Assistance
+   Program (services + a Phase-0 consultant-grant) for first-time SBIR/STTR applicants. ❌ **DISPUTED [C-010]:**
+   the previously-cited "~$3K Phase-0 / ~$100K post-award match" figures appear on **no** VIPC primary page
+   (FFAP pages list services only) — they are aggregator artifacts. **Do not cite a dollar match until VIPC
+   confirms it.** STTR still requires a research partner. [vipc.org/initiatives/sbir-sttr](https://vipc.org/initiatives/sbir-sttr/)
 4. **VIPC Launch grants & Virginia Venture Partners (VVP)** — *founder-direct.* Launch = non-dilutive grants
    + convertible notes (pre-MVP); VVP = pre-seed **$250K**, seed ≤**$1M** equity, VA-based.
    [vipc.org/funding/startups](https://vipc.org/funding/startups/)
@@ -117,16 +121,18 @@ is maximizing state/federal research dollars.
 
 ### State-level programs (mostly closed to PIDS)
 1. **Texas University Fund / NRUF** — public-university research endowments; **SMU ineligible (private)**;
-   never reach a startup. [highered.texas.gov](https://www.highered.texas.gov/research-funding-in-texas/research-funding-and-programs/)
-2. **GURI** — ≤$5M faculty-recruitment match, **public institutions only**; not a startup grant.
-   [gov.texas.gov/business/page/guri](https://gov.texas.gov/business/page/guri)
+   never reach a startup. ✅ **Verified [C-013]** (statute §61.003 + THECB; adversarially-verified).
+   [highered.texas.gov](https://www.highered.texas.gov/research-funding-in-texas/research-funding-and-programs/)
+2. **GURI** — ≤$5M faculty-recruitment match, **public institutions only** (excludes private institutions
+   verbatim); not a startup grant. ✅ **Verified [C-013]**. [gov.texas.gov/business/page/guri](https://gov.texas.gov/business/page/guri)
 3. **Product Development & Small Business Incubator Fund (PDSBIF)** — ≤$5M **loans** (not grants); requires
    ≥3 yr operating history + ≥1 yr revenue, and **"R&D-phase products are ineligible"** → revisit post-revenue.
    [gov.texas.gov/.../pdsbi](https://gov.texas.gov/business/page/product-development-and-small-business-incubator-fund)
 4. **Texas Enterprise Fund** — deal-closing job grants (75+ jobs); not a fit for a pre-revenue startup.
 5. **❌ State SBIR/STTR match — DOES NOT EXIST** (SSTI guide; key negative). Cash match only at **City of
-   San Antonio** (Ph0 ≤$2K / Ph I ≤$50K / Ph II ≤$75K, SA-HQ only). No Dallas equivalent.
-   [ssti.org/state-sbirsttr-resource-guide](https://ssti.org/state-sbirsttr-resource-guide)
+   San Antonio** (Ph0 ≤$2K / Ph I ≤$50K / Ph II ≤$75K, SA-HQ only). No Dallas equivalent. ✅ **Verified [C-012]**
+   (adversarially-verified — survived refutation: the proposed statewide match died in the legislature SB 209 /
+   HB 1268 / HB 2466; *re-check each TX session*). [ssti.org/state-sbirsttr-resource-guide](https://ssti.org/state-sbirsttr-resource-guide)
 6. **CPRIT** — funds for-profit product dev, but **cancer-only** → out of scope.
 7. **Texas Water Fund / TWDB ASR-MAR programs** *(most PIDS-relevant state money)* — Prop 6 + SB7/HB500 put
    ~$2.5B+ into water supply incl. **aquifer storage & recovery / recharge**, **but funds flow to
@@ -170,16 +176,21 @@ aquifer-recharge venture in any of these states.
 
 ### State-level programs
 1. **ARDEF (ADECA)** — *NCInnovation analog; faculty-gated.* Recent UA awards ~**$100K–$367K** (FY24/25 round
-   $1.6M across UA/Auburn/Southern Research/HudsonAlpha). University research-entity + private-applicant
-   pairing; **50% match required, state funds can't count as match** (the university can supply the match);
-   the private partner **may be HQ'd outside AL**. FY27 deadline **Jul 29, 2026**. *(Mandatory-partnership
-   wording inferred from program structure + award history — verify in the Program Guide.)*
+   $1.6M across UA/Auburn/Southern Research/HudsonAlpha). Research-entity + **required** private-sector-applicant
+   pairing; **50% match required, state funds can't count as match** (the research entity can supply the match);
+   the private partner **may be HQ'd outside AL**. FY27 deadline **Jul 29, 2026 (11:59 p.m. CST)**.
+   ✅ **Verified w/ corrections [C-014]** (single-checked vs. ADECA page + Program Guide PDF): a private-sector
+   partner is *always* required (faculty-gated thesis holds), but the "research entity" is broader than a
+   university (also 2-yr colleges, public hospitals, qualified in-state entities); **no fixed-dollar max** —
+   the cap is the *lesser of 20% of that FY's total ARDEF pool or 50% of project cost*.
    [adeca.alabama.gov/ardef](https://adeca.alabama.gov/ardef/)
-2. **Innovate Alabama Supplemental Grant** — *One-NC analog, CONFIRMED state SBIR/STTR match; founder-direct.*
+2. **Innovate Alabama Supplemental Grant** — *One-NC analog, state SBIR/STTR match; founder-direct.*
    **Ph I → 50% up to $100K; Ph II → 50% up to $250K**, non-dilutive (>$17M to 82 businesses to date).
    Requires an active federal SBIR/STTR award — and the upstream **STTR statutorily requires the UA research
-   partner**, so the faculty tie is the gate that makes this match reachable.
-   [innovatealabama.org/programs/supplemental-grant-program](https://innovatealabama.org/programs/supplemental-grant-program/)
+   partner**, so the faculty tie is the gate that makes this match reachable. ✅ **Verified w/ correction [C-015]**
+   (single-checked): caps/match confirmed verbatim, **but there IS an Alabama residency condition** (HQ +
+   majority of team in AL) — now satisfiable within a **12-month post-award window** to relocate, so PIDS can
+   apply from out of state but must plan the move. [innovatealabama.org/programs/supplemental-grant-program](https://innovatealabama.org/programs/supplemental-grant-program/)
 3. **Alabama Launchpad (EDPA + Innovate Alabama)** — *competitive non-dilutive; founder-direct.* Technology
    track ≤**$75K** (Life Sci ≤$100K, Consumer ≤$50K) + $2,500 to finalists + 12-wk mentorship; two cycles/yr.
    [alabamalaunchpad.com](https://alabamalaunchpad.com/)
@@ -221,11 +232,12 @@ faculty options across three states**, not just the UNC/NC State path. Practical
 
 - **The university-partner track is a portfolio, not a single bet.** Pursue the relationship(s) with the
   strongest *combined* science-fit + funding-stack: **UA (ARDEF + confirmed state SBIR/STTR match + AWI/CIROH)
-  and Virginia (CCF HE-POC + VIPC match + UVA Seed Fund + Sample/Sridhar/Goodall)** are the two real analogs
-  to the UNC opportunity.
+  and Virginia (CCF HE-POC + UVA Seed Fund + Sample/Sridhar/Goodall)** are the two real analogs to the UNC
+  opportunity.
 - **Federal STTR is the common denominator.** Every one of these faculty ties satisfies STTR's statutory
-  research-partner requirement — and in **AL and (pending verification) VA** that STTR award then triggers a
-  **state 50% match**. STTR is the cleanest universal payoff of any professor relationship.
+  research-partner requirement — and in **Alabama** that STTR award then triggers a **confirmed state 50%
+  match (≤$250K)** [C-015]. *Virginia has no verified state SBIR/STTR cash match* — the previously-cited VIPC
+  figure was **disputed** [C-010]. STTR itself is the cleanest universal payoff of any professor relationship.
 - **SMU/Texas: keep, but reframe.** Use the SMU relationship for **STTR + a named PI (Smits) + Dallas/TWDB
   municipal recharge pilots**, not for state grant money. If Texas becomes a priority geography, a **public**
   co-PI is the stronger funding move.
@@ -239,15 +251,27 @@ faculty options across three states**, not just the UNC/NC State path. Practical
 
 ## Consolidated verification flags (check before relying)
 
-**Highest priority (decision-affecting):**
-- **VA CCF HE-POC eligibility** ("university / IP foundation / nonprofit research institute — not a private
-  company") — high-confidence, read from the primary page; this is the core gating fact.
-- **VIPC SBIR/STTR match dollars** (~$3K Phase-0 / ~$100K post-award) — **snippet-only**, not on the live
-  VIPC page; confirm with VIPC's federal-funding office before citing.
-- **AL ARDEF** — public page omits max award + whether partnership is *mandatory*; verify in the Program Guide
-  (ardef@adeca.alabama.gov).
-- **In-state domicile tests** — VA CCF private-sector (≥50% mgmt/ownership VA-resident, VA-HQ) and any AL
-  residency condition on the Supplemental Grant — decisive for eligibility; pull current solicitations.
+> **Verification pass complete 2026-06-22** (adversarial agents vs. live primary sources). Decision-affecting
+> figures logged in [`../../evidence/claims-register.md`](../../evidence/claims-register.md) (C-008–C-015) with
+> evidence in [`../../evidence/reviews/`](../../evidence/reviews/). Resolution below.
+
+**Resolved (decision-affecting):**
+- ✅ **VA CCF HE-POC excludes for-profit applicants** [C-008] + **amounts $75K/$150K/$300K + 1:1 match**
+  [C-009] — confirmed verbatim (single-checked). The core "faculty-gated" fact is solid.
+- ❌ **VIPC SBIR/STTR match dollars** (~$3K / ~$100K) [C-010] — **DISPUTED**: on no VIPC primary page; do not
+  cite. (Program/Phase-0 service exists; dollar amount unknown — ask VIPC.)
+- ⚠️ **VA for-profit CCF (Lab-to-Launch) tests** [C-011] — VA-HQ + dual-50% residency confirmed, **but** this
+  track is a **VA-R1 university-IP spinout** path (not founder-direct); the "≤1 prior grant" cap was **refuted**.
+- ✅ **AL ARDEF** [C-014] — partnership structure + 50% match + out-of-state partner + FY27 deadline confirmed;
+  **no fixed-dollar max** (relative cap); "research entity" is broader than a university.
+- ⚠️ **AL Supplemental Grant** [C-015] — 50%/$100K/$250K confirmed; **Alabama residency IS required**
+  (satisfiable within 12 months post-award).
+- ✅ **TX no statewide SBIR/STTR match** [C-012] + **TUF/NRUF/GURI public-only → SMU ineligible** [C-013] —
+  adversarially-verified.
+- 🔑 **In-state domicile is now a confirmed strategic variable** — VA (L2L), AL (Supplemental). PIDS's state of
+  incorporation materially affects which doors open.
+
+**Still open (lower priority / not yet checked):**
 
 **Scope / fit:**
 - **AL CIROH groundwater/infiltration fit** — confirm a specific PI works vadose-zone/recharge/subsurface
@@ -259,8 +283,9 @@ faculty options across three states**, not just the UNC/NC State path. Practical
 - **UVA LVG Seed Fund** per-company check size (fund ~$10M confirmed; per-deal amount unpublished).
 - **SMU Caruth** award figures ($10K/$50K) and **UA standalone POC/gap fund** — could not confirm; verify with
   the respective offices.
-- **TX state SBIR/STTR match = none** (only City of San Antonio) and **CRCF→CCF (2020) renaming** — confirmed
-  negatives/changes, but re-check if a counterpart cites the old program.
+- **VT LAUNCH POC, UVA LVG Seed Fund per-deal check, AL Launchpad/Capital Access amounts** — not in this
+  verification pass; confirm before relying.
+- *(Naming note: VA's CRCF was merged into **CCF** in 2020 — re-check if any source still cites "CRCF.")*
 
 > All figures herein are **research-grade and UNVERIFIED**; nothing here is cleared for an investor or grant
 > application until logged in [`../../evidence/claims-register.md`](../../evidence/claims-register.md).
