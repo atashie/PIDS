@@ -16,6 +16,7 @@ Fundraising research, strategy, and materials for the PIDS venture (pre-seed).
 |------|-------------|--------|
 | `research/2026-06-08-preseed-best-practices.md` | National pre-seed best practices (mechanics, targeting, materials, non-dilutive) | ✅ done |
 | `research/2026-06-08-unc-triangle-ecosystem.md` | Local NC / Triangle / UNC funding ecosystem | ✅ done |
+| `research/2026-06-22-multi-university-academic-funding.md` | Faculty-partner funding map at VT · UVA · SMU · U. Alabama (NCInnovation/One-NC analogs) | ✅ done |
 | `strategy/fundraising-plan.md` | **The plan** — milestone-triggered parallel stack | 🟡 draft v0.1 |
 | `strategy/vertical-assessment.md` | Beachhead selection (13 agents): residential/grounds + perennial-ag | ✅ done |
 | `strategy/team-commercialization-gap.md` | Co-founder vs. COO analysis | 🟡 open |
