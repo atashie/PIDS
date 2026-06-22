@@ -330,8 +330,16 @@ class CoupledProblem:
         # INJECT-LAST discipline for such raw forms: a later add_drainage_bc/add_interior_drain
         # rebuilds _drainage_forms from _drains and DROPS them (stale cum entries would remain) --
         # append raw forms only after ALL add_* calls (the dual-run script does).
-        self.last_sinks = {"ghb": [], "interior_drain": [], "surface_inlet": []}
-        self.cum_sinks = {"ghb": [], "interior_drain": [], "surface_inlet": []}
+        self.last_sinks = {"ghb": [], "interior_drain": [], "surface_inlet": [], "feature": []}
+        self.cum_sinks = {"ghb": [], "interior_drain": [], "surface_inlet": [], "feature": []}
+        # Embedded-feature exchange (Module-4 coupled embedding): a SIGNED host-ward source on the ridge
+        # (disperse + into the soil / drain - out), prescribed per step by a WellIndexExchange driver.
+        # Tracked SEPARATELY from the outward-only drainage sinks: the host balance is
+        #   Δtotal = cum_rain - cum_outflow - cum_drainage + cum_feature + clip_mass_adjust.
+        # cum_feature == the volume that actually crossed Γ into/out of the host field (= the driver's
+        # ``inj``), NOT I_total and NOT the sub-grid seed/reservoir (a scheme-level ledger).
+        self.last_feature = 0.0   # aggregate host-ward feature rate at the SOLVED state (signed)
+        self.cum_feature = 0.0    # cumulative signed host-ward feature volume
         # Persistent ABSOLUTE time clock (Module-4 coupled embedding): each accepted step advances it;
         # advance() continues from it (no per-call reset) so multi-advance sessions have monotone time.
         # Embedded-feature drivers (WellIndexExchange) read it for the seed age / handover timestamp.

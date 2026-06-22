@@ -65,3 +65,19 @@ def test_advance_accumulates_clock_across_calls():
     assert prob._t == pytest.approx(0.01)
     prob.advance(0.02, 1e-3, dt_max=5e-3)
     assert prob._t == pytest.approx(0.03)
+
+
+# ---------------------------------------------------------------------------
+# Increment 2: 'feature' accounting fields (a SIGNED source term, tracked separately from the
+# outward-only drainage sinks; the host balance is ... - cum_drainage + cum_feature)
+# ---------------------------------------------------------------------------
+def test_feature_accounting_fields_exist_and_zero():
+    """CoupledProblem exposes the embedded-feature accounting surface: an aggregate ``cum_feature`` /
+    ``last_feature`` (signed host-ward volume / rate) and per-feature ``cum_sinks['feature']`` /
+    ``last_sinks['feature']`` lists -- all empty/zero before any feature is registered. ``cum_feature``
+    is tracked SEPARATELY from ``cum_drainage`` (a signed source, not an outward-only sink)."""
+    prob = _dry_coupled()
+    assert prob.cum_feature == 0.0
+    assert prob.last_feature == 0.0
+    assert prob.cum_sinks["feature"] == []
+    assert prob.last_sinks["feature"] == []
