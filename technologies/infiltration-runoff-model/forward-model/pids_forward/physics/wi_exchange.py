@@ -191,6 +191,11 @@ class WellIndexExchange:
                 f"serial-only (2026-06-12 Codex review finding 1).")
         from scipy.spatial import cKDTree
         self.soil, self.feat = soil, feat
+        # Coupled embedding (plan 2026-06-22): restrict the whole-field host reads -- the volume weights
+        # (-> the drain bulk drive + disperse capacity throttle theta-means) and the disperse R_out/2
+        # ring -- to this feature's CATCHMENT dofs (a boolean mask over feat.V; None/absent = full field
+        # = byte-identical standalone). Set BEFORE _set_volume_weights and the ring build below.
+        self._catchment = (ctx or {}).get("catchment") if isinstance(ctx, dict) else None
         if self.direction == "drain":
             R_out = (ctx or {}).get("R_out") if isinstance(ctx, dict) else None
             if not R_out:
@@ -270,11 +275,13 @@ class WellIndexExchange:
         # (R_out was read + the resolved-wall fence applied earlier, before the WI witness.)
         self.r_ring_target = 0.5 * float(R_out)
         ring = (np.abs(self._rho - self.r_ring_target) <= 0.6 * self.h) & (self._rho > 1e-12)
-        if not np.any(ring):
+        if self._catchment is not None:
+            ring = ring & self._catchment            # restrict the far-field read to the catchment
+        if not np.any(ring):                         # post-mask guard (Codex 2nd-pass)
             raise ValueError(
                 f"WellIndexExchange(disperse): no resolved vertex shell at R_out/2="
-                f"{self.r_ring_target:.4f} m on this mesh (h={self.h:.4f} m); the WI-era ring read "
-                f"needs one. Refine the mesh or check R_out.")
+                f"{self.r_ring_target:.4f} m within the catchment on this mesh (h={self.h:.4f} m); the "
+                f"WI-era ring read needs one. Refine the mesh, check R_out, or widen the catchment.")
         self._ring_mask = ring
         self.r_ring = float(self._rho[ring].mean())
         self.ring_lnf = float(np.log(self.r_ring / self._r_w))
@@ -310,7 +317,13 @@ class WellIndexExchange:
         v = ufl.TestFunction(feat.V)
         w = _fem.assemble_vector(_fem.form(v * ufl.dx(
             metadata={"quadrature_rule": "vertex", "quadrature_degree": 1}))).array.copy()
+        if getattr(self, "_catchment", None) is not None:
+            w = np.where(self._catchment, w, 0.0)   # restrict the bulk reads to the catchment dofs
         self._vol = float(w.sum())
+        if self._vol <= 0.0:                         # post-mask guard (Codex 2nd-pass)
+            raise ValueError(
+                "WellIndexExchange: the ctx['catchment'] mask selects zero effective volume (no "
+                "positive-volume dofs in the catchment); the bulk theta-mean drive is undefined.")
         self._wvol = w / self._vol
 
     def _psi_of_theta(self, th) -> float:

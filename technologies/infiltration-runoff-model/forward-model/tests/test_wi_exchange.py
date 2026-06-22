@@ -609,3 +609,43 @@ def test_resolved_wall_gate_refA40_auto_allowed(n):
     assert e <= RW_EMBEDDED_TOL, f"resolved-wall gate failed: relL2={e:.1%} > {RW_EMBEDDED_TOL:.0%}"
     clk = sorptive_clock(t, float(refA["LOAM_S"]), float(refA["LOAM_dtheta"]), R_W_DEFAULT, F_cylindrical)
     assert rel_l2(clk, I_ref) >= 0.20, "discrimination twin lost: the offline clock passes this leg"
+
+
+# ---------------------------------------------------------------------------
+# Coupled embedding (plan docs/plans/2026-06-22-embedded-feature-coupled-integration.md): the driver's
+# whole-field host reads (the volume weights -> theta-mean drives + the disperse R_out/2 ring) can be
+# RESTRICTED to a feature's CATCHMENT via a dof mask in ctx['catchment'] (None/absent = full field =
+# byte-identical standalone). Two post-mask guards (Codex 2nd-pass): an empty masked R_out/2 ring shell
+# raises; a zero-effective-volume catchment raises -- never a silent whole-domain / empty read.
+# ---------------------------------------------------------------------------
+def test_catchment_mask_disperse_restricts_reads_and_guards_empty_ring():
+    R_out, n = 2.0, 16
+    feat = _feat_box(R_out, n)
+    nd = feat.V.dofmap.index_map.size_local
+    L = float(np.sqrt(np.pi * (R_out ** 2 - R_W_DEFAULT ** 2)))
+    xc = feat.V.tabulate_dof_coordinates()
+    rho = np.sqrt((xc[:, 1] - L / 2.0) ** 2 + (xc[:, 2] - L / 2.0) ** 2)
+
+    # full-field catchment == the default: the normalized masked volume weights still sum to 1
+    full = np.ones(nd, dtype=bool)
+    x = WellIndexExchange().setup(feat, LOAM, {"t0": 1e-4, "R_out": R_out, "catchment": full})
+    assert abs(float(x._wvol.sum()) - 1.0) < 1e-12
+
+    # restriction: a partial catchment that KEEPS the R_out/2 ring zeros the weights OUTSIDE it
+    keep = rho <= 1.2 * (R_out / 2.0)
+    x2 = WellIndexExchange().setup(feat, LOAM, {"t0": 1e-4, "R_out": R_out, "catchment": keep})
+    assert np.all(x2._wvol[~keep] == 0.0) and abs(float(x2._wvol.sum()) - 1.0) < 1e-12
+
+    # guard: a catchment EXCLUDING the R_out/2 ring (rho ~ R_out/2 = 1.0) -> empty masked ring -> raise
+    near = rho < 0.5 * (R_out / 2.0)
+    with pytest.raises(ValueError, match=r"ring|shell|catchment"):
+        WellIndexExchange().setup(feat, LOAM, {"t0": 1e-4, "R_out": R_out, "catchment": near})
+
+
+def test_catchment_mask_drain_guards_zero_volume():
+    R_out, n = 2.0, 16                                       # 40 r_w >= the drain floor (20 r_w)
+    feat = _feat_box(R_out, n)
+    nd = feat.V.dofmap.index_map.size_local
+    with pytest.raises(ValueError, match=r"volume|catchment|empty"):
+        WellIndexExchange(direction="drain").setup(
+            feat, LOAM, {"R_out": R_out, "catchment": np.zeros(nd, dtype=bool)})
