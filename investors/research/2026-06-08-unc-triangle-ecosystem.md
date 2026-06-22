@@ -6,11 +6,12 @@
 infrastructure hardware venture. Companion to
 [`2026-06-08-preseed-best-practices.md`](2026-06-08-preseed-best-practices.md).
 
-> ⚠️ **Integrity caveat.** Source agent could not deep-fetch primary pages (`WebFetch` blocked); all
-> figures/dates/eligibility are from search-result snippets. Per
-> [`../../governance/principles.md`](../../governance/principles.md), **verify against the live page
-> and log in [`../../evidence/claims-register.md`](../../evidence/claims-register.md) before relying
-> on any of it** — especially KickStart alum-eligibility, exact deadlines, and FY2026 dollar pools.
+> ⚠️ **Integrity caveat.** This doc's original (2026-06-08) figures were all from search-result snippets
+> (the source agent could not deep-fetch primary pages). **A verification pass against LIVE primary sources
+> ran 2026-06-22** — decision-affecting figures are now logged in
+> [`../../evidence/claims-register.md`](../../evidence/claims-register.md) as **C-016–C-022** (evidence in
+> [`../../evidence/reviews/`](../../evidence/reviews/)) and tagged inline below (✅ verified · ⚠️ unconfirmed ·
+> ❌ corrected). Items without a tag remain snippet-grade — verify before relying.
 
 ---
 
@@ -39,10 +40,13 @@ direct relevance + a route to design-standard adoption.
 
 **Gated to faculty/research-affiliated (NOT plain alumni):**
 - **KickStart Commercialization Grant-Awards** — **$5K–$50K** non-dilutive for technical/business
-  milestones. **Eligibility: ≥1 founder must be UNC-CH faculty/student/staff AND company must license
-  UNC IP.** >$2M awarded over a decade → >$600M raised.
+  milestones. **Eligibility: a UNC faculty founder + startup based on UNC IP / a UNC research innovation.**
+  ✅ **Verified [C-018]:** amount + faculty-founder + UNC-IP gate confirmed verbatim; **no non-faculty-alum
+  direct path** exists (Arik-as-alum needs a UNC faculty partner). (The ">$600M raised" figure is unverified.)
   ([KickStart](https://innovate.unc.edu/startup-accelerators-and-venture-services/kickstart-venture-services/kickstart-venture-services-fund/kickstart-grant-awards/))
-- **OTC Translational Research Funding** — up to **$50K**, tied to UNC inventors/IP.
+- **OTC Technology Development (Translational) Grants** — up to **$50K** (typical $5K–$25K), tied to UNC
+  inventors/IP. ✅ **Verified [C-019]:** requires a **current full/part-time UNC employee** developing a
+  University-created invention — an unaffiliated alum is not eligible.
   ([OTC](https://innovate.unc.edu/office-of-technology-commercialization/inventors/translational-research-funding/))
 - **Venture Catalyst Program** — pairs UNC-affiliated startups with grad/postdoc fellows (free
   business-dev support). ([Venture Catalyst](https://innovate.unc.edu/venture-catalyst-program/))
@@ -64,8 +68,8 @@ Most important **directly-accessible** non-dilutive source. Two cycles/yr (Sprin
 
 | Program | Amount | Fit / Eligibility | Cycle |
 |---|---|---|---|
-| **SEED** | **$50K** non-dilutive | High-growth/scalable (VC within 2 yrs OR $2M+ rev in 5 yrs). NC HQ + ≥1 FT founder in NC. Marquee target — scalable deeptech narrative fits. | **Jan 26 – Feb 23, 2026** (Spring) |
-| **MICRO** | **$10K** non-dilutive | Earlier-stage milestone validation; most recipients have little/no prior equity. NC HQ + founder in NC. | Same window |
+| **SEED** ✅[C-020] | **$50K** non-dilutive | High-growth/scalable. NC HQ + ≥1 **full-time** founder in NC. Marquee target. | ~~Jan 26–Feb 23, 2026~~ → **Fall 2026: opens Jul 27, deadline Aug 24, 2026 (5pm EST)** |
+| **MICRO** ✅[C-021] | **$10K** non-dilutive | Earlier-stage milestone validation. NC HQ + ≥1 founder in NC (need not be full-time). Only one of MICRO/SEED per cycle. | **Deadline Aug 24, 2026** (Fall) |
 | **LABS** (fka Groundwork) | Free, no equity | Mentorship for startups too early for a grant. | Rolling |
 | ENGAGE / ECOSYSTEM | ≤$5K / ≤$100K | Fund *events/organizations*, not the company. | Periodic / Annual |
 
@@ -117,14 +121,16 @@ next cycle.
 
 **State non-dilutive — the SBIR/STTR multiplier:**
 - **One NC Small Business Program** (NC Commerce) — two parts: **Incentive Funds** reimburse the cost
-  of preparing a federal Phase I SBIR/STTR app (FY2026 pool ~$200K); **Matching Funds** = **50% of a
-  secured federal Phase I award, up to $60K.** FY24-25: 90 businesses, $4.12M (incl. energy, advanced
-  materials, agriculture). **Cleanest way to stack a federal STTR + 50% state match.**
+  of preparing a federal Phase I SBIR/STTR app (FY2026 pool **$200K**); **Matching Funds** = **50% of a
+  secured federal Phase I award, ❌ up to ~~$60K~~ → $75K [C-022]** (the $60K was FY2024; FY2026 cap is
+  $75,000). FY24-25: 90 businesses, $4.12M. **Cleanest way to stack a federal STTR + 50% state match.**
+  ⚠️ FY2026 window closes **2026-06-30** ("or until funds exhausted") — target the next fiscal cycle.
   ([One NC](https://www.commerce.nc.gov/grants-incentives/technology-funds/one-north-carolina-small-business-program))
-- **NCInnovation** — new **$500M state-endowment** program funding **UNC-System applied research**
-  through the valley of death (TRL 3–6); grants historically **$300K–$1.1M.** **Private companies NOT
-  eligible** → reachable only *through* a university research partner.
-  ([NCInnovation](https://ncinnovation.org/grants-overview/))
+- **NCInnovation** — **$500M state-endowment** program funding **NC public-university applied research**
+  through the valley of death (TRL 3–6). **Private companies NOT eligible** → reachable only *through* a
+  university research partner. ✅ **Verified [C-016]:** $500M + TRL 3–6 + private-company exclusion confirmed
+  verbatim (THE keystone holds). ⚠️ **[C-017]** the per-grant range "$300K–$1.1M" is **unconfirmed** (only on a
+  WAF-blocked policy PDF). ([NCInnovation](https://ncinnovation.org/grants-overview/))
 
 ## 6. Academic partners for STTR co-PI & technical validation
 
@@ -158,8 +164,17 @@ next cycle.
 
 ---
 
-### Verification flags (highest priority before relying)
-- Whether UNC **alumni (non-faculty)** can ever directly receive KickStart/OTC funds (snippets
-  consistently say faculty/student/staff + UNC-IP license → likely **NO** without a UNC partner).
-- Exact **Launch Powered by KPMG Cohort 3** dates; **FY2026 One NC** solicitation deadline;
-  any new NC IDEA cycle dates beyond the cited Spring window.
+### Verification flags
+
+**✅ Resolved 2026-06-22 (primary-source pass — see C-016–C-022):**
+- **Alum eligibility — RESOLVED:** a non-faculty UNC alum has **no confirmed direct path** into KickStart
+  [C-018], OTC [C-019], or NCInnovation [C-016]; all three require a current UNC faculty/employee + UNC IP (or
+  a public-university researcher). **A UNC faculty partnership is required** — the keystone thesis is confirmed.
+- **One NC match cap — CORRECTED:** $60K → **$75K** [C-022]; FY2026 window closes 2026-06-30.
+- **NC IDEA cycle — UPDATED:** Spring 2026 is past; next is **Fall 2026 (deadline Aug 24, 2026)** [C-020/C-021].
+- **NCInnovation** $500M + TRL 3–6 + private-company exclusion **verified** [C-016].
+
+**Still open (not yet verified):**
+- **NCInnovation per-grant range "$300K–$1.1M"** [C-017] — unconfirmed (primary policy PDF is WAF-blocked).
+- **KickStart ">$600M raised"** and the exact founder enumeration (on a linked eligibility doc) — not fetched.
+- **Launch Powered by KPMG Cohort 3** dates; the NC State Stormwater Group partner fit; Joules/IDEA Fund terms.
