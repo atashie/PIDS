@@ -30,6 +30,7 @@ Two **independent axes**, joined by an explicit integration layer:
 | `evidence/` | The citable knowledge base: claims register, archived sources, adversarial reviews. |
 | `patents/` | IP record (granted PIDS claims) + forward IP strategy. |
 | `tools/` | Shared tooling, incl. adversarial-review agent templates. |
+| `investors/` | **Scoped business-axis exception:** pre-seed fundraising research, strategy & materials. Walled off from the technical record. |
 | `docs/plans/` | Design & planning documents. |
 
 ## Working here — non-negotiables
@@ -38,7 +39,7 @@ From [`governance/principles.md`](governance/principles.md):
 
 1. **Integrity first.** Every third-party fact and every derived number goes in [`evidence/claims-register.md`](evidence/claims-register.md) and is *adversarially verified* before we rely on it. Nothing is asserted as true on trust.
 2. **Holistic integration.** When you change any component, run the **integration protocol** ([`governance/integration-protocol.md`](governance/integration-protocol.md)): review every component the change touches, and record the review.
-3. **Credibility over minutiae.** We invest in rigorous methods, not business administration (out of scope this phase).
+3. **Credibility over minutiae.** We invest in rigorous methods, not business administration — out of scope this phase, with one deliberate carve-out: pre-seed fundraising work in [`investors/`](investors/).
 4. **Build cautiously.** Large additions require explicit confirmation and a [`governance/decision-log.md`](governance/decision-log.md) entry.
 
 ## Where to start
