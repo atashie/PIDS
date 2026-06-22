@@ -526,6 +526,81 @@ galerkin-bit-identical, Codex-reviewed.** Open: the b6→main merge, the serial/
 absolute-accuracy + swale Tier-2 fixture. **NEXT = Arik's Tier-3 visual sign-off (the HTML), the
 default-flip decision (DP-3), then P3.**
 
+### 8.9 P3 result — convergent-flow workstream CLOSE (2026-06-22)
+
+> P3 (`docs/plans/2026-06-18-overland-convergent-flow-P3.md`) was validation + productionization, not new
+> physics: prove the resolved-swale absolute accuracy the P1/P2 close deferred (§8.7/§8.8), build the
+> permanent convergent-flow Tier-2 fixture, re-benchmark the tilted-V, and (Arik-gated) make upwind the
+> default WHERE IT APPLIES. All four Parts landed on `main` (commits `4672eb5` → `ab8e53f`); **the
+> overland convergent-flow workstream (B6 → P0 → P1 → P2 → P3) is COMPLETE.**
+
+**Part A — resolved-swale absolute accuracy (the §8.7/§8.8 deferred claim) — ✓ (`4672eb5`).** Accuracy is
+the DEPTH FIELD, framed per the "coupled accuracy = operator equivalence" carry (Gate A refined,
+Arik-approved 2026-06-19): the convergent tilted-V floor is edge/corner-heavy, NOT the uniform 1-D
+normal-depth idealization, so the *literal* floor→`d_n` bar is dropped as the wrong ruler for convergent
+flow. Four pins (`test_coupling_upwind.py`, fast module fixture ~41 s, edge outlet, near-impermeable,
+inlet OFF):
+- **(1) the coupled outlet is conservation-FORCED** — `outflow_rate() → Q_eq` within 2%, resolution-
+  INDEPENDENT (coarse vs fine <5e-3), surface+soil export gap machine-tight (<1e-6·cum_rain). Proves
+  CONSERVATION, not accuracy — pins the §8.7 lumped-vs-consistent trap shut in the coupled engine.
+- **(2) operator-equivalence to the validated standalone** — coupled-vs-standalone interior depth-field
+  max reldiff **<1%**, carrying B5b's resolved-swale consistent-discharge **~0.99** into the coupled
+  engine (the top-facet triangulation == standalone 2-D, `_p3_graph_probe.py`, so this is bit-meaningful).
+- **(3) direct coupled plane → analytic Manning normal-depth** **<1%** (a clean tilted plane, SX=0, where
+  `d_n` is well-posed).
+- **(4) resolved-swale floor mesh-convergent** — floor-depth error SHRINKS coarse→fine (vs the kink's
+  measure-zero divergence). Harness `scratch/_p3_swale_accuracy.py` + `_p3_graph_probe.py`.
+
+**Part B — the permanent convergent-flow Tier-2 fixture — ✓ + Gate B SIGNED OFF (Arik;
+`680629e`/`b264447`/`daa2f97`).** Reframed at Arik's correction — PIDS has **no "swale feature"** (a swale
+is a convergent topographic SETTING; every PIDS feature has variable geometry) — so the fixture is the
+**coupled dual-drain on convergent topography**: `make_convergent_dualdrain` (parameterized field + side
+slopes → a valley line, loam-over-near-impermeable, a surface `add_surface_inlet` grate + an interior
+`add_interior_drain` tile, both sub-dominant) with Tier-1 (conservation incl. `outlet + Σ sinks` vs the
+export budget, positivity, both-elements-capture, overland-concentrates-on-the-line) + a Tier-2 storm
+matrix (typical / 100-yr-burst / typical-on-wet) + a Tier-3 HTML animating surface ponding **and**
+subsurface saturation over time across both scenarios (Arik's Gate-B request). `test_convergent_dualdrain.py`,
+`scratch/_p3_convergent_{fixture,storm_matrix}.py`, `viz/make_convergent_dualdrain_html.py`.
+
+**Part C — tilted-V re-benchmark (upwind vs galerkin vs ParFlow) — ✓ (`601efb9`).** 3-way on the canonical
+1.62 km tilted-V: all three reach the plateau (ParFlow **1.000** / galerkin **0.996** / upwind
+**0.992·Q_eq**) — a CONSERVATION identity, not accuracy. The real result is the stiffness fix: galerkin
+**39.5 h / 60,008 rejected** steps (the sawtooth, dt pinned ~5e-5) → upwind **2.6 min / 79 rejected
+(~910×)**, both machine-tight (ledger ≤3e-11). HONEST: the idealized KINK V is a measure-zero-channel
+artifact (upwind dt-collapses there; the big-V recession transiently exceeds the 5mm tripwire,
+POS_TOL-relaxed for the diagnostic) — absolute accuracy is the resolved-swale depth field (Part A), not the
+kink V. Harness `benchmarks/build_comparison_tiltedv_p3.py`.
+
+**Part D — the default-flip (DP-3 RESOLVED) — ✓ (`ab8e53f`).** The `CoupledProblem` default flips
+`galerkin → "auto"`: a dimension/comm-aware resolution to `"upwind"` iff (`mesh.topology.dim == 3` AND
+`mesh.comm.size == 1`) else `"galerkin"`. So 3-D-serial production gets the convergent-flow fix BY DEFAULT
+while 1-D/2-D/MPI callers transparently fall back — zero breakage (the Codex blast-radius blocker is
+closed). The REQUESTED mode (`self.overland_scheme`) and the RESOLVED mode
+(`self._effective_overland_scheme`) are kept DISTINCT; all dispatch is on the effective mode. Explicit
+`"upwind"` still RAISES on a non-3-D / multi-rank host; **galerkin stays a permanent, explicitly-selectable,
+bit-identical fallback.** Galerkin-regression tests pinned explicit (`test_coupling_3d`,
+`test_coupling_3d_tier2`, two cases in `test_coupling_upwind`); 3 new scheme tests cover auto→upwind
+(3-D serial), auto→galerkin (2-D, no raise), explicit modes + validation. Full suite green.
+
+**Acceptance bars (P3 §"definition of done") — all met:** (1) coupled outlet documented + pinned
+conservation-forced ✓; (2) resolved-swale absolute accuracy (operator-equivalence + plane→`d_n` +
+mesh-convergent) ✓; (3) the permanent Tier-2 fixture + Tier-1/2 + Tier-3 HTML signed off ✓; (4) tilted-V
+re-benchmark + honest kink artifact ✓; (5) the "auto" default with NO 1-D/2-D/MPI breakage + galerkin
+fallback + suite green ✓; (6) workstream closed (this §8.9 + benchmarks README §5f + memory) ✓.
+
+**Carried / honest items:** the kink-V is an acknowledged measure-zero-channel artifact (sub-mm positive on
+the resolved swale — the geometry the product ships into); the analytic edge Jacobian's residual
+controller/linesearch tuning on stiff fronts is a future PERF item, not a correctness blocker (§8.8 DP-1);
+a cross-code ParFlow-*swale* deck is out of scope (DP-C — the swale is validated via depth-field +
+operator-equivalence + the existing ParFlow hillslope); `WellIndexExchange` is NOT coupled-integrated (the
+coupled-integrated embedded elements are `add_interior_drain` / `add_surface_inlet` / `add_drainage_bc`).
+
+**Bottom line:** the monotone upwind edge-flux scheme is built + validated standalone (P1), productionized
+into `CoupledProblem` (P2), proven absolutely accurate on the resolved swale + given a permanent Tier-2
+fixture (P3 A/B), re-benchmarked vs ParFlow (P3 C), and made the on-by-default scheme where it applies with
+galerkin a permanent fallback (P3 D). The convergence-line sawtooth + dt-pin that triggered the workstream
+are GONE (~600–910×); books machine-tight; Codex-reviewed throughout. **Workstream CLOSED.**
+
 ## 9. Artifacts
 - This plan; B6 deck `parflow/cases/tilted_v_catchment.py`; harness `benchmarks/build_comparison_tiltedv.py`
   + `make_comparison_tiltedv_html.py`; in-house runner `forward-model/scratch/_tiltedv_spike.py` (to be
