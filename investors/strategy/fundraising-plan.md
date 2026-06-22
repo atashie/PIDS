@@ -1,16 +1,18 @@
 # PIDS Pre-Seed Fundraising Plan
 
-**Date:** 2026-06-08 · **Status:** Draft v0.1 (for refinement)
+**Date:** 2026-06-08 · **Updated:** 2026-06-22 · **Status:** Draft v0.2 (academic-partner portfolio + verification folded in)
 **Owner:** Arik Tashie
 **Evidence base:** [`../research/2026-06-08-preseed-best-practices.md`](../research/2026-06-08-preseed-best-practices.md)
 (national) · [`../research/2026-06-08-unc-triangle-ecosystem.md`](../research/2026-06-08-unc-triangle-ecosystem.md)
-(local)
+(local NC/UNC) · [`../research/2026-06-22-multi-university-academic-funding.md`](../research/2026-06-22-multi-university-academic-funding.md)
+(VT · UVA · SMU · U. Alabama academic-partner portfolio)
 
-> ⚠️ **Numbers are research-grade, not verified.** Every dollar/percentage/date below traces to the
-> research files and is **unverified** (`WebFetch` was blocked during research). Per
-> [`../../governance/principles.md`](../../governance/principles.md), verify against the live primary
-> source and log in [`../../evidence/claims-register.md`](../../evidence/claims-register.md) before
-> any figure enters an investor-facing artifact.
+> ⚠️ **Numbers are research-grade.** A **primary-source verification pass (2026-06-22)** logged the
+> decision-affecting academic-funding figures in the claims register (**C-008–C-022**); those carry inline
+> **[C-0xx]** tags below and are confirmed against live primary sources. **Untagged** figures remain
+> unverified — per [`../../governance/principles.md`](../../governance/principles.md), verify and log in
+> [`../../evidence/claims-register.md`](../../evidence/claims-register.md) before any figure enters an
+> investor-facing artifact.
 
 ---
 
@@ -82,8 +84,9 @@ Launch the active equity raise when **at least one** decisive de-risking event l
 ### Track 2 — Non-dilutive R&D + credibility  *(runs continuously)*
 
 **Lane B — no university partner required (default, never blocked):**
-- **NC IDEA SEED ($50K) / MICRO ($10K)** — directly eligible (NC HQ + founder in NC). *Spring window
-  ~Jan 26–Feb 23, 2026.* Marquee near-term target.
+- **NC IDEA SEED ($50K) / MICRO ($10K)** ✅[C-020/C-021] — directly eligible (NC HQ + ≥1 **full-time**
+  NC founder for SEED). **Next cycle: Fall 2026 — opens ~Jul 27, deadline Aug 24, 2026 (5pm EST).**
+  Marquee near-term target (SEED deep-dive pending). May apply to only one of MICRO/SEED per cycle.
 - **Federal SBIR (not STTR)** — NSF, USDA-NIFA, EPA, DoT all fit our sectors; equity-free. **Treat as
   a 9–18 month play, not a runway bridge** (post-reauthorization congestion).
 - **Deeptech fellowships** — **Activate** (~$80–110K/yr + facility support) and **DOE LEEP** (2-yr
@@ -91,9 +94,11 @@ Launch the active equity raise when **at least one** decisive de-risking event l
 - **Climate accelerator grants** — Elemental Impact ($350K–$1M equity-free), Greentown (up to $50K).
 
 **Lane A — university-partnered (high-value accelerant, §5):**
-- **Federal STTR** (+ **One NC** 50% state match up to $60K on the Phase I), **UNC KickStart/OTC**
-  (up to $50K), **NCInnovation** ($300K–$1.1M, on the research side). All gated behind a UNC-System
-  research partner.
+- **Federal STTR** (+ **One NC** 50% state match **up to $75K** ✅[C-022] — *the prior $60K was the FY2024
+  figure*; FY2026 window closes ~Jun 30, target next cycle), **UNC KickStart/OTC** (up to $50K ✅[C-018/C-019],
+  gated to a UNC faculty founder + UNC IP — **no alum-direct path**), **NCInnovation** (private companies
+  **ineligible** ✅[C-016]; $500M endowment, TRL 3–6; *per-grant range $300K–$1.1M is ⚠️unconfirmed [C-017]*).
+  All gated behind a UNC-System research partner. **This Lane now extends well beyond NC — see §5.**
 
 ### Track 3 — Strategic / pilots  *(validation + warm-intro engine)*
 - **Municipal/utility/sports-field/ag pilots** — design them so a city/county can pay with **public
@@ -103,19 +108,35 @@ Launch the active equity raise when **at least one** decisive de-risking event l
   Techstars WaterTech, Water Innovation Hub; Launch Chapel Hill / Launch-Powered-by-KPMG once an MVP
   is pilot-ready.
 
-## 5. The university-partner keystone — one high-value track, never a dependency
+## 5. The university-partner keystone — a multi-state portfolio, never a dependency
 
-Attaching **one** UNC or NC State researcher as a scientific co-PI unlocks four funding sources at
-once (STTR, One NC match, KickStart/OTC, NCInnovation) and adds technical credibility. **Best-matched
-partner: NC State Stormwater Engineering Group (BAE)** — national leader in green-stormwater
-infrastructure who codify designs into NC DEQ guidance (relevance + a standards-adoption path).
-Alternatives: UNC Gillings ESE, UNC Institute for the Environment; channel: NC Collaboratory.
+Attaching **one** university researcher as a scientific co-PI unlocks an analogous stack of state +
+university funding (a state applied-research fund + university gap money + federal STTR + a state
+SBIR/STTR match) and adds technical credibility. **The keystone mechanism is now primary-verified:**
+NCInnovation explicitly **bars private companies** [C-016] and UNC KickStart/OTC gate on a UNC
+faculty founder + UNC IP [C-018/C-019] — i.e. an alum cannot reach this money alone; **the professor
+relationship is exactly the key.** The same pattern repeats at the four other universities where Arik
+has faculty relationships — with sharply different strength (full analysis +
+verification: [`../research/2026-06-22-multi-university-academic-funding.md`](../research/2026-06-22-multi-university-academic-funding.md)):
+
+| Partner (state) | What a faculty tie unlocks | Strength |
+|---|---|---|
+| **U. Alabama** (AL) | **ARDEF** (state R&D, faculty-paired) + **Innovate Alabama Supplemental** = confirmed **50% SBIR/STTR match ≤$250K** [C-015] + **Alabama Water Institute / NOAA CIROH** (best hydrology home) | **Strongest for PIDS** |
+| **Virginia Tech + UVA** (VA) | **CCF Higher-Ed Proof-of-Concept** (university-only applicant, $75K–$300K) [C-008] + **UVA LVG ~$10M Seed Fund** + water/stormwater faculty (Sample, Sridhar, Goodall) | **Strong (two schools)** |
+| **UNC / NC State** (NC) | **NCInnovation** + **One NC 50% match ≤$75K** [C-022] + **KickStart/OTC** + NC State Stormwater Group (BAE; codifies NC DEQ guidance) | **Home base, verified** |
+| **SMU** (TX) | Federal **STTR** + named PI (Smits, MAR/vadose-zone) + Dallas/TWDB recharge pilots — **no state match** (TX has none [C-012]); SMU private → state research funds closed [C-013] | **Weakest funding lever** |
+
+> ⚠️ **State of domicile is now a strategic variable.** Several of these carry in-state residency/HQ
+> tests — VA's for-profit CCF path [C-011] and AL's Supplemental Grant (HQ + team in AL, satisfiable
+> within 12 months post-award) [C-015]. **Where PIDS incorporates materially affects which doors open** —
+> decide deliberately (see §9).
 
 **But it is an *accelerant*, not a gate.** The plan is structured so that **Lane B + Tracks 1 & 3
-proceed at full speed without a partner.** If a partner lands, we *add* Lane A on top. We pursue the
-partner in parallel (outreach to the NC State group / a UNC faculty inventor) with a **founder-signaled
-fallback: no pegged deadline** — Arik calls the timeout. If/when he signals the partner track has
-stalled, we proceed on Lane B alone and revisit at seed.
+proceed at full speed without a partner.** If a partner lands, we *add* Lane A on top. We pursue
+the strongest-fit partner(s) in parallel — **AL (science + funding) and VA** are the two best analogs
+to the UNC opportunity; NC (NC State Stormwater / a UNC faculty inventor) is the home base — with a
+**founder-signaled fallback: no pegged deadline** — Arik calls the timeout. If/when he signals the
+partner track has stalled, we proceed on Lane B alone and revisit at seed.
 
 ## 6. Instrument & terms guardrails
 
@@ -134,8 +155,10 @@ one-pager + data-room index (§ materials/); build the tiered ~50-name pipeline 
 up the grants tracker (§ grants/); open the university-partner conversation; begin the **"not-raising"
 warm-up tour** (3–6 mo of low-stakes investor coffees / updates).
 
-**Phase 1 — Near-term non-dilutive + pilots (parallel, now → ~6 mo):** NC IDEA (Spring window),
-Joules, Activate/LEEP next cycle, scope a municipal pilot, file SBIR when the relevant agency reopens.
+**Phase 1 — Near-term non-dilutive + pilots (parallel, now → ~6 mo):** **NC IDEA (Fall 2026 window —
+application opens ~Jul 27, deadline Aug 24, 2026)**, Joules, Activate/LEEP next cycle, scope a
+municipal pilot, file SBIR when the relevant agency reopens. Open the strongest academic-partner
+conversations (AL Water Institute / VA water faculty / NC State BAE) in parallel.
 
 **Phase 2 — Trigger & compressed equity raise:** when a §3 milestone lands, run the active raise in a
 tight **6–10 week** window (batch meetings → diligence → close), leveraging warm relationships from
@@ -169,6 +192,13 @@ project finance + offtake) deferred to post-traction.
       profile **gated on initial-vertical choice** (below). See
       [`team-commercialization-gap.md`](team-commercialization-gap.md).
 
+- [ ] **Academic-partner portfolio: which relationship(s) to prioritize.** Verified ranking favors
+      **U. Alabama** (best science + funding stack) and **Virginia** (CCF + UVA Seed Fund + water faculty),
+      with **NC** as home base; **SMU/TX** for STTR + pilots, not state money. Decide which 1–2 to pursue
+      first. See [`../research/2026-06-22-multi-university-academic-funding.md`](../research/2026-06-22-multi-university-academic-funding.md).
+- [ ] **State of incorporation** — gates VA/AL eligibility (residency/HQ tests, C-011/C-015). Decide
+      deliberately alongside the partner choice.
+
 **⚠️ Upstream strategic input (gates much of this plan):**
 - [ ] **Initial / beachhead vertical is undecided** (suburban drainage · sports fields · roads &
       sidewalks · agriculture). It gates the COO/commercial-hire profile, which investor sub-segment
@@ -178,12 +208,16 @@ project finance + offtake) deferred to post-traction.
 **Next actions (build, on confirmation):**
 - [ ] Scaffold `materials/` (narrative, deck-outline, one-pager, data-room-index).
 - [ ] Scaffold `pipeline/investor-targets.md` (tiered ~50-name list from research).
-- [ ] Scaffold `grants/non-dilutive-tracker.md` (deadlines: NC IDEA Spring, Activate/LEEP cycles,
-      SBIR agency reopen dates).
-- [ ] Begin verifying load-bearing figures into the claims register.
+- [ ] Scaffold `grants/non-dilutive-tracker.md` (deadlines: **NC IDEA Fall 2026 — Aug 24**, Activate/LEEP
+      cycles, SBIR agency reopen dates, **One NC FY27 cycle**, AL ARDEF FY27 — Jul 29 2026).
+- [x] **Academic-funding figures verified into the claims register (C-008–C-022, 2026-06-22).** Remaining
+      load-bearing figures (TAM, performance) still pending — and pending Arik's human sign-off to elevate
+      the `single-checked` rows to `adversarially-verified`.
 
 ## 10. Cross-references
 
 - National research: [`../research/2026-06-08-preseed-best-practices.md`](../research/2026-06-08-preseed-best-practices.md)
-- Local research: [`../research/2026-06-08-unc-triangle-ecosystem.md`](../research/2026-06-08-unc-triangle-ecosystem.md)
+- Local NC/UNC research: [`../research/2026-06-08-unc-triangle-ecosystem.md`](../research/2026-06-08-unc-triangle-ecosystem.md)
+- Multi-university academic-partner portfolio: [`../research/2026-06-22-multi-university-academic-funding.md`](../research/2026-06-22-multi-university-academic-funding.md)
+- Verified figures (C-008–C-022): [`../../evidence/claims-register.md`](../../evidence/claims-register.md)
 - Repo principles (integrity, cautious build): [`../../governance/principles.md`](../../governance/principles.md)
