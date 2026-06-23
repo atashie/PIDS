@@ -882,3 +882,29 @@ class SequentialCoupledProblem:
         dtotal = self.total_water() - (self._w0 + self._surf0)
         return dtotal - (self.cum_rain - self.cum_outflow - self.cum_drainage
                          + self.cum_handoff_imbalance)
+
+
+def make_overland_coupled(mesh, soil, *, scheme: str = "auto", **kwargs):
+    """Thin SELECTION factory for the surface<->subsurface overland coupling -- the plan's "selectable,
+    not rip-out" entry point. The schemes COEXIST as SEPARATE classes (coexistence is structural); this
+    is just the single dispatch surface so a caller picks one by name.
+
+    ``scheme``:
+      * ``"sequential"`` -> ``SequentialCoupledProblem`` (the operator-split: implicit Richards-alone
+        each step + an explicit Manning routing sweep; structurally immune to the monolithic Manning
+        schemes' convergent-flow sawtooth / stiff-clay dt-collapse -- the B7 regression cases).
+      * ``"galerkin"`` / ``"upwind"`` / ``"auto"`` -> ``CoupledProblem(overland_scheme=scheme, ...)``
+        (the monolithic [psi,d,lam] Newton; ``"auto"`` resolves to upwind on a 3-D serial host else
+        galerkin -- the production default).
+    ``**kwargs`` pass straight through to the chosen class (e.g. ``n_man``, ``route_substeps`` for the
+    sequential split; ``eps_ncp``, ``quadrature_degree`` for the monolith). Raises ``ValueError`` on an
+    unknown scheme. (``CoupledProblem`` is imported lazily so this module stays import-light and there
+    is no import cycle.)"""
+    if scheme == "sequential":
+        return SequentialCoupledProblem(mesh, soil, **kwargs)
+    if scheme in ("galerkin", "upwind", "auto"):
+        from .coupling import CoupledProblem
+        return CoupledProblem(mesh, soil, overland_scheme=scheme, **kwargs)
+    raise ValueError(
+        f"make_overland_coupled: unknown scheme {scheme!r}; expected one of "
+        "'sequential', 'galerkin', 'upwind', 'auto'.")

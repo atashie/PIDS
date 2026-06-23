@@ -678,3 +678,261 @@ def test_route_substeps_validation_rejects_below_one():
     # the valid base (1) and the new default (4) construct fine.
     SequentialCoupledProblem(msh, soil, route_substeps=1)
     SequentialCoupledProblem(msh, soil)   # default route_substeps=4
+
+
+# ====================================================================================================
+# B7 -- the two formerly-FAILING-case regressions (the cases that MOTIVATED the redesign): they
+# dt-collapsed / sawtoothed both monolithic schemes (galerkin + upwind). The sequential split must
+# now run them clean. Plus a thin selectable-wiring factory (the plan's "selectable, not rip-out").
+# Geometries/soils/forcing are the spike `win` references (scratch/overland_split_spike.py
+# tilted_v_case / _sand_channel_setup), SHRUNK (coarse mesh, short horizon) for suite speed.
+# ====================================================================================================
+
+
+# ----------------------------------------------------------------------------------------------------
+# B7 fixture -- a SMALL convergent tilted-V (the spike tilted_v_case geometry, shrunk). The V is the
+# original Pathology-1 (the never-settling sawtooth + dt-pin that 39.5-h'd / collapsed the monolithic
+# schemes). Field-scale-similar V on a FLAT box (topography via z_b), with the DEEP unsaturated BUFFER
+# (LZ=2 m, NZ=4, wettable-but-not-saturated IC) that dodges the no-Ss saturation singularity -- KEPT,
+# per the spike note. Wetter IC + higher rain (vs the field-scale run, which leans on a long horizon we
+# cannot afford in-suite) so the SHORT storm drives genuine surface routing to the y=LY outlet: within
+# each step rain transiently lifts the convergence-line head above 0 and the Manning sweep moves that
+# water down-V to the outlet (cum_outflow > 0), while the soil re-absorbs the residual film by step-end
+# (so the accepted-state pond is ~0 and the deep buffer stays comfortably unsaturated, max psi ~ -0.29).
+# The exercise is the CONVERGENT V geometry under a runoff storm, which is what sawtoothed/collapsed the
+# monolith -- not a standing lake. Calibrated (scratch probe) to complete in ~3-4 s with strong outflow.
+# ----------------------------------------------------------------------------------------------------
+def _small_tilted_v(scale=0.04, rain=0.6, psi_i=-0.30):
+    """Coarse/short convergent tilted-V (spike tilted_v_case, shrunk). Returns the built problem (no
+    rain yet), the rain Constant, and the run cfg. FLAT-top box; z_b carries the V topography; a deep
+    unsaturated buffer keeps the unconfined no-Ss Richards non-singular."""
+    LX, LY, LZ = 1620.0 * scale, 1000.0 * scale, 2.0
+    XC = LX / 2.0
+    SX, SY = 0.05, 0.02
+    n_man = 0.015
+    NX, NY, NZ = 12, 8, 4
+    SOIL = VanGenuchten(theta_r=0.07, theta_s=0.40, alpha=2.0, n=1.3, Ks=0.01)  # Ks << rain -> runs off
+
+    def topo(x):
+        # V: x<XC slopes toward +x (channel at XC), x>XC toward -x; the valley falls toward y=LY.
+        return SX * np.abs(x[0] - XC) + SY * (LY - x[1])
+
+    msh = dmesh.create_box(COMM, [[0.0, 0.0, 0.0], [LX, LY, LZ]], [NX, NY, NZ])
+    prob = SequentialCoupledProblem(msh, SOIL, n_man=n_man)
+    prob.set_topography(topo)
+    prob.set_initial_condition(lambda x: psi_i + 0.0 * x[0])
+    prob.add_outflow_bc(lambda x: np.isclose(x[1], LY), slope=SY)   # the V routes everything to y=LY
+    rain_c = prob.add_rain(0.0)
+    cfg = dict(t_end=0.10, storm=0.04, rain=float(rain))   # the numeric storm rate (m/day)
+    return prob, rain_c, cfg
+
+
+def _march(prob, rain, cfg, dt0=2e-4, dt_max=3e-3):
+    """March a storm-then-recession with the band controller; track no-collapse + routing resid +
+    min dt. Returns (nstep, dt_min_seen, routing_resid_max, collapsed)."""
+    t, nstep, dt = 0.0, 0, dt0
+    dt_min, rr_max, collapsed = dt0, 0.0, False
+    while t < cfg["t_end"] - 1e-12:
+        h = min(dt, cfg["t_end"] - t)
+        if t < cfg["storm"] - 1e-12 and t + h > cfg["storm"]:
+            h = cfg["storm"] - t
+        rain.value = cfg["rain"] if t < cfg["storm"] - 1e-12 else 0.0
+        conv, it = prob.step(h)
+        if not conv:
+            dt *= 0.5
+            dt_min = min(dt_min, dt)
+            if dt < 1e-9:
+                collapsed = True
+                break
+            continue
+        rr_max = max(rr_max, prob.last_routing_resid)
+        t += h
+        nstep += 1
+        if it <= 4:
+            dt = min(dt * 1.4, dt_max)
+        elif it >= 12:
+            dt = dt * 0.7
+    return nstep, dt_min, rr_max, collapsed
+
+
+# ====================================================================================================
+# Test 14 -- THE HEADLINE REGRESSION: the convergent tilted-V (original Pathology 1, the sawtooth/dt-pin
+# that 39.5-h'd / collapsed the monolithic Manning schemes) runs CLEAN on the sequential split: it
+# completes to t_end with NO dt-collapse, conserves |bal|/cum_rain < 1e-3 (routing resid <= 1e-12),
+# and ROUTES water to the outlet (cum_outflow > 0). This is the case the whole redesign exists to fix.
+# ====================================================================================================
+def test_convergent_tilted_v_regression_no_collapse_conserves_routes():
+    """The convergent tilted-V (a small/short swale, the spike's tilted_v_case shrunk, deep unsaturated
+    buffer kept) on the sequential operator-split scheme must:
+      (1) COMPLETE to t_end with NO dt-collapse (the monolithic upwind dt-collapsed here / galerkin
+          sawtoothed to a 39.5-h dt-pin; the sequential split decouples the stiff Richards Jacobian
+          from the surface routing so neither pathology can form -- this is the headline fix);
+      (2) CONSERVE: |balance|/cum_rain < 1e-3 with the routing store sum(d_i A_i) resid <= 1e-12;
+      (3) ROUTE water to the outlet (cum_outflow > 0 -- the swale genuinely drains to y=LY, i.e. the
+          convergent transport actually happens, not a dammed no-op).
+    Pins that the redesign's motivating Pathology-1 case is fixed."""
+    prob, rain, cfg = _small_tilted_v()
+    nstep, dt_min, routing_resid, collapsed = _march(prob, rain, cfg)
+
+    # (1) no dt-collapse: completed the loop without ever cutting dt below the floor.
+    assert not collapsed, f"tilted-V dt-COLLAPSED (min dt seen {dt_min:.2e}) -- Pathology 1 NOT fixed"
+    assert nstep > 0, "tilted-V storm did not advance"
+    # (2) conservation: the routing store telescopes (resid <= 1e-12) and the global balance closes.
+    assert routing_resid <= 1e-12, f"routing store sum(d*A) resid {routing_resid:.3e} > 1e-12"
+    assert prob.cum_rain > 0.0, "no rain fell -> vacuous conservation check"
+    bal_frac = abs(prob.balance()) / prob.cum_rain
+    assert bal_frac < 1e-3, (
+        f"tilted-V balance did not close: |bal|/cum_rain = {bal_frac:.3e} "
+        f"(|bal|={abs(prob.balance()):.3e}, cum_rain={prob.cum_rain:.3e}, "
+        f"cum_outflow={prob.cum_outflow:.3e})")
+    # (3) the convergent swale actually routed water out to the outlet (the transport happened).
+    assert prob.cum_outflow > 0.0, \
+        "tilted-V routed NO water to the outlet -> the swale did not drain (transport stalled)"
+
+
+# ----------------------------------------------------------------------------------------------------
+# B7 fixture -- a SMALL sand-channel-in-clay where the CHANNEL is the only surface outlet, so the
+# interception fraction is UNAMBIGUOUS. Spike _sand_channel_setup geometry/soils, shrunk: a sand swale
+# embedded in clay, a storm ponds on the clay and CONCENTRATES into the swale (the convergence line),
+# where it leaves via the channel-mouth surface outlet (y=0 over the channel) + the sand-interface GHB.
+# With the channel-mouth as the ONLY outlet, (cum_outflow + cum_drainage)/cum_rain IS the channel's
+# interception fraction (no toe outlet to confound it). This is the Pathology-2 (stiff-clay) case.
+# ----------------------------------------------------------------------------------------------------
+def _small_sand_channel_intercept():
+    """Coarse/short sand-channel-in-clay with the channel-mouth surface outlet + sand GHB as the ONLY
+    sinks (no toe outlet) -> the channel's interception fraction is unambiguous. Returns (prob, rain,
+    cfg)."""
+    LX, LY, LZ = 6.0, 3.0, 1.0
+    NX, NY, NZ = 12, 7, 4
+    S0 = 0.04
+    X_CH, W_CH = 3.0, 0.6
+    Z_SAND_BASE = LZ - 0.4
+    D_CH, SY = 0.30, 0.06
+    X_BERM, W_BERM, B_H = 4.0, 0.45, 0.30
+    PSI_I = -0.30
+    RAIN, STORM_DUR = 0.15, 0.10
+    SAND = VanGenuchten(theta_r=0.045, theta_s=0.43, alpha=14.5, n=2.68, Ks=7.13)
+    CLAY = VanGenuchten(theta_r=0.068, theta_s=0.38, alpha=0.8, n=1.09, Ks=0.048)
+    tol = 1e-6
+
+    class ClaySandChannel:
+        def __init__(self, mesh):
+            self.sand, self.clay = SAND, CLAY
+            xx = ufl.SpatialCoordinate(mesh)
+            self._in_sand = ufl.And(ufl.lt(abs(xx[0] - X_CH), W_CH), ufl.ge(xx[2], Z_SAND_BASE))
+            self.Ks = SAND.Ks
+            self.theta_r, self.theta_s = CLAY.theta_r, CLAY.theta_s
+
+        def theta_ufl(self, psi):
+            return ufl.conditional(self._in_sand, self.sand.theta_ufl(psi), self.clay.theta_ufl(psi))
+
+        def K_ufl(self, psi):
+            return ufl.conditional(self._in_sand, self.sand.K_ufl(psi), self.clay.K_ufl(psi))
+
+    def topo(x):
+        z_main = S0 * (LX - x[0])
+        swale = (D_CH + SY * (LY - x[1])) * np.exp(-(((x[0] - X_CH) / W_CH) ** 2))
+        berm = B_H * np.exp(-(((x[0] - X_BERM) / W_BERM) ** 2))
+        return z_main - swale + berm
+
+    msh = dmesh.create_box(COMM, [[0.0, 0.0, 0.0], [LX, LY, LZ]], [NX, NY, NZ])
+    soil = ClaySandChannel(msh)
+    prob = SequentialCoupledProblem(msh, soil, n_man=0.05)
+    prob.set_topography(topo)
+    prob.set_initial_condition(lambda x: PSI_I + 0.0 * x[0])
+    # the CHANNEL-MOUTH surface outlet is the ONLY surface outlet (no toe outlet) -> cum_outflow is the
+    # channel surface capture; the sand-interface GHB adds the channel subsurface capture.
+    chan_mouth = lambda x: np.isclose(x[1], 0.0) & (np.abs(x[0] - X_CH) < W_CH + tol)
+    prob.add_outflow_bc(chan_mouth, SY)
+    drain_loc = (lambda x: np.isclose(x[1], 0.0) & (np.abs(x[0] - X_CH) < W_CH + tol)
+                 & (x[2] >= Z_SAND_BASE - tol))
+    prob.add_drainage_bc(drain_loc, 2.0, Z_SAND_BASE - 0.1)
+    rain = prob.add_rain(0.0)
+    cfg = dict(t_end=0.30, storm=STORM_DUR, rain=RAIN)
+    return prob, rain, cfg
+
+
+# ====================================================================================================
+# Test 15 -- SAND-CHANNEL-IN-CLAY REGRESSION (Pathology 2, the stiff-clay case): the full explicit gate
+# -- (1) no dt-collapse, (2) |bal|/cum_rain < 1e-3 (routing resid <= 1e-12), AND (3) the channel
+# INTERCEPTS a meaningful fraction (> a few %) of the rain via its outlet/sand-GHB. The two-outlet
+# conservation gate (Test 4) already pins completion+conservation on the toe+channel fixture; THIS test
+# adds the interception dimension on a channel-ONLY-outlet fixture (so "channel capture" is unambiguous)
+# -- the stiff-clay case that dt-collapsed the monolithic schemes, now with interception asserted.
+# ====================================================================================================
+def test_sand_channel_in_clay_regression_intercepts_and_conserves():
+    """The sand-channel-in-clay storm (the stiff-clay Pathology 2 that dt-collapsed/sawtoothed both
+    monolithic schemes) on the sequential split, with the channel-mouth surface outlet + sand GHB as
+    the ONLY sinks. The full gate:
+      (1) COMPLETES with NO dt-collapse;
+      (2) CONSERVES: |bal|/cum_rain < 1e-3, routing store sum(d_i A_i) resid <= 1e-12;
+      (3) INTERCEPTION FORMS: the channel captures a meaningful fraction of the rain --
+          (cum_outflow + cum_drainage)/cum_rain > a few % (the storm ponds on the clay, concentrates
+          into the high-K sand swale, and leaves via the channel-mouth outlet + the sand-interface GHB,
+          rather than all infiltrating the clay or sitting as a static pond).
+    Pins the stiff-clay regression WITH an explicit, unambiguous interception assertion."""
+    prob, rain, cfg = _small_sand_channel_intercept()
+    nstep, dt_min, routing_resid, collapsed = _march(prob, rain, cfg, dt0=1e-3, dt_max=0.03)
+
+    # (1) no dt-collapse on the stiff clay.
+    assert not collapsed, f"sand-channel dt-COLLAPSED (min dt {dt_min:.2e}) -- Pathology 2 NOT fixed"
+    assert nstep > 0, "sand-channel storm did not advance"
+    # (2) conservation.
+    assert routing_resid <= 1e-12, f"routing store sum(d*A) resid {routing_resid:.3e} > 1e-12"
+    assert prob.cum_rain > 0.0, "no rain fell -> vacuous conservation check"
+    bal_frac = abs(prob.balance()) / prob.cum_rain
+    assert bal_frac < 1e-3, (
+        f"sand-channel balance did not close: |bal|/cum_rain = {bal_frac:.3e} "
+        f"(cum_rain={prob.cum_rain:.3e}, cum_outflow={prob.cum_outflow:.3e}, "
+        f"cum_drainage={prob.cum_drainage:.3e})")
+    # (3) THE INTERCEPTION GATE: the channel captured a meaningful fraction of the rain (channel-mouth
+    # surface outflow + sand GHB), not a negligible trickle. Calibrated ~27% in the scratch probe; the
+    # gate requires > 5% (well above "a few %") so it is a real interception signal, robustly above any
+    # roundoff/edge-effect floor while leaving generous headroom against mesh/horizon jitter.
+    capture = prob.cum_outflow + prob.cum_drainage
+    capture_frac = capture / prob.cum_rain
+    assert capture_frac > 0.05, (
+        f"the sand channel intercepted only {capture_frac:.2%} of the rain (<= 5%) -- no meaningful "
+        f"interception formed (cum_outflow={prob.cum_outflow:.3e}, cum_drainage={prob.cum_drainage:.3e}, "
+        f"cum_rain={prob.cum_rain:.3e})")
+
+
+# ====================================================================================================
+# Test 16 -- SELECTABLE WIRING (the plan's "selectable, not rip-out"): the sequential split must
+# COEXIST with the monolithic schemes as a pickable option. A thin factory make_overland_coupled(...,
+# scheme=...) returns the right class for each scheme. The monolithic schemes are SEPARATE classes from
+# the sequential one (coexistence is STRUCTURAL); the factory is the single selection entry point.
+# ====================================================================================================
+def test_make_overland_coupled_factory_dispatches_by_scheme():
+    """make_overland_coupled(mesh, soil, scheme=...) is the thin selection entry point: scheme=
+    'sequential' -> SequentialCoupledProblem; scheme in {'galerkin','upwind','auto'} ->
+    CoupledProblem(overland_scheme=scheme). Both are constructible on the SAME 3-D mesh/soil (so the
+    schemes genuinely COEXIST -- the sequential split does not replace the monolith, it is selectable
+    alongside it), the requested monolithic scheme is recorded on the returned object, and an unknown
+    scheme raises a clear ValueError."""
+    from pids_forward.physics.sequential_coupling import make_overland_coupled
+
+    msh = dmesh.create_box(COMM, [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], [3, 3, 4])  # 3-D (upwind/auto ok)
+    soil = VanGenuchten(theta_r=0.067, theta_s=0.45, alpha=1.0, n=1.5, Ks=0.05)
+
+    seq = make_overland_coupled(msh, soil, scheme="sequential")
+    assert isinstance(seq, SequentialCoupledProblem), "scheme='sequential' must build the split class"
+    assert not isinstance(seq, CoupledProblem)
+
+    # the three monolithic schemes -> CoupledProblem with the requested overland_scheme recorded.
+    for scheme in ("galerkin", "upwind", "auto"):
+        prob = make_overland_coupled(msh, soil, scheme=scheme)
+        assert isinstance(prob, CoupledProblem), f"scheme={scheme!r} must build the monolith"
+        assert not isinstance(prob, SequentialCoupledProblem)
+        assert prob.overland_scheme == scheme, \
+            f"factory did not pass overland_scheme={scheme!r} through ({prob.overland_scheme!r})"
+
+    # extra kwargs flow through to the chosen class (e.g. n_man) -- the factory is a pass-through.
+    seq2 = make_overland_coupled(msh, soil, scheme="sequential", n_man=0.123, route_substeps=2)
+    assert seq2.n_man == pytest.approx(0.123) and seq2.route_substeps == 2
+    mono2 = make_overland_coupled(msh, soil, scheme="galerkin", n_man=0.077)
+    assert mono2.n_man == pytest.approx(0.077)
+
+    # an unknown scheme is rejected with a clear error naming the option.
+    with pytest.raises(ValueError, match="scheme"):
+        make_overland_coupled(msh, soil, scheme="bogus")
