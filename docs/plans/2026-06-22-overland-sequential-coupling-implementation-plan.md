@@ -33,6 +33,18 @@ These are **design prerequisites**, not incidental tuning. The first draft mis-f
 
 ---
 
+## 0b. SPIKE OUTCOME — verified GREEN (2026-06-23)
+
+The Part-A spike ran (record: `validation/sanity/overland_split_spike__2026-06-22.md`). Architecture validated — no dt-collapse, no sawtooth, routing exact + non-teleporting, interception forms. Conservation was initially AMBER; a focused extension closed it. **Independently re-verified by the parent:** sand-channel `|balance|/cum_rain = 5.3e-12` clean vs `2.13e-2` under a deliberate 10% falsification injection (the detector is real); both cases incl. recession close to ~1e-11.
+
+**F1 RESOLVED — the winning design (SUPERSEDES the §0a (a)/(b) framing):** fully **DECOUPLED** (no vertical co-solve — the non-monolithic intent holds). The pond is carried **in ψ** via the existing `add_ponding_bc` self-limiting term (NOT a new separate-store BC); lateral routing enters the Richards solve as an under-relaxed **Neumann source**; **Picard** under-relaxation gives robustness. The prior "18% leak" was an **accounting bug, not physics**: the conserved ledger must be `∫θ dV + ∫max(ψ,0) ds_top` with the pond/rain/source terms on the **same lumped vertex quadrature** as the routing `Σd_iA_i`. Fixing the ledger (not the solve) → 18% → 5e-12. The vertical `[ψ,d]` co-solve fallback was NOT needed.
+
+**Open Part-B concern is ACCURACY, not mass balance (solved):** the ω(=0.5) under-relaxation + one-step lag **throttles the lateral transport rate** — a large transient swale pond (~1 m) builds before draining, and the interception fraction (22.9%) depends on that rate. Part B must calibrate ω / Picard-iters against a **resolved upwind reference** (a transport criterion) as a first-class accuracy task, plus carry the 6 plumbing fixes + a load-bearing `∫max(ψ,0) ds_top == Σd_iA_i` quadrature-match test.
+
+**This reframes Part B:** F1 = the matched-quadrature ledger over ψ's pond (NOT a new BC); the orchestrator wraps {`RichardsProblem` + `add_ponding_bc` + lateral Neumann source, routing sweep} in a Picard loop; after the routing kernel, the first functional task is the conserving ledger + the transport-rate calibration. The `win` mode in `scratch/overland_split_spike.py` (`win_sand_short|win_sand|win_v_storm|win_v`, `PIDS_WIN_LEAK=0.1` falsification) is the reference implementation to productionize.
+
+---
+
 ## 1. Load-bearing physics vs. incidental numerical complexity
 
 The kickoff asked us to separate these before designing. From reading `overland.py`, `overland_upwind.py`, `overland_edge_kernel.py`, `coupling.py`, `richards.py`:
