@@ -51,8 +51,11 @@ lag in psi's pond (tracked as ``cum_handoff_imbalance``), NOT a leak.
 Public surface mirrors ``CoupledProblem`` where sensible: ``set_initial_condition``,
 ``set_topography``, ``add_rain``, ``add_outflow_bc``, ``add_drainage_bc``, ``step``, ``advance``,
 ``total_water`` / ``surface_water`` / ``soil_water``, the ledger (``cum_rain``, ``cum_outflow``,
-``cum_drainage``, ``cum_handoff_imbalance``) + ``balance()``. Sinks/features (``add_interior_drain``,
-``add_surface_inlet``, ``add_embedded_exchange``) are DEFERRED (B6).
+``cum_drainage``, ``cum_handoff_imbalance``) + ``balance()``. The B6 sinks ``add_interior_drain``
+(subsurface tile drain) + ``add_surface_inlet`` (surface grate) + the per-sink split
+(``sink_rates`` / ``last_sinks`` / ``cum_sinks``) are wired in (F2 evaluation-state contract on the
+class). Embedded-feature exchange (``add_embedded_exchange`` / ``WellIndexExchange``) stays DEFERRED
+pending the unified-feature redesign.
 
 Restriction: serial-only (the top-facet routing graph is not ownership-aware -- guarded loudly).
 
@@ -83,6 +86,27 @@ class SequentialCoupledProblem:
     with the surface water redistributed by an explicit Manning rate-limited routing sweep injected
     as an under-relaxed Neumann SOURCE, iterated to a Picard fixed point. The PRODUCTION extraction
     of the validated spike ``run_case_win`` (conservation ~5e-12).
+
+    THE F2 SINK-EVALUATION-STATE MODEL (a stated contract -- where each sink is evaluated within the
+    operator split, so no sink is left to "whatever state happens to be current"):
+      * SUBSURFACE sinks -- the GHB boundary drain (``add_drainage_bc``) and the interior tile drain
+        (``add_interior_drain``) -- are evaluated INSIDE the implicit Richards solve: they enter the
+        Richards residual (``+ q * v * ds`` / ``+ q_vol * v * dx``), so the Newton resolves them
+        against the SOLVED psi each step, and their booked rate is that residual term assembled at the
+        solved psi. This is the same state the monolithic ``CoupledProblem`` evaluates them at.
+      * SURFACE sinks -- the Manning outlet (``add_outflow_bc``) and the grate inlet
+        (``add_surface_inlet``) -- are evaluated DURING / AFTER the routing sweep on the POST-Richards
+        ponded field ``max(psi,0)``: the outlet books its off-domain discharge in the routing sweep,
+        and the inlet removes ponded depth in the surface update AFTER the Richards solve accepts
+        (NOT as a co-solved ``ds_top`` term inside the Newton -- there is no surface unknown here).
+        Their booked rate is read on that post-Richards pond.
+    Per-sink accounting (``last_sinks`` / ``cum_sinks`` keyed by ``'ghb'`` / ``'interior_drain'`` /
+    ``'surface_inlet'``, plus ``sink_rates()``) splits the total; the flat sum equals
+    ``last_drainage`` / ``cum_drainage``.
+
+    DEFERRED: embedded-feature exchange (``add_embedded_exchange`` / ``WellIndexExchange``) is NOT
+    provided -- the embedded-feature API is being replaced by a separate redesign (the unified
+    feature work); it will be wired in once that lands.
 
     Parameters
     ----------
@@ -164,6 +188,12 @@ class SequentialCoupledProblem:
         # deferred surface/subsurface sink registrations (forms (re)built by _finalize_forms).
         self._outlets: list = []   # (outlet_dofs, slope) per add_outflow_bc
         self._drains: list = []    # (drain_facets, conductance, external_head) per add_drainage_bc
+        # B6 sinks. INTERIOR tile drains (SUBSURFACE, F2: in the Richards solve) -- volumetric DG-0 sink
+        # terms re-woven into rp.F by _finalize_forms (mirror CoupledProblem). SURFACE grate inlets
+        # (SURFACE, F2: on the post-Richards pond) -- removed in the surface update, NOT a residual term.
+        self._V0 = None                   # lazy DG-0 space for the cell-sharp interior-drain indicator
+        self._interior_drains: list = []  # (cells, conductance_density, drain_head, eps_act) per add
+        self._inlets: list = []           # (inlet_dofs, intake_coeff) per add_surface_inlet (top dofs)
 
         # the surface routing graph (built lazily once topography + sinks are known, in _ensure_built).
         self._built = False
@@ -174,12 +204,21 @@ class SequentialCoupledProblem:
         self._outlet_slope_node = None
         self._pond_ledger = None   # int max(psi,0) ds_top on the VERTEX measure (== sum d_i A_i)
         self._lat_src_ledger = None  # int lat_src ds_top (== sum lat_i A_i; the source consistency check)
-        self._drain_forms: list = []
+        self._drain_forms: list = []          # compiled GHB scalar rate forms (degree-8 ds), per drain
+        self._interior_forms: list = []       # compiled interior-drain scalar rate forms (plain dx)
 
         # -- ledger (B5) ------------------------------------------------------
         self.cum_rain = 0.0
         self.cum_outflow = 0.0
         self.cum_drainage = 0.0
+        # per-sink accounting (B6), keyed by kind, each list in add-order; the flat sum equals
+        # last_drainage / cum_drainage (mirror CoupledProblem). 'ghb' = boundary GHB drains, evaluated
+        # IN the Richards solve; 'interior_drain' = volumetric tile drains, also IN the Richards solve;
+        # 'surface_inlet' = grate intakes, evaluated on the POST-Richards pond in the surface update
+        # (the F2 model -- see the class docstring). (No 'feature' key: embedded-feature exchange is
+        # DEFERRED pending the redesign.)
+        self.last_sinks = {"ghb": [], "interior_drain": [], "surface_inlet": []}
+        self.cum_sinks = {"ghb": [], "interior_drain": [], "surface_inlet": []}
         # The handoff CONSISTENCY term, tracked NOT hidden: the per-step residual between what the
         # lateral SOURCE actually removed from the system (the assembled int lat_src ds_top, = the
         # under-relaxed routed-pond change the solver saw) and what we BOOKED as outflow
@@ -275,7 +314,103 @@ class SequentialCoupledProblem:
         self._built = False
         return None
 
+    def add_interior_drain(self, locator, conductance_density, drain_head, *,
+                           eps_act: float = 1e-3):
+        """Volumetric OUTFLOW-ONLY tile drain (MODFLOW-DRN analogue) over the CELLS matched by
+        ``locator`` -- a SUBSURFACE sink. INTERIOR horizons allowed (e.g. a pipe on a clay interface)
+        which the exterior-facet GHB (``add_drainage_bc``) cannot represent. **Mirrors
+        ``CoupledProblem.add_interior_drain`` faithfully:**
+
+            q_vol = conductance_density * kr(psi) * pos(psi + z - drain_head)      [1/day]
+            pos(u) = 1/2 (u + sqrt(u^2 + eps_act^2))                               (C^inf smooth max)
+
+        Per the F2 model (class docstring) this is a SUBSURFACE sink: it enters the Richards residual
+        as ``+ q_vol * v * dx`` (degree-8 ``dx``) and so is evaluated INSIDE the implicit Richards
+        solve, exactly like the GHB. ``conductance_density`` [1/(day*m)]; ``drain_head`` = the pipe
+        invert elevation (drains where ``psi+z`` exceeds it). OUTFLOW-ONLY by construction (an
+        air-filled pipe never injects; the smooth max leaks <= density*eps_act/2 per unit volume AT
+        activation only, ``eps_act`` > 0). ``kr = K(psi)/Ks`` self-limits unsaturated extraction.
+        Localized by a cell-sharp DG-0 indicator on plain ``dx`` (no meshtags; NOTE ``locator`` is an
+        ALL-vertex predicate -- the band bounds must strictly contain the intended cell vertices).
+        Wired into ``cum_drainage`` / the balance; the per-sink split is ``sink_rates()`` /
+        ``cum_sinks['interior_drain']``. Returns the conductance ``Constant`` (drive ``.value`` to
+        ramp). Promoted from the signed-off dual-drain illustration (commit 63145e2).
+        """
+        C_const = conductance_density if isinstance(conductance_density, fem.Constant) else \
+            fem.Constant(self.mesh, PETSc.ScalarType(float(conductance_density)))
+        if not float(C_const.value) >= 0.0:   # NaN-proof (NaN fails every comparison)
+            raise ValueError("add_interior_drain requires conductance_density >= 0 [1/(day*m)]; "
+                             f"got {conductance_density!r}")
+        if not eps_act > 0.0:
+            raise ValueError(f"add_interior_drain requires eps_act > 0 [m]; got {eps_act!r}")
+        tdim = self.mesh.topology.dim
+        cells = np.sort(dmesh.locate_entities(self.mesh, tdim, locator)).astype(np.int32)
+        if self.mesh.comm.allreduce(int(cells.size), op=MPI.SUM) == 0:
+            raise ValueError("add_interior_drain: the locator matched no cell (it is an ALL-vertex "
+                             "predicate -- widen the bounds to strictly contain the cell vertices).")
+        for prior, _C, _He, _eps in self._interior_drains:
+            ov = int(np.intersect1d(cells, prior).size)
+            if self.mesh.comm.allreduce(ov, op=MPI.SUM) > 0:
+                raise ValueError("add_interior_drain: locator overlaps an existing interior drain "
+                                 "(an ambiguous double sink on shared cells).")
+        self._interior_drains.append((cells, C_const, float(drain_head), float(eps_act)))
+        self._built = False
+        return C_const
+
+    def add_surface_inlet(self, locator, intake_coeff):
+        """Grate / catch-basin intake on the PONDED depth over a top-surface footprint -- a SURFACE
+        sink: ``q_in = intake_coeff * d`` [m/day], ``d = max(psi,0)``, removes surface water only.
+        **Mirrors ``CoupledProblem.add_surface_inlet`` in SPIRIT but adapted to the sequential
+        design:** there is no co-solved surface unknown ``d`` here, so per the F2 model (class
+        docstring) the inlet is evaluated on the POST-Richards pond and removed DURING THE SURFACE
+        UPDATE (like the Manning outlet), NOT as a ``ds_top`` term inside the Richards Newton.
+
+        Each accepted step removes ``intake_coeff * d_i * A_i * dt`` of ponded volume at each footprint
+        node (clamped to the available pond ``d_i * A_i`` so ``psi`` never crosses 0), lowering the
+        carried pond ``max(psi,0)``; the volume ACTUALLY removed (= the unclamped intake when
+        ``intake_coeff*dt < 1``, the normal regime) is booked into ``cum_drainage`` and the
+        ``surface_inlet`` per-sink split, on the SAME lumped VERTEX measure as the pond ledger -- so
+        ``balance()`` stays closed UNCONDITIONALLY (matched-quadrature consistent, even if the clamp
+        bites a huge coefficient). The footprint = the TOP dofs matched by ``locator`` (non-top matches
+        ignored; raises if NO top node matches). Returns the intake ``Constant`` (drive ``.value``).
+        Serial-only (the top-dof gather is not ownership-aware;
+        the engine's standing serial waiver applies). Promoted from the dual-drain illustration (63145e2).
+        """
+        C_const = intake_coeff if isinstance(intake_coeff, fem.Constant) else \
+            fem.Constant(self.mesh, PETSc.ScalarType(float(intake_coeff)))
+        if not float(C_const.value) >= 0.0:   # NaN-proof (NaN fails every comparison)
+            raise ValueError(f"add_surface_inlet requires intake_coeff >= 0 [1/day]; "
+                             f"got {intake_coeff!r}")
+        top = self._top_dofs_arr
+        sel = top[locator(self._coords[top].T)]               # the matched TOP dofs (footprint)
+        if self.mesh.comm.allreduce(int(sel.size), op=MPI.SUM) == 0:
+            raise ValueError("add_surface_inlet: the locator matched no TOP-surface node -- the "
+                             "inlet footprint must lie on the land surface.")
+        for prior, _C in self._inlets:
+            ov = int(np.intersect1d(sel, prior).size)
+            if self.mesh.comm.allreduce(ov, op=MPI.SUM) > 0:
+                raise ValueError("add_surface_inlet: footprint overlaps an existing inlet.")
+        self._inlets.append((np.sort(sel).astype(np.int64), C_const))
+        self._built = False
+        return C_const
+
     # -- form assembly --------------------------------------------------------
+    def _dg0_indicator(self, cells, name: str):
+        """Cell-sharp DG-0 indicator (1 on ``cells``, 0 elsewhere) for an interior-drain sink, with no
+        meshtags (sidesteps the one-subdomain_data-per-integral-type rule). Quadrature-exact for the
+        selected cell set (constant per cell); the realized sink geometry is quantized to WHOLE cells.
+        Mirrors ``CoupledProblem._dg0_indicator``."""
+        if self._V0 is None:
+            self._V0 = fem.functionspace(self.mesh, ("DG", 0))
+        tdim = self.mesh.topology.dim
+        self.mesh.topology.create_connectivity(tdim, tdim)  # locate_dofs_topological needs (tdim,tdim)
+        chi = fem.Function(self._V0, name=name)
+        chi.x.array[:] = 0.0
+        dofs = fem.locate_dofs_topological(self._V0, tdim, cells)
+        chi.x.array[dofs] = 1.0
+        chi.x.scatter_forward()
+        return chi
+
     def _finalize_forms(self) -> None:
         """(Re)build the Richards residual surface/GHB terms + the routing graph.
 
@@ -346,6 +481,18 @@ class SequentialCoupledProblem:
             q_n = C * kr * (rp.psi + z - H)
             rp.F = rp.F + q_n * rp._v * ds(k)
             self._drain_forms.append(fem.form(q_n * ds(k)))
+        # INTERIOR tile drains (B6, SUBSURFACE -- F2: evaluated IN the Richards solve): volumetric
+        # OUTFLOW-ONLY DG-0 sink on plain degree-8 dx, mirroring CoupledProblem.add_interior_drain.
+        dxq = ufl.dx(metadata={"quadrature_degree": self._quad_degree})
+        self._interior_forms = []
+        for j, (cells, C, H, eps_act) in enumerate(self._interior_drains):
+            chi = self._dg0_indicator(cells, f"chi_drain{j}")
+            u = rp.psi + z - H
+            pos = 0.5 * (u + ufl.sqrt(u * u + eps_act * eps_act))   # C^inf smooth max (outflow-only)
+            kr = self.soil.K_ufl(rp.psi) / self.soil.Ks             # self-limits unsaturated extraction
+            q_vol = C * kr * pos * chi
+            rp.F = rp.F + q_vol * rp._v * dxq
+            self._interior_forms.append(fem.form(q_vol * dxq))
         rp._problem = None   # force a NonlinearProblem rebuild with the new F
 
         # build the top-facet routing graph (edges/lengths/transmissibility/areas) + adjacency/widths.
@@ -365,9 +512,16 @@ class SequentialCoupledProblem:
             self._outlet_mask[sel] = True
             self._outlet_slope_node[sel] = np.maximum(self._outlet_slope_node[sel], slope)
 
-        # snapshot the conserved-ledger baseline (int theta + int max(psi,0) ds_top) at the current IC.
-        self._w0 = rp.total_water()
-        self._surf0 = self._surf_pond()
+        # snapshot the conserved-ledger baseline (int theta + int max(psi,0) ds_top) ONCE, on the FIRST
+        # build, and NEVER re-take on a later rebuild (the one-shot fix): a setup mutator called AFTER
+        # stepping flips _built=False and re-finalizes here, but re-snapshotting the baseline at the
+        # already-advanced state would collapse d(total) and silently corrupt balance(). The baseline
+        # is the IC by construction; set_initial_condition is the only legitimate way to move it (it
+        # runs before any step), so we tie the one-shot to "_w0 is None" -- a fresh problem or a
+        # never-built one. (A re-IC after a step is a misuse the ledger cannot represent anyway.)
+        if self._w0 is None:
+            self._w0 = rp.total_water()
+            self._surf0 = self._surf_pond()
         self._built = True
 
     def _ensure_built(self) -> None:
@@ -502,7 +656,41 @@ class SequentialCoupledProblem:
             rp.psi_n.x.scatter_forward()
             return False, it
 
-        # accept: psi carries the redistributed pond; psi_n := psi.
+        # accept: psi carries the redistributed pond (the SOLVED Richards state). Read the SUBSURFACE
+        # sink rates (GHB + interior drain) NOW, on the solved psi -- BEFORE the surface inlet mutates
+        # any top dof (F2: subsurface sinks are evaluated at the solved psi the Newton resolved them
+        # against; assembling them after the surface update would perturb a drain band that reaches the
+        # top facet). These are the residual terms the Newton balanced, so they are the books-consistent
+        # rates (same convention as CoupledProblem reading sinks at the solved state).
+        ghb_rates = [self.mesh.comm.allreduce(fem.assemble_scalar(f), op=MPI.SUM)
+                     for f in self._drain_forms]
+        interior_rates = [self.mesh.comm.allreduce(fem.assemble_scalar(f), op=MPI.SUM)
+                          for f in self._interior_forms]
+
+        # SURFACE-INLET removal (B6, F2: a SURFACE sink on the POST-Richards pond) happens HERE, on the
+        # solved field, BEFORE psi_n := psi -- like the Manning outlet, it removes ponded water in the
+        # surface update (not a residual term). Each footprint node loses q_in = intake_coeff*d depth,
+        # i.e. intake_coeff*d_i*A_i*dt of volume, clamped to the available pond d_i*A_i so psi never
+        # crosses 0 (the carried pond stays >= 0 and the lumped ledger drops by exactly the booked
+        # volume). The rate is read on the post-Richards pond (the state the inlet sees).
+        inlet_rates = []          # per-inlet rate [m^3/day] at the post-Richards pond (for the books)
+        psi_arr = rp.psi.x.array
+        for (dofs, C_const) in self._inlets:
+            d_post = np.maximum(psi_arr[dofs], 0.0)
+            coeff = float(C_const.value)
+            # remove depth, clamped per-node to the available pond (depth basis: psi never below 0).
+            remove_depth = np.minimum(coeff * d_post * dt, d_post)
+            psi_arr[dofs] -= remove_depth
+            # BOOK the volume ACTUALLY removed (sum_i remove_depth_i*A_i)/dt, not the unclamped
+            # intake_coeff*d rate: in the normal regime (intake_coeff*dt < 1) these are identical, but
+            # booking the removed volume keeps balance() closed EXACTLY even if a huge coefficient
+            # would otherwise drain a node in one step (the clamp bites). The ledger drops by exactly
+            # this volume, so cum_drainage tracks it -- conservation is unconditional.
+            inlet_rates.append(float(np.sum(remove_depth * A_i[dofs])) / dt if dt > 0 else 0.0)
+        if self._inlets:
+            rp.psi.x.scatter_forward()
+
+        # psi_n := psi (post-inlet): the removed pond must NOT reappear as next step's entry pond.
         rp.psi_n.x.array[:] = rp.psi.x.array
         rp.psi_n.x.scatter_forward()
 
@@ -527,11 +715,24 @@ class SequentialCoupledProblem:
         self.last_handoff_resid = lat_int * dt + of_applied
         self.cum_handoff_imbalance += self.last_handoff_resid
 
-        # drainage at the SOLVED state (GHB), integrated over dt.
-        drain_step = sum(self.mesh.comm.allreduce(fem.assemble_scalar(f), op=MPI.SUM)
-                         for f in self._drain_forms) * dt
-        self.last_drainage = drain_step / dt if dt > 0 else 0.0
-        self.cum_drainage += drain_step
+        # drainage accounting (B6), per-sink split in last_sinks/cum_sinks; the flat sum is
+        # last_drainage / cum_drainage. F2: the GHB + interior-drain rates were read on the solved psi
+        # ABOVE (subsurface, pre-inlet); the surface inlet is the SURFACE rate read on the post-Richards
+        # pond. Lists AUTO-EXTEND (mirror CoupledProblem) so a sink added after stepping gets a slot.
+        total_rate = 0.0
+        sink_sources = (("ghb", ghb_rates),
+                        ("interior_drain", interior_rates),
+                        ("surface_inlet", inlet_rates))
+        for kind, rates in sink_sources:
+            while len(self.last_sinks[kind]) < len(rates):
+                self.last_sinks[kind].append(0.0)
+                self.cum_sinks[kind].append(0.0)
+            for i, r in enumerate(rates):
+                self.last_sinks[kind][i] = r
+                self.cum_sinks[kind][i] += dt * r
+                total_rate += r
+        self.last_drainage = total_rate
+        self.cum_drainage += dt * total_rate
 
         # rain influx over dt (the surface area is the lumped top area sum_i A_i).
         self.cum_rain += float(self._rain_c.value) * self._top_area * dt
@@ -598,6 +799,17 @@ class SequentialCoupledProblem:
     def total_water(self) -> float:
         """The conserved total = int theta dV + int max(psi,0) ds_top (soil + surface pond)."""
         return self.soil_water() + self.surface_water()
+
+    def sink_rates(self) -> dict:
+        """Per-sink drainage rates from the LAST accepted step, keyed by kind ('ghb',
+        'interior_drain', 'surface_inlet'), each a list in add-order; the flat sum equals
+        ``last_drainage`` and the flat sum of ``cum_sinks`` equals ``cum_drainage`` (the per-sink
+        split is exhaustive). Returns the BOOKED per-step rates (a snapshot of ``last_sinks``), NOT a
+        live re-assembly: unlike ``CoupledProblem.sink_rates`` (which re-assembles UFL forms at the
+        current state), the SURFACE INLET here is an APPLIED removal on the post-Richards pond -- after
+        the step the live pond is already post-removal, so a live re-read would not reproduce the
+        booked figure. The last-booked snapshot is the residual-consistent rate the balance uses."""
+        return {kind: list(vals) for kind, vals in self.last_sinks.items()}
 
     def balance(self) -> float:
         """Global mass-balance closure (B5): the residual of

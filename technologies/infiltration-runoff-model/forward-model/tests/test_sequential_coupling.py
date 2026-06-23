@@ -322,3 +322,274 @@ def test_advance_band_controller_runs_storm_and_conserves():
     assert prob.cum_rain > 0.0 and prob.cum_outflow > 0.0
     bal_frac = abs(prob.balance()) / prob.cum_rain
     assert bal_frac < 1e-3, f"advance balance did not close: |bal|/cum_rain = {bal_frac:.3e}"
+
+
+# ====================================================================================================
+# B6 SINKS -- the extracted surface/subsurface sinks (interior tile drain + grate inlet) + per-sink
+# accounting + the F2 evaluation-state contract + the one-shot ledger-baseline fix.
+# ====================================================================================================
+from pids_forward.physics.coupling import CoupledProblem   # noqa: E402  (monolith cross-check, B6)
+
+
+# ====================================================================================================
+# Test 7 -- INTERIOR DRAIN agrees with the MONOLITH where both schemes are valid. A CLOSED box (no
+# rain, no outlet, dry surface so the routing sweep is a pure no-op) with a saturated band over an
+# interior tile drain is purely SUBSURFACE: the sequential split (Richards-alone, pond-in-psi=0) and
+# the monolithic CoupledProblem solve the SAME drainage problem, so cum_drainage must agree closely.
+# ====================================================================================================
+def test_interior_drain_agrees_with_monolith_closed_box():
+    """A closed 3-D box, water table partway up, an interior tile drain near the base, NO rain / NO
+    outlet (the surface never ponds -> the routing sweep is a pure no-op). This is a purely
+    subsurface drainage problem where BOTH schemes are valid and there is NO lateral transport for
+    the sequential time-lag to act on -- so SequentialCoupledProblem + add_interior_drain must
+    reproduce CoupledProblem + add_interior_drain to a few percent on the drained volume. (Not
+    bit-identical: the two march with independent dt sequences and the sequential path re-snapshots
+    psi_n each Picard iterate, but the DISCHARGED VOLUME over a fixed horizon is a robust physical
+    invariant -- they drain the same band through the same conductance against the same head.)"""
+    LX, LY, LZ = 1.0, 1.0, 1.0
+    NX, NY, NZ = 4, 4, 8
+    soil = VanGenuchten(theta_r=0.078, theta_s=0.43, alpha=3.6, n=1.56, Ks=0.25)
+    WT, C_DENS, T_END, DT = 0.5, 4.0, 0.30, 2e-3
+    drain_loc = lambda x: x[2] < 0.13
+    ic = lambda x: WT - x[2]                                  # water table at z=0.5 (psi=0 there)
+
+    # --- monolith reference ---
+    mono = CoupledProblem(dmesh.create_box(COMM, [[0, 0, 0], [LX, LY, LZ]], [NX, NY, NZ]), soil)
+    mono.set_initial_condition(ic, d_value=0.0)
+    mono.add_interior_drain(drain_loc, conductance_density=C_DENS, drain_head=0.0)
+    mono.advance(t_end=T_END, dt=DT, dt_max=2e-2)
+    assert mono.cum_drainage > 1e-4, "monolith drain did not discharge -> vacuous comparison"
+
+    # --- sequential split, same physics ---
+    seq = SequentialCoupledProblem(
+        dmesh.create_box(COMM, [[0, 0, 0], [LX, LY, LZ]], [NX, NY, NZ]), soil, n_man=0.05)
+    seq.set_topography(lambda x: 0.0 * x[0])
+    seq.set_initial_condition(ic)
+    seq.add_interior_drain(drain_loc, conductance_density=C_DENS, drain_head=0.0)
+    seq.advance(t_end=T_END, dt=DT, dt_max=2e-2)
+    assert seq.cum_drainage > 1e-4, "sequential drain did not discharge"
+    # the surface stayed dry (genuinely a no-route subsurface problem -> the comparison is meaningful).
+    assert seq.surface_water() <= 1e-12, "surface ponded -> not a pure subsurface drainage comparison"
+
+    rel = abs(seq.cum_drainage - mono.cum_drainage) / mono.cum_drainage
+    assert rel < 0.05, (f"interior-drain discharge disagrees with the monolith by {rel:.3%} "
+                        f"(seq={seq.cum_drainage:.5e}, mono={mono.cum_drainage:.5e})")
+    # and the sequential balance still closes around the new subsurface sink.
+    bal = abs(seq.balance())
+    assert bal / seq.cum_drainage < 1e-6, f"sequential balance broke with interior drain: {bal:.3e}"
+
+
+# ====================================================================================================
+# Test 8 -- SURFACE INLET removes ponded water at its footprint, books the intake, and the global
+# balance STILL closes (|bal|/cum_rain < 1e-3 with the inlet active) -- the key conservation guard.
+# ====================================================================================================
+def test_surface_inlet_removes_pond_books_and_conserves():
+    """A grate inlet over part of the top surface removes ponded water (q_in = intake_coeff*d) during
+    the surface update (F2: a SURFACE sink on the post-Richards pond). It must (a) actually lower the
+    surface store vs a no-inlet twin, (b) book the removed volume into cum_drainage / the
+    surface_inlet per-sink split, and (c) keep the global balance closed |bal|/cum_rain < 1e-3 (the
+    inlet removal is matched-quadrature consistent with the ledger). Coarse/short for suite speed."""
+    LX, LY, LZ = 2.0, 1.0, 1.0
+    msh = dmesh.create_box(COMM, [[0, 0, 0], [LX, LY, LZ]], [6, 4, 4])
+    # tight clay so the storm ponds (rain >> Ks); a deep unsaturated buffer (no full saturation).
+    soil = VanGenuchten(theta_r=0.068, theta_s=0.38, alpha=0.8, n=1.09, Ks=0.05)
+
+    def _run(with_inlet):
+        prob = SequentialCoupledProblem(msh, soil, n_man=0.05)
+        prob.set_topography(lambda x: 0.02 * (LX - x[0]))      # gentle slope toward x=0
+        prob.set_initial_condition(lambda x: -0.30 + 0.0 * x[0])
+        prob.add_outflow_bc(lambda x: np.isclose(x[0], 0.0), 0.02)
+        rain = prob.add_rain(0.0)
+        inlet_C = None
+        if with_inlet:
+            # a grate over the down-slope quarter (x < LX/4) of the top surface.
+            inlet_C = prob.add_surface_inlet(lambda x: x[0] < LX / 4.0 + 1e-9, intake_coeff=20.0)
+        prob.advance(0.30, 1e-3, storm_dur=0.10, storm_rain=0.20, dt_max=0.03)
+        return prob, inlet_C
+
+    base, _ = _run(with_inlet=False)
+    prob, inlet_C = _run(with_inlet=True)
+    assert prob.cum_rain > 0.0, "no rain fell"
+
+    # (a) the inlet genuinely removed surface water (less pond remains than the no-inlet twin).
+    assert prob.cum_sinks["surface_inlet"][0] > 1e-5, "the inlet booked ~no intake (footprint dry?)"
+    assert prob.surface_water() < base.surface_water() - 1e-6, \
+        "the inlet did not lower the surface store vs the no-inlet twin"
+
+    # (b) the booked intake is in cum_drainage (the flat per-sink sum includes it).
+    assert prob.cum_drainage == pytest.approx(
+        sum(prob.cum_sinks["surface_inlet"]) + sum(prob.cum_sinks.get("ghb", [])), rel=1e-9), \
+        "surface-inlet intake is not reflected in cum_drainage"
+
+    # (c) THE CONSERVATION GUARD: the balance still closes with the inlet active.
+    bal_frac = abs(prob.balance()) / prob.cum_rain
+    assert bal_frac < 1e-3, (f"balance did not close with the inlet active: |bal|/cum_rain = "
+                             f"{bal_frac:.3e} (cum_inlet={sum(prob.cum_sinks['surface_inlet']):.3e})")
+
+
+# ====================================================================================================
+# Test 8b -- INLET CLAMP robustness: a HUGE intake coefficient (intake_coeff*dt >> 1) would drain a
+# footprint node in well under one step. The per-node clamp keeps psi >= 0 AND the books record the
+# volume ACTUALLY removed, so balance() stays closed UNCONDITIONALLY (not just in the intake*dt<1
+# regime) -- pins that the inlet bookkeeping is conservative under the clamp.
+# ====================================================================================================
+def test_surface_inlet_clamp_conserves_with_huge_coefficient():
+    """With intake_coeff*dt >> 1 the linear intake would remove more than the available pond in one
+    step; the per-node clamp caps removal at the pond (psi never crosses 0) and the booked intake is
+    the volume actually removed, so the global balance still closes |bal|/cum_rain < 1e-3 and the
+    booked cum_inlet never exceeds the rain that fell. Pins the unconditional conservation claim."""
+    LX, LY, LZ = 2.0, 1.0, 1.0
+    msh = dmesh.create_box(COMM, [[0, 0, 0], [LX, LY, LZ]], [6, 4, 4])
+    # the same fixture shape as Test 8 (loam-ish clay that ponds transiently, gentle slope for routing
+    # relief), but a HUGE intake_coeff so the clamp bites from the first ponded step: intake_coeff*dt =
+    # 2000*1e-3 = 2.0 > 1 at the dt floor (and larger as dt grows), so the unclamped linear intake would
+    # remove > the available pond -> the per-node clamp caps it at the pond every ponded step.
+    soil = VanGenuchten(theta_r=0.068, theta_s=0.38, alpha=0.8, n=1.09, Ks=0.05)
+    prob = SequentialCoupledProblem(msh, soil, n_man=0.05)
+    prob.set_topography(lambda x: 0.02 * (LX - x[0]))         # gentle slope (routing relief, as Test 8)
+    prob.set_initial_condition(lambda x: -0.30 + 0.0 * x[0])
+    prob.add_outflow_bc(lambda x: np.isclose(x[0], 0.0), 0.02)
+    # a grate over the down-slope quarter with a huge coefficient -> intake_coeff*dt >> 1 (clamp bites).
+    prob.add_surface_inlet(lambda x: x[0] < LX / 4.0 + 1e-9, intake_coeff=2000.0)
+    prob.add_rain(0.0)
+    prob.advance(0.30, 1e-3, storm_dur=0.10, storm_rain=0.20, dt_max=5e-3)
+    assert prob.cum_rain > 0.0
+    assert sum(prob.cum_sinks["surface_inlet"]) > 1e-4, "the grate booked ~no intake despite ponding"
+    assert np.all(prob._rp.psi.x.array >= -1e-12), "the clamp let psi cross 0 (over-drained a node)"
+    bal_frac = abs(prob.balance()) / prob.cum_rain
+    assert bal_frac < 1e-3, f"balance broke under the clamping inlet: |bal|/cum_rain = {bal_frac:.3e}"
+    # the inlet cannot remove more water than rained in (a sanity bound on the booked intake).
+    assert sum(prob.cum_sinks["surface_inlet"]) <= prob.cum_rain + 1e-9, "inlet booked > rain (impossible)"
+
+
+# ====================================================================================================
+# Test 9 -- F2 EVALUATION-STATE pinned: the surface inlet is evaluated on the POST-Richards ponded
+# field. A step where the Richards solve changes the pond at the inlet footprint (infiltration draws
+# it down) books a DIFFERENT total than the pre-step pond would -- so the booked intake must match the
+# post-solve pond, NOT the entry pond. Locks the F2 choice (would change the books if evaluated wrong).
+# ====================================================================================================
+def test_surface_inlet_f2_evaluated_on_post_richards_pond():
+    """Pin F2: the grate inlet is a SURFACE sink evaluated on the POST-Richards pond (before its own
+    removal), NOT on the pre-solve entry pond. Start with a uniform pond over a permeable soil and
+    take ONE step with no rain: the Richards solve infiltrates some pond, so the post-Richards depth
+    is strictly LESS than the entry depth. The booked inlet rate (last_sinks['surface_inlet']) must
+    therefore be strictly LESS than intake_coeff*sum_i d_entry,i A_i (what a pre-solve evaluation would
+    book) -- this is the discriminating check. We also pin it EXACTLY: the inlet then removes a
+    (1 - intake_coeff*dt) fraction of that pond uniformly, so the booked rate reconstructs from the
+    final pond as intake_coeff*sum d_final A / (1 - intake_coeff*dt). Evaluating the inlet pre-solve
+    would book the larger entry number; this test would then fail on the strict-inequality assert."""
+    LX, LY, LZ = 1.0, 1.0, 1.0
+    msh = dmesh.create_box(COMM, [[0, 0, 0], [LX, LY, LZ]], [3, 3, 6])
+    soil = VanGenuchten(theta_r=0.078, theta_s=0.43, alpha=3.6, n=1.56, Ks=0.40)  # permeable: pond drops
+    POND, C_IN, DT = 0.08, 5.0, 5e-3
+    assert C_IN * DT < 1.0                                    # unclamped uniform removal (reconstructible)
+    msh.topology.create_connectivity(msh.topology.dim - 1, msh.topology.dim)
+
+    prob = SequentialCoupledProblem(msh, soil, n_man=0.05)
+    prob.set_topography(lambda x: 0.0 * x[0])                 # FLAT: no routing moves the pond
+    # uniform pond at the top, dry below (psi<0 interior) -> a real pond the soil will draw down.
+    prob.set_initial_condition(lambda x: np.where(np.isclose(x[2], LZ), POND, -0.5))
+    inlet_C = prob.add_surface_inlet(lambda x: np.ones_like(x[0], dtype=bool), intake_coeff=C_IN)
+
+    prob._ensure_built()                                     # build the routing graph (A_i, top areas)
+    top = prob._top_dofs_arr
+    A_i = prob._A_i
+    d_entry = np.maximum(prob._rp.psi.x.array.copy()[top], 0.0)
+    rate_entry = C_IN * float(np.sum(d_entry * A_i[top]))     # what a PRE-solve evaluation would book
+
+    conv, _it = prob.step(DT)
+    assert conv, "F2 inlet step did not converge"
+    booked = prob.last_sinks["surface_inlet"][0]
+
+    # the discriminating F2 check: the soil infiltrated before the inlet saw the pond, so the booked
+    # rate (read on the post-Richards pond) is STRICTLY LESS than the entry-pond rate. A pre-solve
+    # evaluation would have booked exactly rate_entry -> this assert would fail.
+    assert booked < rate_entry - 1e-6, (
+        f"inlet booked {booked:.6e} >= the entry-pond rate {rate_entry:.6e} -- evaluated pre-solve, "
+        "not on the post-Richards pond (F2 violated, or the pond did not draw down: raise Ks/POND)")
+    # and pin it EXACTLY: the inlet removed (1 - C_IN*dt) of the post-Richards pond uniformly, so the
+    # booked rate == intake_coeff * sum d_final A / (1 - C_IN*dt) (reconstructs the pre-removal pond).
+    d_final = np.maximum(prob._rp.psi.x.array.copy()[top], 0.0)
+    rate_recon = C_IN * float(np.sum(d_final * A_i[top])) / (1.0 - C_IN * DT)
+    assert booked == pytest.approx(rate_recon, rel=1e-6, abs=1e-12), \
+        f"inlet booked {booked:.6e} != post-Richards-pond reconstruction {rate_recon:.6e} (F2 detail)"
+
+
+# ====================================================================================================
+# Test 10 -- PER-SINK ACCOUNTING: with a GHB drain + an interior drain + a surface inlet all active,
+# sink_rates() exposes all three keys in add-order and the flat per-step booked total equals
+# last_drainage; the cumulative flat sum equals cum_drainage. (The split sums to the booked total.)
+# ====================================================================================================
+def test_per_sink_accounting_flat_sum_equals_booked_drainage():
+    """Three sinks active (GHB boundary + interior tile drain + surface inlet): sink_rates() returns
+    the three keys, each a list in add-order, and the flat sum of the per-step booked rates equals
+    last_drainage while the flat sum of cum_sinks equals cum_drainage. Locks that the per-sink split
+    is exhaustive (no sink booked outside the split) and sums to the headline drainage figure."""
+    LX, LY, LZ = 2.0, 1.0, 1.0
+    msh = dmesh.create_box(COMM, [[0, 0, 0], [LX, LY, LZ]], [6, 3, 5])
+    soil = VanGenuchten(theta_r=0.068, theta_s=0.38, alpha=0.8, n=1.09, Ks=0.05)
+    prob = SequentialCoupledProblem(msh, soil, n_man=0.05)
+    prob.set_topography(lambda x: 0.02 * (LX - x[0]))
+    prob.set_initial_condition(lambda x: -0.10 + 0.0 * x[0])  # near-saturated: the GHB/drain discharge
+    prob.add_drainage_bc(lambda x: np.isclose(x[2], 0.0), conductance=2.0, external_head=-0.2)
+    prob.add_interior_drain(lambda x: x[2] < 0.25, conductance_density=4.0, drain_head=0.0)
+    prob.add_surface_inlet(lambda x: x[0] < LX / 3.0 + 1e-9, intake_coeff=15.0)
+    prob.add_rain(0.20)
+
+    # take a few storm steps so all three sinks are genuinely active.
+    for _ in range(8):
+        conv, _it = prob.step(5e-3)
+        assert conv, "per-sink accounting step did not converge"
+
+    rates = prob.sink_rates()
+    assert set(rates.keys()) == {"ghb", "interior_drain", "surface_inlet"}, \
+        f"sink_rates keys != the three sink kinds: {sorted(rates)}"
+    assert len(rates["ghb"]) == 1 and len(rates["interior_drain"]) == 1 \
+        and len(rates["surface_inlet"]) == 1, "each kind should hold one sink (add-order)"
+    # sink_rates() flat sum == the booked drainage total (the task's headline invariant).
+    flat_rates = sum(v for lst in rates.values() for v in lst)
+    assert flat_rates == pytest.approx(prob.last_drainage, rel=1e-9, abs=1e-12), \
+        f"sink_rates() flat sum {flat_rates:.6e} != last_drainage {prob.last_drainage:.6e}"
+
+    # the per-step booked split sums to last_drainage; the cumulative split sums to cum_drainage.
+    flat_last = sum(v for lst in prob.last_sinks.values() for v in lst)
+    flat_cum = sum(v for lst in prob.cum_sinks.values() for v in lst)
+    assert flat_last == pytest.approx(prob.last_drainage, rel=1e-9, abs=1e-12), \
+        f"sum(last_sinks)={flat_last:.6e} != last_drainage={prob.last_drainage:.6e}"
+    assert flat_cum == pytest.approx(prob.cum_drainage, rel=1e-9, abs=1e-12), \
+        f"sum(cum_sinks)={flat_cum:.6e} != cum_drainage={prob.cum_drainage:.6e}"
+    # every sink genuinely discharged (not a vacuous all-zero sum).
+    assert prob.cum_sinks["ghb"][0] > 0 and prob.cum_sinks["interior_drain"][0] > 0 \
+        and prob.cum_sinks["surface_inlet"][0] > 0, "a sink booked nothing -> weak accounting check"
+
+
+# ====================================================================================================
+# Test 11 -- BASELINE FOOTGUN: the ledger baseline (_w0/_surf0) is a ONE-SHOT snapshot taken on the
+# FIRST build, never re-taken on later rebuilds -- so a setup change AFTER stepping cannot silently
+# corrupt balance() by re-snapshotting the baseline at the (already advanced) current state.
+# ====================================================================================================
+def test_ledger_baseline_is_one_shot_not_re_snapshotted():
+    """The reviewer's Minor footgun: _w0/_surf0 must be captured EXACTLY ONCE (first build) and never
+    re-taken on a rebuild. Build, step a storm so the state advances well away from the IC, then call
+    a setup mutator (add_drainage_bc) that flips _built=False and forces a rebuild. The baseline
+    (_w0, _surf0) must be UNCHANGED by that rebuild (if it re-snapshotted at the advanced state,
+    d(total) would collapse toward 0 and balance() would silently report a bogus near-zero residual,
+    masking a real leak). We pin the baseline values directly across the post-step rebuild."""
+    prob, cfg, rain = _build_small_sand_problem()
+    prob._ensure_built()
+    w0_0, surf0_0 = prob._w0, prob._surf0          # the ONE-SHOT baseline, captured at the IC
+    assert w0_0 is not None
+
+    # advance a storm so the live state moves far from the IC.
+    prob.advance(cfg["t_end"], 1e-3, storm_dur=cfg["storm"], storm_rain=cfg["rain"], dt_max=0.03)
+    assert prob.total_water() != pytest.approx(w0_0 + surf0_0, rel=1e-3), \
+        "state did not move away from the IC -> the footgun is not exercised"
+
+    # a setup mutation AFTER stepping: flips _built=False -> next _ensure_built rebuilds the forms.
+    prob.add_drainage_bc(lambda x: np.isclose(x[1], cfg["msh"].geometry.x[:, 1].max()),
+                         conductance=0.0, external_head=-1.0)
+    prob._ensure_built()                            # the rebuild must NOT re-snapshot the baseline
+
+    assert prob._w0 == w0_0 and prob._surf0 == surf0_0, (
+        f"ledger baseline was RE-SNAPSHOTTED on rebuild ( _w0 {w0_0:.6e}->{prob._w0:.6e}, "
+        f"_surf0 {surf0_0:.6e}->{prob._surf0:.6e} ) -- a setup change after a step corrupts balance()")
