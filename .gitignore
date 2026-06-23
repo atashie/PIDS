@@ -59,6 +59,10 @@ desktop.ini
 # self-contained viz HTML (inlined Plotly) and the NetCDF results are regenerable.
 **/validation/sanity/viz/*.html
 **/validation/sanity/data/
+# Sequential overland sign-off: heavy self-contained HTML + the run npz are regenerable
+# (forward-model/viz/run_sequential_overland_signoff.py + make_sequential_overland_signoff_html.py).
+technologies/infiltration-runoff-model/forward-model/viz/sequential_overland_signoff__*.html
+technologies/infiltration-runoff-model/forward-model/scratch/sequential_overland_signoff.npz
 
 # --- Benchmark comparison artifacts (regenerate via benchmarks/build_comparison_*.py) ---
 # Same rationale: the heavy self-contained comparison HTML (inlined Plotly, ~6 MB each) and the
