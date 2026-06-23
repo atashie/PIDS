@@ -129,12 +129,14 @@ def build_receivers(H, adj, top_dofs):
     return recv
 
 
-def route_excess(d, z_b, A_i, adj, top_dofs, W, n_man, dt, outlet_mask, outlet_slope):
+def route_excess(d, z_b, A_i, adj, top_dofs, W, n_man, dt, outlet_mask, outlet_slope,
+                 eps_head=0.0):
     """ONE explicit Manning-rate-limited downslope routing sweep over the surface graph.
 
-    Faithful extraction of the validated spike kernel. Processes ``top_dofs`` in descending surface
-    head ``H_i = z_b_i + d_i``; for each node with ``d_i > 0`` it finds its downslope receivers
-    (interior neighbours with lower head -> MFD weight ``sqrt(slope)``, plus an off-domain outlet
+    THE SINGLE PRODUCTION KERNEL (the sequential coupling's ``_route`` loops this directly). Faithful
+    extraction of the validated spike kernel. Processes ``top_dofs`` in descending surface head
+    ``H_i = z_b_i + d_i``; for each node with ``d_i > 0`` it finds its downslope receivers (interior
+    neighbours with head drop ``> eps_head`` -> MFD weight ``sqrt(slope)``, plus an off-domain outlet
     pseudo-receiver at outlet nodes with weight ``sqrt(outlet_slope)``), caps the outgoing volume at
     the Manning rate ``Vcap = (SECONDS_PER_DAY/n_man) * d_i^(5/3) * sqrt(S_i) * W_i * dt`` (``S_i`` =
     max receiver slope), and moves ``V_out = min(d_i*A_i, Vcap)`` to the receivers by normalized MFD
@@ -155,7 +157,19 @@ def route_excess(d, z_b, A_i, adj, top_dofs, W, n_man, dt, outlet_mask, outlet_s
     n_man : float -- Manning roughness (SI s.m^{-1/3}).
     dt : float -- timestep [day].
     outlet_mask : (n_dofs,) bool -- True at boundary outlet nodes that drain off-domain.
-    outlet_slope : float -- the (scalar) hydraulic slope used for the outlet pseudo-receiver.
+    outlet_slope : float OR (n_dofs,) float -- the hydraulic slope for the outlet pseudo-receiver.
+        A scalar applies the same slope to every outlet node; a per-node array lets each outlet use its
+        OWN bed slope (a multi-outlet problem -- e.g. a downslope edge AND a channel-mouth outlet at
+        different slopes). A node's outlet slope is read as ``outlet_slope[i]`` (array) or
+        ``outlet_slope`` (scalar).
+    eps_head : float -- head-DROP floor [m] (default 0.0 = the bare ``slope > 0`` receiver rule, kept
+        for bit-identical behaviour). A node treats a neighbour as a downslope receiver only when
+        ``(H_i - H_j) > eps_head`` (and an outlet only when ``d_i > eps_head``). A small positive floor
+        (e.g. 1e-9 m, far below any physical mm-scale pond gradient yet far above ULP head noise) keeps
+        a near-flat lake-at-rest EXACTLY stationary: without it, ULP-level head noise (~1e-16*depth)
+        invents spurious downslope directions whose Manning cap, amplified across the descending-head
+        cascade, drains the lake (a classic flat-water instability). Same role as the upwind scheme's
+        eps_H/eps_S floors.
 
     Returns
     -------
@@ -165,6 +179,9 @@ def route_excess(d, z_b, A_i, adj, top_dofs, W, n_man, dt, outlet_mask, outlet_s
     d_new = d.copy()
     outflow = 0.0
     Cman = SECONDS_PER_DAY / n_man
+    # per-node outlet slope: accept a scalar (broadcast to every outlet) OR a per-node array.
+    oslope_arr = np.asarray(outlet_slope, dtype=np.float64)
+    per_node_oslope = oslope_arr.ndim > 0
     H0 = z_b + d_new
     order = np.asarray(top_dofs)[np.argsort(-H0[np.asarray(top_dofs)])]
 
@@ -177,17 +194,19 @@ def route_excess(d, z_b, A_i, adj, top_dofs, W, n_man, dt, outlet_mask, outlet_s
         recv_j, recv_w = [], []
         smax = 0.0
         for (j, L) in adj[i]:
-            s = (Hi - (z_b[j] + d_new[j])) / L
-            if s > 0.0:
+            dH = Hi - (z_b[j] + d_new[j])
+            if dH > eps_head:                  # head-drop floor (eps_head=0.0 -> the bare s>0 rule)
+                s = dH / L
                 recv_j.append(j)
                 recv_w.append(np.sqrt(s))
                 if s > smax:
                     smax = s
         out_w = 0.0
-        if outlet_mask[i] and outlet_slope > 0.0:
-            out_w = np.sqrt(outlet_slope)
-            if outlet_slope > smax:
-                smax = outlet_slope
+        os_ = float(oslope_arr[i]) if per_node_oslope else float(oslope_arr)
+        if outlet_mask[i] and os_ > 0.0 and di > eps_head:
+            out_w = np.sqrt(os_)
+            if os_ > smax:
+                smax = os_
         wsum = float(np.sum(recv_w)) + out_w
         if wsum <= 0.0 or smax <= 0.0:
             continue  # local pit / flat: water stays put (no spurious direction)

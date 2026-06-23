@@ -280,14 +280,23 @@ def test_conservation_small_sand_channel_storm():
 
 
 # ====================================================================================================
-# Test 5 -- FALSIFICATION: a deliberate 10% outflow mis-booking breaks the SAME balance to ~10% of
-# cum_outflow over cum_rain -> test 4 is a genuine detector, not a tautology (mirrors PIDS_WIN_LEAK).
+# Test 5 -- FALSIFICATION (the OUTFLOW-CHANNEL detector specifically): a deliberate 10% outflow
+# mis-booking breaks the SAME balance to ~10% of cum_outflow over cum_rain -> test 4's close is a
+# genuine detector for the OUTFLOW channel, not a tautology (mirrors PIDS_WIN_LEAK). SCOPE: this test
+# falsifies ONLY the surface-outflow booking (``outflow_leak_frac`` scales just cum_outflow); the OTHER
+# conserved channels are detector-guarded elsewhere -- the DRAINAGE/sink channel by the conservation
+# gate (test 4) + per-sink accounting (test 10) and the pond-ledger/quadrature channel by the
+# matched-quadrature pin (test 3). Together those make balance() a non-vacuous detector across channels;
+# this one isolates the outflow channel.
 # ====================================================================================================
 def test_falsification_misbooked_outflow_breaks_balance():
-    """Inject a deliberate 10% over-booking of outflow (``outflow_leak_frac=0.1``): the same global
-    balance must then FAIL to close, reporting ~10% of cum_outflow over cum_rain. This proves the
-    ~1e-3 close in test 4 is a real conservation detector, not a structural artifact (the spike's
-    PIDS_WIN_LEAK falsification hook)."""
+    """OUTFLOW-CHANNEL falsification (not a universal leak detector -- it targets the surface-outflow
+    booking specifically; the drainage channel is covered by the conservation gate test 4 + per-sink
+    accounting test 10, and the matched-quadrature pond ledger by test 3). Inject a deliberate 10%
+    over-booking of OUTFLOW (``outflow_leak_frac=0.1``, which scales only cum_outflow): the same global
+    balance must then FAIL to close, reporting ~10% of cum_outflow over cum_rain. This proves the ~1e-3
+    close in test 4 is a real conservation detector for the outflow channel, not a structural artifact
+    (the spike's PIDS_WIN_LEAK falsification hook)."""
     LEAK = 0.10
     prob, cfg, rain = _build_small_sand_problem()
     prob.outflow_leak_frac = LEAK                  # deliberately mis-book 10% extra outflow
@@ -596,6 +605,40 @@ def test_ledger_baseline_is_one_shot_not_re_snapshotted():
 
 
 # ====================================================================================================
+# Test 11b -- set_initial_condition FOOTGUN raises LOUDLY: re-setting the IC AFTER the baseline is
+# snapshotted (first build) or after stepping would silently keep the stale _w0/_surf0 baseline and
+# corrupt balance(). The mutator must RAISE instead of silently corrupting -- and the normal
+# before-first-build usage must still work.
+# ====================================================================================================
+def test_set_initial_condition_after_build_or_step_raises():
+    """``set_initial_condition`` is legal ONLY before the first build/step (the IC defines the one-shot
+    ledger baseline). Calling it after ``_ensure_built`` snapshots the baseline -- or after a step --
+    must raise a clear RuntimeError (not silently corrupt balance()). The normal pre-build call works."""
+    LX, LY, LZ = 2.0, 1.0, 1.0
+    msh = dmesh.create_box(COMM, [[0.0, 0.0, 0.0], [LX, LY, LZ]], [4, 3, 4])
+    soil = VanGenuchten(theta_r=0.067, theta_s=0.45, alpha=1.0, n=1.5, Ks=0.05)
+
+    # (1) the normal pre-build usage works (no raise), and can be set repeatedly before the build.
+    prob = SequentialCoupledProblem(msh, soil, n_man=0.05)
+    prob.set_topography(lambda x: 0.0 * x[0])
+    prob.set_initial_condition(lambda x: (LZ - x[2]) - 0.2)
+    prob.set_initial_condition(lambda x: (LZ - x[2]) + 0.05)  # still pre-build -> allowed
+    prob.add_rain(0.0)
+
+    # (2) after the first build (baseline snapshotted), re-setting the IC RAISES.
+    prob._ensure_built()
+    assert prob._w0 is not None, "baseline not snapshotted by the build (test precondition)"
+    with pytest.raises(RuntimeError, match="set_initial_condition"):
+        prob.set_initial_condition(lambda x: (LZ - x[2]) + 0.10)
+
+    # (3) after stepping it also RAISES (the _t > 0 guard).
+    conv, _ = prob.step(2e-3)
+    assert conv
+    with pytest.raises(RuntimeError, match="set_initial_condition"):
+        prob.set_initial_condition(lambda x: (LZ - x[2]) + 0.10)
+
+
+# ====================================================================================================
 # Test 12 -- ROUTE_SUBSTEPS advances transport (the transport-RATE calibration knob, record
 # validation/sanity/overland_transport_calibration__2026-06-23.md). A single Manning sweep per Richards
 # step under-resolves the intra-step surface travel and throttles lateral transport; sub-stepping the
@@ -678,6 +721,88 @@ def test_route_substeps_validation_rejects_below_one():
     # the valid base (1) and the new default (4) construct fine.
     SequentialCoupledProblem(msh, soil, route_substeps=1)
     SequentialCoupledProblem(msh, soil)   # default route_substeps=4
+
+
+# ====================================================================================================
+# Test 13b -- OMEGA-HALVING ROBUSTNESS RETRY (the step() loop is a retry, NOT a Picard fixed point):
+# when the FIRST inner Richards solve FAILS, step() must HALVE omega, RE-ROUTE + RE-SOLVE from the
+# RESTORED entry state, and recover -- then the step still conserves. The retry/restore path was
+# previously untested. We force the first inner solve to report a failure (via a thin proxy over the
+# Richards NonlinearProblem that lies about the converged reason on its first solve of the step, then
+# tells the truth), so the SECOND attempt (at omega/2) is the genuine production solve.
+# ====================================================================================================
+class _FailFirstSolveProxy:
+    """Wraps a Richards ``NonlinearProblem`` and makes its FIRST ``solve()`` report a converged
+    reason of -3 (DIVERGED_LINEAR_SOLVE) even though the underlying solve ran -- so ``step()`` sees a
+    failed inner solve, halves omega, restores the entry state, and re-solves. From the 2nd solve on
+    it reports the REAL reason (the genuine production path). Delegates everything else to the real
+    problem; ``.solver`` returns a reason-lying shim of the real SNES."""
+    def __init__(self, real):
+        self._real = real
+        self._solves = 0
+
+    class _SnesShim:
+        def __init__(self, snes, lie):
+            self._snes, self._lie = snes, lie
+
+        def getConvergedReason(self):
+            return -3 if self._lie else int(self._snes.getConvergedReason())
+
+        def getIterationNumber(self):
+            return int(self._snes.getIterationNumber())
+
+        def getFunctionNorm(self):
+            return float(self._snes.getFunctionNorm())
+
+    def solve(self):
+        self._solves += 1
+        return self._real.solve()
+
+    @property
+    def solver(self):
+        return self._SnesShim(self._real.solver, lie=(self._solves <= 1))
+
+
+def test_omega_halving_retry_recovers_and_conserves():
+    """Force the first inner solve to FAIL and assert step() recovers via the omega-halving retry AND
+    still conserves: a flat lake-at-rest column (the routing is a no-op, so the only thing that changes
+    between attempts is omega and the restored entry state -- a clean isolation of the retry/restore
+    logic). With the first solve forced to report failure, step() must (a) return converged, (b) have
+    HALVED omega exactly once (last_omega == relax/2, since the 2nd attempt's real solve succeeds), and
+    (c) keep the balance closed (the restore-from-entry + re-route did not corrupt the ledger)."""
+    LX, LY, LZ = 2.0, 1.0, 1.0
+    msh = dmesh.create_box(COMM, [[0.0, 0.0, 0.0], [LX, LY, LZ]], [4, 3, 4])
+    soil = VanGenuchten(theta_r=0.067, theta_s=0.45, alpha=1.0, n=1.5, Ks=0.05)
+    prob = SequentialCoupledProblem(msh, soil, n_man=0.05, relax=1.0, picard_iters=4)
+    prob.set_topography(lambda x: 0.0 * x[0])                 # FLAT -> routing is a pure no-op
+    prob.set_initial_condition(lambda x: (LZ - x[2]) + 0.05)  # hydrostatic + a +5 cm pond
+    prob.add_rain(0.0)
+    prob._ensure_built()
+    prob._rp._ensure_problem()                                # build the real NonlinearProblem + SNES
+
+    # wrap the real problem so its FIRST solve this step reports failure (reason -3), 2nd+ tell truth.
+    real_problem = prob._rp._problem
+    proxy = _FailFirstSolveProxy(real_problem)
+    prob._rp._problem = proxy
+
+    conv, _it = prob.step(2e-3)
+
+    # (a) the step recovered despite the forced first-solve failure (the omega-halving retry worked).
+    assert conv, "step did not recover from the forced first-solve failure (retry path broken)"
+    # the proxy genuinely intercepted >= 2 solves (first lied -> retry -> real success).
+    assert proxy._solves >= 2, f"retry did not re-solve (only {proxy._solves} solve(s)) -- not exercised"
+    # (b) omega was halved exactly once: attempt 1 (omega=1.0) forced-fail -> attempt 2 (omega=0.5) ok.
+    assert prob.last_omega == pytest.approx(prob.relax * 0.5), \
+        f"omega not halved once on the retry (last_omega={prob.last_omega}, relax={prob.relax})"
+
+    # restore the real problem and keep stepping a few clean steps -> the ledger stays consistent.
+    prob._rp._problem = real_problem
+    for _ in range(5):
+        c, _ = prob.step(2e-3)
+        assert c, "a clean post-retry step diverged"
+    # (c) conservation held across the retry + the clean steps (the restore/re-route did not leak).
+    assert abs(prob.balance()) <= 1e-9, \
+        f"balance broke across the omega-halving retry: |bal|={abs(prob.balance()):.3e}"
 
 
 # ====================================================================================================

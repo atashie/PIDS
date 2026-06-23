@@ -18,11 +18,16 @@ THE DESIGN (locked from the verified spike; do NOT redesign):
     Dirichlet pin (which over-infiltrates high-K sand), NO post-solve write-back of psi (which is a
     bad Newton restart and dt-collapses). All three alternatives were tried in the spike and FAILED;
     pond-in-psi is what stays robust.
-  * The LATERAL routing enters the Richards solve as a Neumann SOURCE (run-on +, run-off -), iterated
-    to a Picard fixed point. The source is omega-relaxed with omega=relax (default 1.0 = no standing
-    under-relaxation; halved on a failed inner solve as the ROBUSTNESS fallback), and the routing sweep
-    is sub-stepped ``route_substeps`` times per step (default 4) to resolve the intra-step travel -- the
-    transport-RATE calibration (see the class docstring + ``validation/sanity/
+  * The LATERAL routing enters the Richards solve as a Neumann SOURCE (run-on +, run-off -). The
+    coupling is a SEQUENTIAL NON-ITERATIVE split (the decision record's chosen design): each step
+    routes ONCE from the entry pond -> sets the omega-relaxed source -> solves Richards once. It is NOT
+    a fixed-point Picard iteration over the route<->solve pair (that iterative variant is the
+    documented FUTURE upgrade). The ``picard_iters`` loop is a ROBUSTNESS RETRY budget, not a
+    convergence sweep: omega starts at ``relax`` (default 1.0 = no standing under-relaxation) and is
+    HALVED only when an inner Richards solve FAILS, re-routing + re-solving at the gentler source until
+    it converges or the budget/omega-floor is hit (then the step is reported failed and the caller cuts
+    dt). The routing sweep is sub-stepped ``route_substeps`` times per step (default 4) to resolve the
+    intra-step travel -- the transport-RATE calibration (see the class docstring + ``validation/sanity/
     overland_transport_calibration__2026-06-23.md``). A single under-relaxed sweep (the spike's original
     omega~=0.5, rs=1) throttles transport ~40-50x; it conserves either way.
   * The conserved ledger is ``total = int theta dV + int max(psi,0) ds_top`` -- the surface pond is a
@@ -88,8 +93,15 @@ class SequentialCoupledProblem:
 
     Implicit Richards solved ALONE each step (pond carried IN psi as ``max(psi,0)``, self-limiting),
     with the surface water redistributed by an explicit Manning rate-limited routing sweep injected
-    as an under-relaxed Neumann SOURCE, iterated to a Picard fixed point. The PRODUCTION extraction
-    of the validated spike ``run_case_win`` (conservation ~5e-12).
+    as an omega-relaxed Neumann SOURCE. The coupling is a SEQUENTIAL NON-ITERATIVE split (route once
+    from the entry pond -> set the source -> solve Richards once), NOT a fixed-point Picard iteration
+    over the route<->solve pair -- that iterative variant is the documented FUTURE upgrade. The
+    PRODUCTION extraction of the validated spike ``run_case_win`` (conservation ~5e-12).
+
+    THE STEP LOOP IS A ROBUSTNESS RETRY, NOT A CONVERGENCE SWEEP: omega starts at ``relax`` and is
+    HALVED only when an inner Richards solve fails (the source is re-routed + re-solved at the gentler
+    omega until it converges or the ``picard_iters`` budget / omega-floor is hit, then the step fails
+    and the caller cuts dt). On a clean first solve -- the normal case -- the loop runs exactly ONCE.
 
     THE F2 SINK-EVALUATION-STATE MODEL (a stated contract -- where each sink is evaluated within the
     operator split, so no sink is left to "whatever state happens to be current"):
@@ -134,7 +146,10 @@ class SequentialCoupledProblem:
         ``set_topography``, never the Richards pressure BC).
     soil : a ``VanGenuchten`` (or duck-typed layered soil exposing ``theta_ufl``, ``K_ufl``, ``Ks``).
     n_man : Manning roughness for the lateral routing (SI s.m^-1/3).
-    picard_iters : max Picard inner iterates per step (route -> source -> solve).
+    picard_iters : the ROBUSTNESS-RETRY budget per step (the max number of route->source->solve
+        attempts). It is NOT a fixed-point iteration count: on a clean first solve the step uses one
+        attempt; the extra attempts exist only to re-route + re-solve at a halved omega after a FAILED
+        inner solve (named ``picard_iters`` for the future iterative-Picard upgrade that will reuse it).
     relax : the source under-relaxation omega (default 1.0 = no standing under-relaxation; ``step``
         resets to this each step and HALVES it on a failed inner solve as the robustness fallback).
     route_substeps : Manning sub-sweeps per Richards step (default 4 = the resolved-reference transport
@@ -283,7 +298,22 @@ class SequentialCoupledProblem:
 
     # -- problem setup --------------------------------------------------------
     def set_initial_condition(self, psi_expr) -> None:
-        """Set the subsurface IC ``psi_expr`` (the pond, if any, is its positive part at the top)."""
+        """Set the subsurface IC ``psi_expr`` (the pond, if any, is its positive part at the top).
+
+        MUST be called BEFORE the first build / first step: the IC DEFINES the conserved-ledger
+        baseline (``_w0``/``_surf0``), which is a ONE-SHOT snapshot taken on the first build and never
+        re-taken (so ``balance()`` is measured against the true start state). Re-setting the IC after
+        the baseline is snapshotted (or after any step) would move the live conserved quantity WITHOUT
+        moving the frozen baseline -> ``d(total)`` and ``balance()`` would silently report garbage. We
+        raise LOUDLY rather than corrupt the ledger silently. (To re-run from a new IC, build a fresh
+        ``SequentialCoupledProblem``.)"""
+        if self._w0 is not None or self._t > 0.0:
+            raise RuntimeError(
+                "set_initial_condition must be called BEFORE the first build/step: the IC defines the "
+                "conserved-ledger baseline (a one-shot snapshot), so re-setting it after the baseline "
+                f"is snapshotted (_w0 set: {self._w0 is not None}) or after stepping (t={self._t:.4g}) "
+                "would silently corrupt balance(). Build a fresh SequentialCoupledProblem to re-run "
+                "from a new initial condition.")
         self._rp.set_initial_condition(psi_expr)
         self._built = False   # the IC may change the pond -> re-snapshot the ledger baseline on build
 
@@ -543,11 +573,12 @@ class SequentialCoupledProblem:
 
         # snapshot the conserved-ledger baseline (int theta + int max(psi,0) ds_top) ONCE, on the FIRST
         # build, and NEVER re-take on a later rebuild (the one-shot fix): a setup mutator called AFTER
-        # stepping flips _built=False and re-finalizes here, but re-snapshotting the baseline at the
-        # already-advanced state would collapse d(total) and silently corrupt balance(). The baseline
-        # is the IC by construction; set_initial_condition is the only legitimate way to move it (it
-        # runs before any step), so we tie the one-shot to "_w0 is None" -- a fresh problem or a
-        # never-built one. (A re-IC after a step is a misuse the ledger cannot represent anyway.)
+        # stepping (e.g. add_drainage_bc) flips _built=False and re-finalizes here, but re-snapshotting
+        # the baseline at the already-advanced state would collapse d(total) and silently corrupt
+        # balance(). The baseline is the IC by construction; the only thing that could MOVE it --
+        # set_initial_condition -- now hard-RAISES once _w0 is set / after stepping (it is legal only
+        # pre-build), so the baseline cannot be invalidated. We tie the one-shot to "_w0 is None" (a
+        # fresh / never-built problem); a later rebuild from any other mutator keeps the IC baseline.
         if self._w0 is None:
             self._w0 = rp.total_water()
             self._surf0 = self._surf_pond()
@@ -557,16 +588,17 @@ class SequentialCoupledProblem:
         if not self._built:
             self._finalize_forms()
 
-    # -- routing sweep (per-node outlet slope; conserving) --------------------
+    # -- routing sweep (the single production kernel; per-node outlet slope; conserving) ------------
     def _route(self, d, dt):
         """Manning routing over ``dt``, sub-stepped ``route_substeps`` times (the transport-RATE knob).
 
-        Runs ``self.route_substeps`` descending-head sweeps (``_route_once``) each over ``dt/nsub``,
-        recomputing receivers from the LIVE depth between sub-sweeps and ACCUMULATING the off-domain
-        outflow -- the calibration prototype ``_install_route_substeps``. A single sweep advances the
-        Manning cascade only ~one-to-a-few cells per Richards step, UNDER-resolving the intra-step
-        surface travel and throttling transport ~40-50x vs the resolved upwind reference; sub-stepping
-        marches the full intra-step distance and closes the gap (rs=4 = the match; record
+        Runs ``self.route_substeps`` descending-head sweeps -- each a call to the SINGLE production
+        kernel ``overland_routing.route_excess`` (passing the orchestrator's ``eps_head`` floor + the
+        PER-NODE outlet slope ``_outlet_slope_node``) -- each over ``dt/nsub``, recomputing receivers
+        from the LIVE depth between sub-sweeps and ACCUMULATING the off-domain outflow. A single sweep
+        advances the Manning cascade only ~one-to-a-few cells per Richards step, UNDER-resolving the
+        intra-step surface travel and throttling transport ~40-50x vs the resolved upwind reference;
+        sub-stepping marches the full intra-step distance and closes the gap (rs=4 = the match; record
         ``validation/sanity/overland_transport_calibration__2026-06-23.md``). Conservation is
         sub-step-INDEPENDENT: each sub-sweep telescopes (``sum d_i A_i + outflow`` conserved to
         machine precision), so the accumulated ``(d_new, outflow)`` conserves over the whole ``dt``,
@@ -574,68 +606,24 @@ class SequentialCoupledProblem:
         ``d`` is never mutated.
         """
         nsub = self.route_substeps
-        if nsub <= 1:
-            return self._route_once(d, dt)
+        hsub = dt / nsub
         d_cur = d
         outflow = 0.0
-        hsub = dt / nsub
         for _ in range(nsub):
             d_cur, of = self._route_once(d_cur, hsub)
             outflow += of
         return d_cur, outflow
 
     def _route_once(self, d, dt):
-        """ONE Manning rate-limited descending-head routing sweep with PER-NODE outlet slopes.
-
-        Wraps the validated ``overland_routing.route_excess`` law but lets each outlet node use its
-        OWN slope (``_outlet_slope_node``) -- ``route_excess`` takes a single scalar outlet slope,
-        whereas a multi-outlet problem (e.g. a downslope edge AND a channel-mouth outlet at different
-        bed slopes) needs per-node values. Bit-identical to ``route_excess`` when all outlet slopes
-        are equal; conserves ``sum_i d_i A_i + outflow`` to machine precision (telescoping). Returns
-        ``(d_new, outflow)``; ``d`` is never mutated.
-        """
-        A_i, z_b, adj, W = self._A_i, self.z_b, self._adj, self._W
-        top_dofs, outlet_mask, oslope = self._top_dofs_arr, self._outlet_mask, self._outlet_slope_node
-        eps_head = self.eps_head
-        d_new = d.copy()
-        outflow = 0.0
-        Cman = SECONDS_PER_DAY / self.n_man
-        order = top_dofs[np.argsort(-(z_b + d_new)[top_dofs])]
-        for i in order:
-            i = int(i)
-            di = d_new[i]
-            if di <= 0.0:
-                continue
-            Hi = z_b[i] + di
-            recv_j, recv_w = [], []
-            smax = 0.0
-            for (j, L) in adj[i]:
-                dH = Hi - (z_b[j] + d_new[j])
-                if dH > eps_head:                  # head-drop floor: ignore sub-eps_head (lake-at-rest)
-                    s = dH / L
-                    recv_j.append(j)
-                    recv_w.append(np.sqrt(s))
-                    if s > smax:
-                        smax = s
-            out_w = 0.0
-            os_ = oslope[i]
-            if outlet_mask[i] and os_ > 0.0 and di > eps_head:
-                out_w = np.sqrt(os_)
-                if os_ > smax:
-                    smax = os_
-            wsum = float(np.sum(recv_w)) + out_w
-            if wsum <= 0.0 or smax <= 0.0:
-                continue
-            Vcap = Cman * di ** (5.0 / 3.0) * np.sqrt(smax) * W[i] * dt
-            Vout = min(di * A_i[i], Vcap)
-            if Vout <= 0.0:
-                continue
-            d_new[i] -= Vout / A_i[i]
-            if out_w > 0.0:
-                outflow += Vout * (out_w / wsum)
-            for k, j in enumerate(recv_j):
-                d_new[j] += (Vout * (recv_w[k] / wsum)) / A_i[j]
-        return d_new, outflow
+        """ONE Manning rate-limited descending-head sweep = the production kernel
+        ``overland_routing.route_excess`` with the orchestrator's near-flat ``eps_head`` floor and the
+        PER-NODE outlet slope ``_outlet_slope_node`` (a multi-outlet problem -- e.g. a downslope edge
+        AND a channel-mouth outlet at different bed slopes -- needs per-node values, which
+        ``route_excess`` accepts as the array form of ``outlet_slope``). Conserves ``sum_i d_i A_i +
+        outflow`` to machine precision (telescoping). ``d`` is never mutated."""
+        return route_excess(
+            d, self.z_b, self._A_i, self._adj, self._top_dofs_arr, self._W, self.n_man, dt,
+            self._outlet_mask, self._outlet_slope_node, eps_head=self.eps_head)
 
     def _surf_pond(self) -> float:
         """int max(psi,0) ds_top on the lumped VERTEX measure (== sum_i d_i A_i; the surface store)."""
@@ -643,22 +631,28 @@ class SequentialCoupledProblem:
 
     # -- time stepping --------------------------------------------------------
     def step(self, dt: float):
-        """Advance one sequential-split backward-Euler step. Returns ``(converged, iters)``.
+        """Advance one sequential-split backward-Euler step. Returns ``(converged, attempts)``.
 
-        The Picard loop (route -> under-relaxed lateral source -> implicit Richards solve), reproduced
-        from the verified ``run_case_win``:
+        The SEQUENTIAL NON-ITERATIVE split (route once from the entry pond -> omega-relaxed lateral
+        source -> implicit Richards solve once), reproduced from the verified ``run_case_win``. This is
+        NOT a fixed-point Picard iteration over the route<->solve pair (that is the documented future
+        upgrade); the ``picard_iters`` loop here is a ROBUSTNESS RETRY that re-routes + re-solves at a
+        halved omega ONLY after a failed inner solve -- on a clean first solve it runs exactly once:
           1. route the CURRENT pond ``d_cur = max(psi_entry,0)`` over dt (``_route``, sub-stepped
              ``route_substeps`` times) -> lateral source ``lat = omega*(d_routed - d_cur)/dt`` over the
              WHOLE dt, held fixed within the Richards solve.
           2. solve Richards ALONE with the pond-storage term + rain influx + lat source (self-limiting;
-             the soil draws the carried pond at its natural Darcy rate). On a non-converged inner
-             solve, HALVE omega (the robustness fallback; omega resets to ``relax`` at step entry)
-             before reporting failure.
+             the soil draws the carried pond at its natural Darcy rate). On a CONVERGED inner solve,
+             accept and break. On a non-converged inner solve, HALVE omega (the robustness RETRY; omega
+             resets to ``relax`` at step entry) and re-route + re-solve from the entry state; if the
+             budget (``picard_iters``) or the omega-floor (1e-4) is exhausted, report failure.
           3. accept: psi carries the redistributed pond; book ``cum_outflow += omega*outflow`` and the
              deferred ``(1-omega)*outflow`` into ``cum_handoff_imbalance``.
-        On failure the caller (or ``advance``) cuts dt and retries; the entry state is restored.
-        Conservation is omega-INDEPENDENT (see the module docstring). The honest reject gate books a
-        SNES reason-4 (stagnation) inner solve only when |F| <= ``stall_accept_fnorm``.
+        ``attempts`` (the returned iterate count) is the SNES iteration number of the accepted solve,
+        used by the band dt-controller. On failure the caller (or ``advance``) cuts dt and retries; the
+        entry state is restored. Conservation is omega-INDEPENDENT (see the module docstring). The
+        honest reject gate books a SNES reason-4 (stagnation) inner solve only when |F| <=
+        ``stall_accept_fnorm``.
         """
         self._ensure_built()
         rp = self._rp

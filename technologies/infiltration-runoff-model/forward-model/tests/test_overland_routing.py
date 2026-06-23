@@ -309,6 +309,89 @@ def test_flat_patch_no_spurious_direction():
 
 
 # ====================================================================================================
+# Test 4b -- NEAR-FLAT ULP STABILITY (the eps_head floor): a nearly-flat lake-at-rest carrying only
+# ULP-level head noise must NOT spuriously REDISTRIBUTE when eps_head is set (the orchestrator passes
+# 1e-9), yet must STILL route on a real mm-scale gradient with the same floor. Pins the single
+# production kernel's flat-water guard that the sequential coupling relies on: with the bare s>0 rule
+# (eps_head=0.0) ULP noise (~1e-16) is amplified across the descending-head cascade into a cm-scale
+# redistribution of the lake (the classic flat-water instability); eps_head=1e-9 keeps it stationary.
+# (A CLOSED graph isolates the interior instability -- an OUTLET boundary legitimately drains a flat
+# lake off-domain regardless of head flatness, which is its job, so it would confound this guard.)
+# ====================================================================================================
+def test_near_flat_ulp_does_not_spuriously_redistribute_with_eps_head():
+    """A flat-HEAD lake (uniform H over the top dofs) on a CLOSED graph, perturbed by ULP-level head
+    noise (~1e-16 relative to the head, far below eps_head=1e-9). With eps_head=1e-9 (the orchestrator's
+    floor) the lake holds its shape to the float-noise floor over many sweeps -- no spurious lateral
+    redistribution -- whereas the bare s>0 rule (eps_head=0.0) lets the SAME ULP noise pump a cm-scale
+    spread across the lake (the flat-water cascade). Mass is conserved either way (closed graph); the
+    guard is about the SHAPE staying put. Pins the production kernel's flat-water floor."""
+    g = _slope_graph()
+    closed = np.zeros(g["n_dofs"], dtype=bool)               # no outlet -> isolate the interior cascade
+    # build a uniform-HEAD lake: H = const on the top dofs (so d = Htarget - z_b), then add ULP noise.
+    Htarget = float((g["z_b"][g["top_dofs"]]).max()) + 0.10
+    d0 = np.zeros(g["n_dofs"])
+    d0[g["top_dofs"]] = Htarget - g["z_b"][g["top_dofs"]]
+    rng = np.random.default_rng(11)
+    # ULP-scale perturbation: ~a few ulp of the head (~1e-16 * |H|), far below eps_head=1e-9.
+    noise = rng.uniform(-1.0, 1.0, size=g["top_dofs"].size) * 8.0 * np.finfo(float).eps * abs(Htarget)
+    noise_max = float(np.max(np.abs(noise)))
+    assert noise_max < 1e-9, "noise must be below eps_head for the guard to apply"
+    d_start = d0.copy()
+    d_start[g["top_dofs"]] += noise
+    m0 = _mass(d_start, g["A_i"], g["top_dofs"])
+
+    dt = 5e-3
+    # (i) the FLOORED kernel (eps_head=1e-9, the production path): the lake holds its shape -- the depth
+    # deviation from the original field stays at the ULP-noise floor (no cm-scale spread).
+    dd = d_start.copy()
+    for _ in range(40):
+        dd, of = route_excess(dd, g["z_b"], g["A_i"], g["adj"], g["top_dofs"], g["W"],
+                              0.05, dt, closed, g["outlet_slope"], eps_head=1e-9)
+        assert of == 0.0, "closed graph leaked at the (absent) outlet"
+    spread_floored = float(np.max(np.abs((dd - d0)[g["top_dofs"]])))
+    assert spread_floored <= 10.0 * noise_max + 1e-15, (
+        f"near-flat lake spuriously redistributed under ULP noise even WITH eps_head "
+        f"(spread {spread_floored:.3e} >> noise {noise_max:.3e})")
+    assert abs(_mass(dd, g["A_i"], g["top_dofs"]) - m0) <= 1e-12, "closed-graph interior mass drifted"
+
+    # (ii) CONTRAST: the bare s>0 rule (eps_head=0.0) lets the SAME ULP noise pump a >> noise-scale
+    # spread across the lake -- demonstrating the floor is load-bearing (not a no-op).
+    dd0 = d_start.copy()
+    for _ in range(40):
+        dd0, _of = route_excess(dd0, g["z_b"], g["A_i"], g["adj"], g["top_dofs"], g["W"],
+                                0.05, dt, closed, g["outlet_slope"])      # eps_head=0.0 (bare s>0)
+    spread_bare = float(np.max(np.abs((dd0 - d0)[g["top_dofs"]])))
+    assert spread_bare > 1e3 * spread_floored, (
+        f"eps_head floor not load-bearing: the bare s>0 rule spread {spread_bare:.3e} is not >> the "
+        f"floored spread {spread_floored:.3e} (expected the flat-water cascade without the floor)")
+
+
+def test_eps_head_still_routes_real_mm_gradient():
+    """The SAME eps_head=1e-9 floor must NOT block a genuine mm-scale gradient: a 10 cm up-slope pulse
+    on the real planar slope (head drops ~mm-to-cm per edge, >> 1e-9) still routes and reaches the
+    outlet, exactly as the unfloored kernel does. Guards that eps_head only kills ULP noise, not
+    physics (the floor is far below any physical pond gradient)."""
+    g = _slope_graph()
+    d = np.zeros(g["n_dofs"])
+    d[g["up_dofs"]] = 0.10                                   # 10 cm pulse at x=0 (real slope downhill)
+    pulse_vol = _mass(d, g["A_i"], g["up_dofs"])
+    # one sweep with the floor: it still moves a (bounded, no-teleport) share toward the outlet.
+    d_floor, of_floor = route_excess(d, g["z_b"], g["A_i"], g["adj"], g["top_dofs"], g["W"],
+                                     0.05, 2e-3, g["outlet_mask"], g["outlet_slope"], eps_head=1e-9)
+    # and it is BIT-IDENTICAL to the bare-default (eps_head=0.0) sweep here: every real head drop is
+    # >> 1e-9, so the floor changes nothing on a genuine gradient.
+    d_bare, of_bare = route_excess(d, g["z_b"], g["A_i"], g["adj"], g["top_dofs"], g["W"],
+                                   0.05, 2e-3, g["outlet_mask"], g["outlet_slope"])
+    assert np.array_equal(d_floor, d_bare) and of_floor == of_bare, \
+        "eps_head=1e-9 perturbed routing on a real mm-scale gradient (it must only kill ULP noise)"
+    # genuinely routed (the pulse moved downhill -- not dammed by the floor).
+    moved = of_floor + (_mass(d_floor, g["A_i"], np.where(g["outlet_mask"])[0])
+                        - _mass(d, g["A_i"], np.where(g["outlet_mask"])[0]))
+    assert _mass(d_floor, g["A_i"], g["top_dofs"]) < pulse_vol or moved > 0.0, \
+        "eps_head floor blocked a real mm-scale gradient (the pulse did not route)"
+
+
+# ====================================================================================================
 # Test 5 -- IDEMPOTENT on an already-drained (all-zero) field.
 # ====================================================================================================
 def test_idempotent_on_drained_field():
