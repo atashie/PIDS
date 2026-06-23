@@ -18,9 +18,13 @@ THE DESIGN (locked from the verified spike; do NOT redesign):
     Dirichlet pin (which over-infiltrates high-K sand), NO post-solve write-back of psi (which is a
     bad Newton restart and dt-collapses). All three alternatives were tried in the spike and FAILED;
     pond-in-psi is what stays robust.
-  * The LATERAL routing enters the Richards solve as an UNDER-RELAXED Neumann SOURCE (omega ~= 0.5;
-    halve omega on a failed inner solve), iterated to a Picard fixed point. Run-on (+) where the
-    routing adds depth, run-off (-) where it removes it.
+  * The LATERAL routing enters the Richards solve as a Neumann SOURCE (run-on +, run-off -), iterated
+    to a Picard fixed point. The source is omega-relaxed with omega=relax (default 1.0 = no standing
+    under-relaxation; halved on a failed inner solve as the ROBUSTNESS fallback), and the routing sweep
+    is sub-stepped ``route_substeps`` times per step (default 4) to resolve the intra-step travel -- the
+    transport-RATE calibration (see the class docstring + ``validation/sanity/
+    overland_transport_calibration__2026-06-23.md``). A single under-relaxed sweep (the spike's original
+    omega~=0.5, rs=1) throttles transport ~40-50x; it conserves either way.
   * The conserved ledger is ``total = int theta dV + int max(psi,0) ds_top`` -- the surface pond is a
     REAL stored quantity NOT in ``int theta`` (theta is flat at theta_s for psi>=h_s, so a ponded
     node's pond depth is carried by the boundary pond-storage term, not the volume integral).
@@ -108,6 +112,22 @@ class SequentialCoupledProblem:
     provided -- the embedded-feature API is being replaced by a separate redesign (the unified
     feature work); it will be wired in once that lands.
 
+    TRANSPORT-RATE CALIBRATION (record ``validation/sanity/overland_transport_calibration__2026-06-23``):
+    a SINGLE Manning sweep per Richards step under-resolves the intra-step surface travel and throttles
+    lateral transport ~40-50x vs the resolved ``CoupledProblem(overland_scheme="upwind")`` reference.
+    The DOMINANT fix is ``route_substeps`` (nsub sweeps each over dt/nsub) -- NOT omega (omega 0.5->1.0
+    buys only ~2.4x). ``route_substeps=4`` matches the resolved reference drain timing (1.0x);
+    ``route_substeps >= 8`` OVERSHOOTS (the fully sub-stepped explicit Manning is a kinematic wave that
+    outruns the reference diffusion-wave), so 4 is the optimum, not "more is better". omega is now
+    1.0 by default (no standing under-relaxation -- the right transport setting); under-relaxation is
+    the ROBUSTNESS FALLBACK only (``step`` resets omega=relax each step, then HALVES it on a failed
+    inner solve before cutting dt). Conservation is omega/substep-INDEPENDENT at ~1e-12 throughout
+    (a pure accuracy knob; the spike's CONSERVATION PROOF holds because each sub-sweep telescopes).
+
+    ORTHOGONAL FRAGILITY (not the transport question): a near-saturated column with a ~zero pond can
+    dt-collapse the standalone-Richards path on the no-Ss near-saturation singularity -- carry the pond
+    as a COMFORTABLY-POSITIVE head (as the validated cases do), not a near-zero one.
+
     Parameters
     ----------
     mesh : the subsurface host (FLAT top at z=ztop; topography is carried by ``z_b`` via
@@ -115,7 +135,10 @@ class SequentialCoupledProblem:
     soil : a ``VanGenuchten`` (or duck-typed layered soil exposing ``theta_ufl``, ``K_ufl``, ``Ks``).
     n_man : Manning roughness for the lateral routing (SI s.m^-1/3).
     picard_iters : max Picard inner iterates per step (route -> source -> solve).
-    relax : the source under-relaxation omega (halved on a failed inner solve before cutting dt).
+    relax : the source under-relaxation omega (default 1.0 = no standing under-relaxation; ``step``
+        resets to this each step and HALVES it on a failed inner solve as the robustness fallback).
+    route_substeps : Manning sub-sweeps per Richards step (default 4 = the resolved-reference transport
+        match; >= 8 overshoots). The lateral-transport-RATE knob; conservation-neutral. Must be >= 1.
     quadrature_degree : the Darcy-volume (and GHB) integration-degree cap (van Genuchten fractional
         powers; auto degree balloons ~1000x on 3-D tets).
     """
@@ -129,8 +152,9 @@ class SequentialCoupledProblem:
     }
 
     def __init__(self, mesh, soil, *, n_man: float = 0.05, picard_iters: int = 4,
-                 relax: float = 0.5, eps_head: float = 1e-9, quadrature_degree: int = 8,
-                 degree: int = 1, lumped: bool = True, petsc_options=None):
+                 relax: float = 1.0, route_substeps: int = 4, eps_head: float = 1e-9,
+                 quadrature_degree: int = 8, degree: int = 1, lumped: bool = True,
+                 petsc_options=None):
         if mesh.comm.size > 1:
             raise NotImplementedError(
                 "SequentialCoupledProblem is SERIAL-ONLY: the top-facet routing graph "
@@ -141,11 +165,16 @@ class SequentialCoupledProblem:
                 "SequentialCoupledProblem requires degree=1 (P1): the routing graph identifies a top "
                 "vertex with its dof and the pond ledger is vertex-lumped (the matched-quadrature "
                 f"conservation fix). Got degree = {degree}.")
+        if int(route_substeps) < 1:
+            raise ValueError(
+                f"route_substeps must be >= 1 (Manning sub-sweeps per Richards step); "
+                f"got {route_substeps!r}.")
         self.mesh = mesh
         self.soil = soil
         self.n_man = float(n_man)
         self.picard_iters = int(picard_iters)
         self.relax = float(relax)
+        self.route_substeps = int(route_substeps)
         # head-DROP floor for the routing sweep [m]: a node treats a neighbour as a downslope receiver
         # only when (H_i - H_j) > eps_head. Without it, ULP-level head noise (~1e-16*depth) on a FLAT
         # lake invents spurious downslope directions whose Manning cap, amplified across the
@@ -530,6 +559,32 @@ class SequentialCoupledProblem:
 
     # -- routing sweep (per-node outlet slope; conserving) --------------------
     def _route(self, d, dt):
+        """Manning routing over ``dt``, sub-stepped ``route_substeps`` times (the transport-RATE knob).
+
+        Runs ``self.route_substeps`` descending-head sweeps (``_route_once``) each over ``dt/nsub``,
+        recomputing receivers from the LIVE depth between sub-sweeps and ACCUMULATING the off-domain
+        outflow -- the calibration prototype ``_install_route_substeps``. A single sweep advances the
+        Manning cascade only ~one-to-a-few cells per Richards step, UNDER-resolving the intra-step
+        surface travel and throttling transport ~40-50x vs the resolved upwind reference; sub-stepping
+        marches the full intra-step distance and closes the gap (rs=4 = the match; record
+        ``validation/sanity/overland_transport_calibration__2026-06-23.md``). Conservation is
+        sub-step-INDEPENDENT: each sub-sweep telescopes (``sum d_i A_i + outflow`` conserved to
+        machine precision), so the accumulated ``(d_new, outflow)`` conserves over the whole ``dt``,
+        and ``step`` still books ``cum_outflow += omega*outflow`` exactly. Returns ``(d_new, outflow)``;
+        ``d`` is never mutated.
+        """
+        nsub = self.route_substeps
+        if nsub <= 1:
+            return self._route_once(d, dt)
+        d_cur = d
+        outflow = 0.0
+        hsub = dt / nsub
+        for _ in range(nsub):
+            d_cur, of = self._route_once(d_cur, hsub)
+            outflow += of
+        return d_cur, outflow
+
+    def _route_once(self, d, dt):
         """ONE Manning rate-limited descending-head routing sweep with PER-NODE outlet slopes.
 
         Wraps the validated ``overland_routing.route_excess`` law but lets each outlet node use its
@@ -592,11 +647,13 @@ class SequentialCoupledProblem:
 
         The Picard loop (route -> under-relaxed lateral source -> implicit Richards solve), reproduced
         from the verified ``run_case_win``:
-          1. route the CURRENT pond ``d_cur = max(psi_entry,0)`` -> lateral source
-             ``lat = omega*(d_routed - d_cur)/dt``, held fixed within the Richards solve.
+          1. route the CURRENT pond ``d_cur = max(psi_entry,0)`` over dt (``_route``, sub-stepped
+             ``route_substeps`` times) -> lateral source ``lat = omega*(d_routed - d_cur)/dt`` over the
+             WHOLE dt, held fixed within the Richards solve.
           2. solve Richards ALONE with the pond-storage term + rain influx + lat source (self-limiting;
              the soil draws the carried pond at its natural Darcy rate). On a non-converged inner
-             solve, HALVE omega (gentler source) before reporting failure.
+             solve, HALVE omega (the robustness fallback; omega resets to ``relax`` at step entry)
+             before reporting failure.
           3. accept: psi carries the redistributed pond; book ``cum_outflow += omega*outflow`` and the
              deferred ``(1-omega)*outflow`` into ``cum_handoff_imbalance``.
         On failure the caller (or ``advance``) cuts dt and retries; the entry state is restored.

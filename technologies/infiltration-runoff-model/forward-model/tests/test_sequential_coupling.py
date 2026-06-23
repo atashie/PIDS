@@ -593,3 +593,88 @@ def test_ledger_baseline_is_one_shot_not_re_snapshotted():
     assert prob._w0 == w0_0 and prob._surf0 == surf0_0, (
         f"ledger baseline was RE-SNAPSHOTTED on rebuild ( _w0 {w0_0:.6e}->{prob._w0:.6e}, "
         f"_surf0 {surf0_0:.6e}->{prob._surf0:.6e} ) -- a setup change after a step corrupts balance()")
+
+
+# ====================================================================================================
+# Test 12 -- ROUTE_SUBSTEPS advances transport (the transport-RATE calibration knob, record
+# validation/sanity/overland_transport_calibration__2026-06-23.md). A single Manning sweep per Richards
+# step under-resolves the intra-step surface travel and throttles lateral transport; sub-stepping the
+# sweep (route_substeps sweeps each over dt/nsub) marches the full intra-step distance and moves water
+# downslope/out FASTER. This pins (a) the knob genuinely speeds transport (rs=4 exports more / leaves
+# less pond than rs=1 over the same horizon) and (b) it is conservation-NEUTRAL (both close to ~1e-12).
+# ====================================================================================================
+def _pond_release(route_substeps):
+    """A clean pond-release transport isolation (mirrors the calibration harness, shrunk for speed):
+    a SATURATED hydrostatic column carrying a uniform COMFORTABLY-POSITIVE pond in psi, NO rain, on a
+    down-slope bed with a downslope outlet. Infiltration is ~off (the soil is full + a deep buffer
+    dodges the no-Ss singularity), so the pond just ROUTES downslope to the outlet -- a pure lateral
+    transport race. Marched over a SHORT fixed-dt horizon that leaves the pond only PARTIALLY drained
+    (~few % remaining), which is where the single-sweep throttle vs the sub-stepped rate differ most.
+    Returns the built+marched problem (surface_water remaining + cum_outflow + balance read off it).
+    FLAT-top mesh; z_b carries the slope."""
+    LX, LY, LZ = 20.0, 12.0, 1.5
+    msh = dmesh.create_box(COMM, [[0.0, 0.0, 0.0], [LX, LY, LZ]], [6, 5, 3])
+    # saturated loam, small Ks so the (identical) leak is tiny; deep buffer below the pond.
+    soil = VanGenuchten(theta_r=0.078, theta_s=0.43, alpha=3.6, n=1.56, Ks=0.05)
+    SY, POND = 0.02, 0.05
+    prob = SequentialCoupledProblem(msh, soil, n_man=0.05, route_substeps=route_substeps)
+    prob.set_topography(lambda x: SY * (LY - x[1]))          # down-slope toward y=LY (the outlet edge)
+    # saturated hydrostatic column + a uniform +POND pond carried IN psi (psi_top = POND > 0).
+    prob.set_initial_condition(lambda x: POND + (LZ - x[2]))
+    prob.add_rain(0.0)                                       # no rain -> pure release/route
+    prob.add_outflow_bc(lambda x: np.isclose(x[1], LY), slope=SY)
+    # march a SHORT horizon with FIXED dt (the race is over the same fixed dt sequence for both rs);
+    # t_end=2e-3 leaves ~5% (rs=1) vs ~0.5% (rs=4) -> a large, unambiguous throttle gap.
+    t, dt, t_end = 0.0, 5e-4, 2e-3
+    while t < t_end - 1e-12:
+        h = min(dt, t_end - t)
+        conv, _it = prob.step(h)
+        assert conv, f"pond-release (rs={route_substeps}) step did not converge at t={t:.4f}"
+        t += h
+    return prob
+
+
+def test_route_substeps_advances_transport_and_conserves():
+    """route_substeps=4 must move the released pond downslope/out FASTER than route_substeps=1 over the
+    same fixed-dt horizon (substantially less surface water REMAINING and more cumulative OUTFLOW), AND
+    both must conserve to ~1e-12 (the knob is a transport-RATE lever, conservation-neutral). This pins
+    the calibration fix: a single sweep is throttled ~40-50x; sub-stepping closes the intra-step travel
+    gap (record validation/sanity/overland_transport_calibration__2026-06-23.md)."""
+    p1 = _pond_release(route_substeps=1)
+    p4 = _pond_release(route_substeps=4)
+
+    surf1, surf4 = p1.surface_water(), p4.surface_water()
+    out1, out4 = p1.cum_outflow, p4.cum_outflow
+
+    # both genuinely routed some water to the outlet (not a vacuous all-dammed comparison).
+    assert out1 > 0.0 and out4 > 0.0, f"no outflow routed (out1={out1:.3e}, out4={out4:.3e})"
+    # (a) sub-stepping SUBSTANTIALLY speeds transport: it exports markedly MORE and leaves markedly
+    # LESS pond at the same horizon (not a marginal +epsilon -- the throttle gap is large here:
+    # measured out4/out1 ~3.5x, surf4 ~10x less than surf1). Require a real margin, not just a sign.
+    assert out4 > 1.5 * out1, (
+        f"route_substeps=4 did not export substantially more than rs=1 (out4={out4:.6e}, "
+        f"out1={out1:.6e}, ratio={out4/out1:.2f} <= 1.5x) -- the sub-step transport knob is weak")
+    assert surf4 < 0.5 * surf1, (
+        f"route_substeps=4 did not drain the swale substantially faster than rs=1 (surf4={surf4:.6e} "
+        f"!< 0.5*surf1={0.5*surf1:.6e})")
+    # (b) conservation is route_substeps-INDEPENDENT: both close the global balance to ~1e-12.
+    tot0 = p1._w0 + p1._surf0                                # same IC for both runs
+    for tag, p in (("rs=1", p1), ("rs=4", p4)):
+        bal_frac = abs(p.balance()) / tot0
+        assert bal_frac < 1e-9, f"pond-release ({tag}) balance did not close: |bal|/total0 = {bal_frac:.3e}"
+
+
+# ====================================================================================================
+# Test 13 -- route_substeps VALIDATION: must be >= 1 (a sub-sweep count); 0 / negative raise.
+# ====================================================================================================
+def test_route_substeps_validation_rejects_below_one():
+    """The constructor rejects route_substeps < 1 (0 and negative) with a ValueError -- it is the
+    number of Manning sub-sweeps per Richards step, so it must be at least 1 (the single-sweep base)."""
+    msh = dmesh.create_box(COMM, [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], [2, 2, 2])
+    soil = VanGenuchten(theta_r=0.067, theta_s=0.45, alpha=1.0, n=1.5, Ks=0.05)
+    for bad in (0, -1, -4):
+        with pytest.raises(ValueError, match="route_substeps"):
+            SequentialCoupledProblem(msh, soil, route_substeps=bad)
+    # the valid base (1) and the new default (4) construct fine.
+    SequentialCoupledProblem(msh, soil, route_substeps=1)
+    SequentialCoupledProblem(msh, soil)   # default route_substeps=4
