@@ -1,5 +1,7 @@
 # Sequential (operator-split) overland flow — Implementation Plan
 
+> ✅ **STATUS — COMPLETE + MERGED to `main` (`f7c48d8`) 2026-06-23.** Part A (spike → conservation GREEN, falsification-verified) and Part B (B1–B8 + the Codex-review routing-kernel consolidation + the `route_substeps` transport calibration) all shipped; Arik Tier-3 signed off; 44 overland tests + full suite green. Opt-in via `make_overland_coupled`; galerkin/upwind/monolithic retained as the validated fallback. Spike outcome + as-built design in §0b.
+
 > **For Claude:** REQUIRED SUB-SKILL: when executing this plan, use superpowers:executing-plans (or superpowers:subagent-driven-development) to implement it task-by-task, and superpowers:test-driven-development for every code task in Part B.
 
 **Goal:** Replace the overland↔subsurface coupling for PIDS with a sequential, time-lagged operator split — keep the implicit Richards solve, move the surface water with a separate explicit mass-conserving downslope routing sweep, and couple them through a *water-level* (not forced-rate) infiltration handoff — so the convergent-flow + stiff-clay case that broke both existing schemes runs without timestep collapse or sawtooth.

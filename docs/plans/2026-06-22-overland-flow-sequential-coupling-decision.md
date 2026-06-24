@@ -1,6 +1,6 @@
 # Decision record: move overland flow to sequential (operator-split) coupling
 
-**Date:** 2026-06-22 · **Status:** DECIDED (Arik) — proceed with the sequential/operator-split design; validate by spike before the full rework. Citation wording under final verification (does not affect the decision).
+**Date:** 2026-06-22 · **Status:** ✅ **IMPLEMENTED + MERGED to `main` (`f7c48d8`) 2026-06-23** — spike-validated (conservation 5e-12, falsification-checked), transport-calibrated (`route_substeps=4`), Codex-reviewed (kernel consolidated, no leak), Arik Tier-3 signed off; shipped as `SequentialCoupledProblem` (opt-in via `make_overland_coupled`; galerkin/upwind/monolithic retained as the validated fallback). Implementation plan + outcome: `docs/plans/2026-06-22-overland-sequential-coupling-implementation-plan.md` (§0b). _Original decision (2026-06-22): DECIDED (Arik) — proceed with the sequential/operator-split design, validated by spike before the full rework._
 
 ## 1. Context — why we are revisiting overland flow
 
