@@ -63,6 +63,12 @@ desktop.ini
 # (forward-model/viz/run_sequential_overland_signoff.py + make_sequential_overland_signoff_html.py).
 technologies/infiltration-runoff-model/forward-model/viz/sequential_overland_signoff__*.html
 technologies/infiltration-runoff-model/forward-model/scratch/sequential_overland_signoff.npz
+# Overland partition-bug investigation (2026-06-24): regenerable run outputs + the monolith-target
+# cache. The diagnostic .py reproductions ARE tracked; their console/npz outputs are not.
+technologies/infiltration-runoff-model/forward-model/scratch/seq_iter_*.txt
+technologies/infiltration-runoff-model/forward-model/scratch/seq_iter_*.npz
+technologies/infiltration-runoff-model/forward-model/scratch/seq_iter_*.log
+technologies/infiltration-runoff-model/forward-model/scratch/hardening_xfail_check.txt
 
 # --- Benchmark comparison artifacts (regenerate via benchmarks/build_comparison_*.py) ---
 # Same rationale: the heavy self-contained comparison HTML (inlined Plotly, ~6 MB each) and the
