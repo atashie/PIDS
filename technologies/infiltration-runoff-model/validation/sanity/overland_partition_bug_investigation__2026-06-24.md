@@ -1,9 +1,15 @@
 # Overland Run-on PARTITION Bug — Investigation & Session Record (2026-06-24)
 
-> **Status:** OPEN. Diagnosis complete + ground truth established; THREE fix attempts refuted. A fix
-> DIRECTION is NOT yet chosen — to be revisited next session with fresh context (Arik 2026-06-24:
-> "multiple other models address infiltration correctly without the monolith"). This document is the
-> handoff. Companion memory: `pids-overland-partition-bug.md`.
+> **Status:** FIX DIRECTION FOUND + SPIKE-VALIDATED (2026-06-25). The off-the-shelf survey (CATHY/HYDRUS/
+> ParFlow switching infiltration BC) + a staged spike identified the fix: **cap the infiltration-driving
+> head at a thin reference film `h_ref`, delivered via the sequential scheme's CONSERVATIVE, SELF-LIMITING
+> pond-in-ψ source mechanism, with the excess held + routed (realization B).** It matches the
+> ParFlow-validated monolith partition (b1 `routed/R` 0.546 vs 0.5466 at `h_ref`=2 mm, −0.1 pp), conserves
+> to 1e-11 (falsification-verified), and stays robust on the stiff convergent clay-V (no dt-collapse,
+> conserves 1e-12). The full `[ψ,d,λ]` NCP (realization A) is NOT needed. **OPEN:** the `h_ref` closure
+> (generality across soils/slopes/storms/meshes — `routed/R` is sensitive to `h_ref`). See §9 (added
+> 2026-06-25). Spike: `forward-model/scratch/seq_href_cap_spike.py`. Companion memory:
+> `pids-overland-partition-bug.md`.
 
 ## TL;DR
 Hardening the merged sequential overland scheme (`SequentialCoupledProblem`) uncovered a **structural
@@ -136,3 +142,132 @@ cd .../forward-model && export PATH="/root/miniforge3/envs/pids-fem/bin:$PATH" &
   python -u scratch/seq_iterative_prototype.py          # V1/V2 (monolith target cached)
 # also: runon_partition_investigation.py, cfl_substep_confirm.py, dt_refine_split.py
 ```
+
+---
+
+## 9. Off-the-shelf survey + fix found + SPIKE-VALIDATED (2026-06-25)
+
+**Survey (two parallel research passes — papers + open source — mutually corroborating).** The
+infiltration/runoff partition is gotten right by a **switching infiltration BC** that keeps the
+*infiltration-driving head at the saturated surface (`h_S ≈ 0` / a thin sheet)* and holds the queued
+runoff *separately*. CATHY/HYDRUS/Scudeler-2017: per-node Neumann↔Dirichlet switch, re-evaluated each
+Newton iteration; once ψ_surf hits the ponding threshold the node is head-controlled at `h_S` and the
+infiltration is the *resulting* flux (≈ acceptance), never force-fed. ParFlow: pond-as-pressure
+`d=max(p,0)` co-solved with lateral Manning routing keeps the sheet thin (~0.7 mm) so infiltration ≈ Ks
+(this IS our monolith — why it matches B4/B5, and why it dt-collapses on convergent clay). Landlab
+(operator-split, like us): `infiltration = min(capacity, ponded_supply)` as a sink on a stored depth.
+**Diagnosis sharpened:** our sequential scheme conflates the infiltration-driving head with the queued
+runoff — `add_ponding_bc` carries the FULL (lagged, deep) pond in ψ, so the deep head over-drives the
+self-limiting draw; and `q_pot = ∫_{ψ_top}^{d}K/ℓ_c` inflates with `d` (the saturated range `Ks·d/ℓ_c`)
+AND with the dry lower limit (sorptive). ParFlow gets away with pond-in-pressure only because co-solved
+routing keeps `d` thin. In a SEQUENTIAL (lagged-routing) scheme you must pin the infiltration head.
+
+**Staged spike (`forward-model/scratch/seq_href_cap_spike.py`), reusing the committed harness
+(B1/CV fixtures, cached upwind-monolith target, `run_case1_iter`/`run_case2`/`run_falsification`):**
+
+- **DEAD — hard-Neumann frozen-`q_pot` cap at `h_ref`** (`HrefCappedNeumann` = attempt #1 + the `h_ref`
+  fix): `routed/R` stayed ~0.17 for every `h_ref` (−37 pp). A frozen entry-state `q_pot` delivered as a
+  prescribed flux never lets the surface saturate self-consistently → the cap is moot. Confirms
+  attempt #1's refutation is robust; the cap is worthless without a self-limiting delivery.
+- **DEAD — pond-in-ψ WRITEBACK** (`HrefCappedPondInPsi`, first cut: set ψ_top := film each step): broke
+  conservation hard (closure 3.23, `bal/rain` 2.2 — MASS CREATION; setting ψ_top resets the top cell's θ
+  off-ledger) + 450 steps (the "bad Newton restart" dt-collapse the parent docstring warns of).
+- **★ THE FIX — conservative realization B** (`HrefCappedPondInPsi`, corrected: cap ψ's film at
+  `min(routed, h_ref)` via the parent's CONSERVATIVE lateral-SOURCE mechanism — NO writeback — with the
+  excess in a held store that routes). Residual = bulk + pond-storage − lat (rain dropped, applied
+  explicitly). Results:
+  - **Partition (b1 loam, 30×20×8):** `routed/R` monotone in `h_ref` — 1 mm→0.401, **2 mm→0.546
+    (−0.1 pp vs monolith 0.5466)**, 5 mm→0.677, 10 mm→0.677, 20 mm→0.673. The cap lands the partition.
+  - **Conservation:** `bal/rain` 1.3e-11 at every `h_ref`; the 10% falsification mis-book breaks the
+    ledger by exactly 10% (|ratio|=1.000) — genuine detector with the held store in the ledger.
+  - **Clay-V robustness (stiff convergent, 24×16×5):** BOTH `h_ref` (2 mm, 10 mm) COMPLETE, no
+    dt-collapse, conserve to 1e-12. The regime that collapsed the monolith.
+  - Cost: 25–93 steps on b1 (the matching `h_ref`=2 mm = 62 steps/116 s), 78–103 on clay-V.
+
+**Why B (the conservation math, closed-form):** Δ(soil)=+infiltrated; Δ(∫max(ψ,0)+Σheld) = rain·dt −
+outflow − infiltrated ⇒ Δtotal = rain·dt − outflow. The lateral source is the parent's validated
+conservative mechanism (ψ stays continuous → θ never reset). The film stays ≤ `h_ref` because the source
+sets it to `film_target=min(routed,h_ref)` and infiltration only reduces it.
+
+**VERDICT:** realization B is the fix; the `[ψ,d,λ]` NCP (A) is NOT needed (B reuses lighter, already
+-validated machinery and hits every gate; A would face the same `h_ref` question). The cap MUST be
+delivered conservatively + self-limitingly (pond-in-ψ source), NOT as a frozen flux or a writeback.
+
+**OPEN (productionization crux): the `h_ref` closure.** `routed/R` is sensitive to `h_ref` (±factor-2 ≈
+±14 pp), so `h_ref` is load-bearing, not cosmetic. `h_ref`=2 mm nails b1 (≈ 2–3× the monolith's 0.72 mm
+sheet) — UNVERIFIED across soils/slopes/storms/meshes. Need a principled rule (tie to the local Manning
+equilibrium sheet depth? to ℓ_c? to soil acceptance?) or a calibration procedure, validated against the
+monolith on the broader regime, before a production design. (`HrefCappedNeumann`/writeback retained in
+the spike file as the documented dead ends.)
+
+---
+
+## 10. h_ref CLOSURE STUDY — h_ref does NOT generalize; B over-routes on STEEP (2026-06-25)
+
+Pinned the closure across slope/mesh. **Method fix first:** B's partition needs the storm onset
+ADEQUATELY RESOLVED (`dt_max ≲ 0.004`); a first multi-case run at `dt_max=0.02` under-resolved → garbage
+/non-monotone (a methodology bug, NOT a B flaw). The dt-check (`scratch/seq_href_dt_check.py`) proved B
+is dt-CONVERGENT on b1_base: `1mm→0.520, 2mm→0.546, 4mm→0.664` at `dt_max=0.004`; 2 mm matches the
+monolith 0.547 (and reproduces the original spike). So the earlier "fragility/maybe-pivot-to-A" alarm
+was under-resolution — RETRACTED.
+
+**At adequate resolution (`dt_max=0.004`, `scratch/seq_href_closure2.py`), the GENERALITY FAILS:**
+- `b1_base` (S=0.03): `h_ref*` = 2.0 mm, matches monolith 0.547. ✓
+- `b1_steep` (S=0.10): B routes **0.819 / 0.813 / 0.847** (h_ref 1/2/4 mm) vs monolith **0.551** —
+  **+26 pp OVER-ROUTING, and FLAT in h_ref** (the cap is nearly inert here). No `h_ref` matches.
+- `b1_coarse` (mesh 20×14×5): B routes ~0.68 vs monolith 0.6145 — **+7 pp**, also flat in `h_ref`.
+
+**Diagnosis — the operator-split ORDER error.** B routes the WHOLE pond FIRST (books outflow), THEN
+infiltrates the remaining film. On a steep slope Manning routing is fast (q∝√S), so route-first books
+too much as runoff before infiltration claims its ~Ks share → over-routes. The monolith CO-SOLVES
+(routing ⇄ infiltration simultaneous), so its partition is correctly slope-INSENSITIVE (0.547 base ≈
+0.551 steep ≈ Hortonian (rain−Ks)/rain). `h_ref` caps the infiltration HEAD, not the routing SPEED, so
+it cannot fix the slope error. **This matters: PIDS's core regime is convergent (steep) flow** — exactly
+where B is worst. (Conservation stays machine-tight 1.2e-11 throughout — a true partition error.)
+
+**OPEN (decisive, NOT yet run): is the steep over-routing O(dt) or FUNDAMENTAL?** The split order error is
+formally O(dt) (route-first → simultaneous as dt→0), and steep routes ~1.8× faster than base (√(0.10/0.03)),
+so steep may simply need finer dt to converge to ~0.55 (a documentable slope-dependent dt requirement).
+Test = `b1_steep` @ `h_ref`=2 mm at `dt_max` 0.002 / 0.001 — does `routed/R` fall from 0.81 toward 0.55?
+**★ VERDICT (2026-06-25, `scratch/seq_href_steep_dt.py`): FUNDAMENTAL — route-first B is structurally
+wrong.** b1_steep @ h_ref=2 mm: `dt_max=0.004→0.8125, 0.002→0.8860, 0.001→0.9439` — `routed/R` climbs
+toward **1.0** as dt→0 (linear extrapolation ~1.002), i.e. infiltration → 0. Finer dt makes it WORSE,
+not better. **Mechanism:** route-first books the WHOLE pond as routing each step BEFORE infiltration
+acts on the (post-routing) remainder; as dt→0 the routing claims everything and the infiltration share
+→ 0. On a steep slope (fast routing) this is catastrophic; on a mild slope it's slow, so b1_base at a
+FINITE dt landed a fair infiltration share that COINCIDENTALLY matched the monolith at h_ref=2 mm —
+**that match is a finite-dt artifact, not a closure.** ⟹ **"realization B (route-first) is the fix" is
+RETRACTED.** The h_ref cap + conservation machinery are still sound and reusable; the route-first
+ORDER is the defect.
+
+**Implication — the partition needs SIMULTANEITY (neither pure order works):** route-first → routed/R→1
+(over-route); infiltrate-first → routed/R→0 (over-infiltrate = the original bug). The truth is the
+monolith's simultaneous solve. Paths:
+1. **Iterated-capped split (lead, untested):** wrap the CAPPED route⇄infiltrate in an outer Picard to a
+   per-step simultaneous fixed point (order-independent at convergence → reproduces the monolith
+   partition). NB the refuted V1 iterated the UNCAPPED closure (→ over-infiltration); a CAPPED iterate
+   is the new, untested hypothesis. Cost: outer loop + conservation/clay-robustness gates + still pins
+   h_ref. Risk: convergence/robustness on stiff convergent clay.
+2. **Reconsider the monolith** (co-solves → correct partition by construction) and attack its
+   dt-collapse another way (the problem the sequential pivot was avoiding) — e.g. better Newton
+   globalization / continuation, NOT a return to the Manning-PDE overland.
+3. The implicit `[ψ,d,λ]` NCP (A) does NOT obviously help: its LATERAL routing is still explicit →
+   inherits the same order error (only the vertical infiltration co-solves).
+Spikes: `seq_href_closure2.py` (corrected closure), `seq_href_dt_check.py` (b1_base dt-convergence),
+`seq_href_steep_dt.py` (the steep verdict). The `dt_max ≲ 0.004` resolution requirement is load-bearing
+for ANY sequential-split B result. **A checkpoint: route-first dead, iterated-capped split = the next
+hypothesis to spike.**
+
+**Codex adversarial review (2026-06-25) — CONFIRMS the verdict + SHARPENS the mechanism.** No spike/
+harness bug invalidates it (the steep `routed/R→1` is B's behavior BY CONSTRUCTION). **Sharper
+diagnosis than "route-first / O(dt)":** B drops rain from the Richards residual and couples infiltration
+ONLY to the post-routing ENDPOINT film `film_target = min(routed, h_ref)`, so water gets an infiltration
+opportunity *only if it survives routing into the end-of-step film*; on steep (fast routing) almost
+nothing survives → infiltration→0. That is a DIFFERENT discrete model, not a Lie-splitting O(dt) error —
+which is why refining dt cannot recover the monolith. **Caveat:** do NOT lean on the linear-extrapolation
+-to-1.0 in `seq_href_steep_dt.py:66-70` (not evidence); the raw monotone trend `0.8125→0.8860→0.9439` is
+the proof. **Endorses path 1 (iterated-capped split)** but ONLY as a TRUE per-step fixed point on the
+conservative B state (film-in-ψ, `d_held`, routing/outflow); smaller global dt / more `route_substeps` /
+another one-pass flux partition will NOT fix this class of error. **Fallback if the iterate still needs a
+tuned `h_ref` or loses clay robustness: monolith hardening (path 2), NOT another explicit ordering
+variant.** Retract "B is the fix", NOT the capped-film + conservation machinery (reusable).
