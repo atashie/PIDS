@@ -50,12 +50,16 @@ def run_one(mode, soil_name, S0, rain, arg, p=2.5, nz=12, dt_max=0.004, dt_max_m
         prob = CoupledProblem(msh, soil, n_man=g["NMAN"], overland_scheme=arg)
         prob.set_initial_condition(lambda x: g["PSI_I"] + 0.0 * x[0], d_value=0.0)
         dtm, c_lo, c_hi = dt_max_mono, 3, 8
-    elif mode in ("qpot", "qpot_d"):
+    elif mode in ("qpot", "qpot_d", "qpot_pic", "qpot_d_pic"):
         # ★ option A: soil-aware q_pot acceptance cap, UNIFORM mesh (validated ell_c), NO w / NO skin.
-        # qpot   = fixed h_sat (arg);  qpot_d = MONOLITH-FAITHFUL actual local pond depth (A').
+        # qpot   = fixed h_sat (arg);  qpot_d = MONOLITH-FAITHFUL actual local pond depth.
+        # *_pic  = + INNER PICARD (picard_inner=4): self-consistent q_pot (re-eval at the POST-solve head),
+        #          removing the sub-step-frozen-q_pot delay -- the A' test of the staleness hypothesis.
+        base = "qpot_d" if mode.startswith("qpot_d") else "qpot"
+        pic = 4 if mode.endswith("_pic") else 1
         msh = make_box(g["nx"], g["ny"], 8, g["Lx"], g["Ly"], g["Lz"])
         prob = CoCycledCappedSplit(msh, soil, n_man=g["NMAN"], route_substeps=4, h_ref=2e-3, K=6,
-                                   film_mode=mode, qpot_h_sat=float(arg))   # arg = h_sat [m] (qpot only)
+                                   film_mode=base, qpot_h_sat=float(arg), picard_inner=pic)
         prob.set_initial_condition(lambda x: g["PSI_I"] + 0.0 * x[0])
         dtm, c_lo, c_hi = dt_max, 4, 12
     else:
@@ -73,12 +77,14 @@ def run_one(mode, soil_name, S0, rain, arg, p=2.5, nz=12, dt_max=0.004, dt_max_m
                                dt0=dtm / 4.0, dt_max=dtm, ctrl_low=c_lo, ctrl_high=c_hi, max_steps=900)
     ok = (not coll) and tend >= g["TEND"] - 1e-9
     routed = prob.cum_outflow / R_in
-    bal = abs(prob.balance()) / prob.cum_rain if (mode in ("cocy", "qpot", "qpot_d")
-                                                  and prob.cum_rain > 0) else float("nan")
+    is_cc = (mode == "cocy" or mode.startswith("qpot"))
+    bal = abs(prob.balance()) / prob.cum_rain if (is_cc and prob.cum_rain > 0) else float("nan")
     mh = getattr(prob, "min_held_seen", 0.0)
     mp = getattr(prob, "max_pond_seen", 0.0)
+    ii = getattr(prob, "inner_iters_hist", [])
+    inner_avg = (sum(ii) / len(ii)) if ii else 1.0
     return dict(routed=routed, bal=bal, ok=ok, ns=ns, tend=tend, min_held=mh, max_pond=mp,
-                wall=time.perf_counter() - t0)
+                inner_avg=inner_avg, wall=time.perf_counter() - t0)
 
 
 if __name__ == "__main__":
@@ -95,9 +101,10 @@ if __name__ == "__main__":
     if mode == "mono":
         print(f"  MONOLITH({arg}): routed/R={r['routed']:.4f}  ok={r['ok']} ns={r['ns']} "
               f"t={r['tend']:.3f} wall={r['wall']:.0f}s", flush=True)
-    elif mode in ("qpot", "qpot_d"):
-        tag = "Q_POT-CAP actual-d (A')" if mode == "qpot_d" else f"Q_POT-CAP fixed h_sat={arg}"
-        print(f"  {tag}: routed/R={r['routed']:.4f}  bal/rain={r['bal']:.2e} "
+    elif mode.startswith("qpot"):
+        dd = "actual-d" if mode.startswith("qpot_d") else f"h_sat={arg}"
+        pp = f" + INNER PICARD (avg {r['inner_avg']:.1f})" if mode.endswith("_pic") else ""
+        print(f"  Q_POT-CAP {dd}{pp}: routed/R={r['routed']:.4f}  bal/rain={r['bal']:.2e} "
               f"max_pond={r['max_pond']*1000:.3f}mm (cap-reject if >0)  min_held={r['min_held']*1000:.2f}mm")
         print(f"     ok={r['ok']} ns={r['ns']} t={r['tend']:.3f} wall={r['wall']:.0f}s  "
               f"=> {'STABLE' if r['ok'] else 'COLLAPSED'}", flush=True)

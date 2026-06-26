@@ -566,3 +566,35 @@ closure: the right kirchhoff sheet depth is the THIN co-solved `d` the sequentia
 co-solve); or (C) harden the already-soil-accurate monolith. The bracketing + the sand-stability win say a
 faithful cap is reachable, but it converges toward "a mini surface co-solve," narrowing the gap to option
 C.** Conservation remains DONE + universal throughout.
+
+---
+
+## 16. A′ — both refinements REFUTED; the sequential-cap approach is EXHAUSTED (2026-06-26)
+
+Per Arik ("finish A′", overland-flow regime only, lakes out of scope), the two A′ refinements were
+implemented + tested:
+
+**(1) Actual-`d` cap (`film_mode="qpot_d"`, Codex's lead rec):** `q_pot=kirchhoff(min(ψ,0), d_routed)/ell_c`
+using the actual local pond depth (matches `coupling.py:230`). Result vs fixed-h_sat: **loam +33.1 (was
++32.7, UNCHANGED — pond thin so actual-`d`≈h_sat); silt +15.1 (UNCHANGED); sand −10.5 + ponds 3.8mm (WORSE
+— deep pond inflates q_pot → over-infiltrate, the §9 effect).** ⟹ actual-`d` is NOT the lever; the
+over-routing is `d`-INSENSITIVE.
+
+**(2) Inner Picard (`picard_inner=4`, Arik's "delay/staleness" hypothesis + Codex's "small inner q_pot
+update"):** re-evaluate q_pot at the POST-solve soil head + re-solve to a per-sub-step fixed point
+(self-consistent q_pot, the closest the split gets to the monolith's per-Newton-iterate q_pot). Smoke
+(loam, mid-storm, head-to-head): `qpot` routed **0.8744** → `qpot_pic` routed **0.8748** (inner_avg 3.26
+iters) — **UNCHANGED.** ⟹ the q_pot staleness is NOT the cause; making it self-consistent does not move the
+partition. (Minor: the convergence-break path leaks ~3e-6; moot, refuted.)
+
+**★★ VERDICT — the SEQUENTIAL-CAP approach is EXHAUSTED.** Across every closure tried — `w` (offer film,
+free draw: over-infiltrate/collapse), `h_ref`/`h_sat` (fixed thin cap: over-route), actual-`d` (scattered),
+and self-consistent q_pot (unchanged) — NONE replicates the monolith's partition across soils. Each trades
+one soil's error for another. The over-routing is structural: the cap is **route-first** (routes the full
+sheet each sub-step before the cap acts) and the remaining gap to the monolith is the **routing⟷infiltration
+co-solve** the monolith does simultaneously and the split cannot (a "surface co-solve" = rebuilding the
+monolith's surface coupling). **Conservation re-architecture (the headline ask) remains DONE + soil-universal.
+The loam-scoped thin-skin scheme (§13) remains exact+accurate+stable+robust ON LOAM.** ⟹ FORK collapses to:
+**(B) ship loam-scoped** (if PIDS hosts are loam-ish) **or (C) harden the soil-accurate MONOLITH's stiff-case
+dt-collapse** (the only path to soil-general accuracy). Spikes: `film_mode={qpot,qpot_d}` + `picard_inner`
+in `seq_href_iterated.py`, driver modes `qpot`/`qpot_d`/`qpot_pic` in `seq_cocycled_sweep.py`.

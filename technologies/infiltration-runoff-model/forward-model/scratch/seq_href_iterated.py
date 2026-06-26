@@ -162,7 +162,7 @@ class CoCycledCappedSplit(HrefCappedPondInPsi):
     """
 
     def __init__(self, mesh, soil, *, K=6, film_mode="route_first", film_w=None,
-                 qpot_h_sat=2e-3, qpot_ell_c=None, **kwargs):
+                 qpot_h_sat=2e-3, qpot_ell_c=None, picard_inner=1, picard_inner_tol=1e-3, **kwargs):
         super().__init__(mesh, soil, **kwargs)
         self.K = int(K)
         # film_mode/film_w = how much film the soil is offered each sub-step (a FREE knob for GLOBAL
@@ -185,6 +185,12 @@ class CoCycledCappedSplit(HrefCappedPondInPsi):
             zu = np.unique(np.round(zc, 9))
             qpot_ell_c = 0.5 * float(zu[-1] - zu[-2]) if zu.size >= 2 else 0.0625
         self.qpot_ell_c = float(qpot_ell_c)
+        # ★ INNER PICARD (qpot modes): re-evaluate q_pot at the POST-solve soil head + re-solve to a
+        # per-sub-step fixed point (removes the "sub-step-frozen q_pot" delay -> the closest the split
+        # gets to the monolith's co-solve, where q_pot re-evaluates every Newton iterate). 1 = OFF.
+        self.picard_inner = int(picard_inner)
+        self.picard_inner_tol = float(picard_inner_tol)   # rel film-change convergence tol
+        self.inner_iters_hist: list[int] = []
         self.last_K_used = 0
         self.min_held_seen = 0.0          # most-negative held (borrow) over the run [m] -- diagnostic
         self.max_pond_seen = 0.0          # most-positive psi_top (ponding = cap rejection) [m] -- diag
@@ -221,55 +227,70 @@ class CoCycledCappedSplit(HrefCappedPondInPsi):
             d_full[td] = film_prev + self.d_held[td] + rain * hsub
             d_routed, of = self._route(d_full, hsub)
             cum_of += of
-            # 2) re-split via the SOURCE (no writeback): offer the soil `film` (mode-dependent), rest
-            #    -> held. Conservation is film-INDEPENDENT (held = d_routed - film, Sum telescopes).
-            if self.film_mode in ("qpot", "qpot_d"):
-                # ★ option A: offer the soil-aware ACCEPTANCE depth (q_pot*hsub), capped by what is
-                # actually present (d_routed). q_pot adapts to the SOLVED soil head (decays as it wets).
-                #   "qpot"   -- kirchhoff(psi, h_sat) with FIXED h_sat (over-routes: chokes when psi->0).
-                #   "qpot_d" -- ★ MONOLITH-FAITHFUL: kirchhoff(psi, d_routed_local) using the ACTUAL local
-                #               pond depth (matches coupling.py:230 q_pot=kirchhoff_ufl(psi,d)/ell_c).
-                psi_soil = np.minimum(film_prev_psi, 0.0)   # matric head (clamp any pond -> 0 = saturated)
-                if self.film_mode == "qpot_d":
-                    upper = np.maximum(d_routed[td], 0.0)    # actual pond depth (not a fixed reference)
-                    qp = np.array([self.soil.kirchhoff(float(p), float(u))
-                                   for p, u in zip(psi_soil, upper)])
-                else:
-                    qp = np.array([self.soil.kirchhoff(float(p), self.qpot_h_sat) for p in psi_soil])
-                qp = np.maximum(qp, 0.0) / self.qpot_ell_c
-                film = np.minimum(d_routed[td], qp * hsub)
-            elif self.film_w is not None:
-                w = self.film_w
-                film = np.minimum((1.0 - w) * d_routed[td] + w * d_full[td], self.h_ref)
-            elif self.film_mode == "midpoint":
-                film = np.minimum(0.5 * (d_full[td] + d_routed[td]), self.h_ref)
-            elif self.film_mode == "draw_first":
-                film = np.minimum(d_full[td], self.h_ref)
-            else:  # "route_first"
-                film = np.minimum(d_routed[td], self.h_ref)
+            # 2) re-split via the SOURCE: offer the soil `film` (mode-dependent), rest -> held.
+            #    For qpot modes with picard_inner>1, iterate q_pot<->Richards to a per-sub-step fixed
+            #    point (re-evaluate q_pot at the POST-solve soil head + re-solve from the sub-step entry),
+            #    removing the sub-step-frozen-q_pot delay. Conservation is film-INDEPENDENT
+            #    (held = d_routed - film); the routing (d_routed, of) is done ONCE above.
+            psi_sub0 = rp.psi.x.array.copy()              # sub-step entry (re-solve target)
+            is_qpot = self.film_mode in ("qpot", "qpot_d")
+            n_inner = self.picard_inner if is_qpot else 1
+            film = None
+            inner_used = 0
+            for m in range(n_inner):
+                inner_used = m + 1
+                if is_qpot:
+                    # q_pot from the CURRENT soil-head estimate (entry for m=0, POST-solve head for m>0)
+                    psi_q = film_prev_psi if m == 0 else rp.psi.x.array[td]
+                    psi_soil = np.minimum(psi_q, 0.0)
+                    if self.film_mode == "qpot_d":
+                        upper = np.maximum(d_routed[td], 0.0)
+                        qp = np.array([self.soil.kirchhoff(float(p), float(u))
+                                       for p, u in zip(psi_soil, upper)])
+                    else:
+                        qp = np.array([self.soil.kirchhoff(float(p), self.qpot_h_sat) for p in psi_soil])
+                    qp = np.maximum(qp, 0.0) / self.qpot_ell_c
+                    film_new = np.minimum(d_routed[td], qp * hsub)
+                elif self.film_w is not None:
+                    w = self.film_w
+                    film_new = np.minimum((1.0 - w) * d_routed[td] + w * d_full[td], self.h_ref)
+                elif self.film_mode == "midpoint":
+                    film_new = np.minimum(0.5 * (d_full[td] + d_routed[td]), self.h_ref)
+                elif self.film_mode == "draw_first":
+                    film_new = np.minimum(d_full[td], self.h_ref)
+                else:  # "route_first"
+                    film_new = np.minimum(d_routed[td], self.h_ref)
+                # inner convergence (qpot only): the offered film has stabilized -> stop re-solving.
+                if film is not None:
+                    denom = max(float(np.max(np.abs(film_new))), 1e-12)
+                    if float(np.max(np.abs(film_new - film))) <= self.picard_inner_tol * denom:
+                        film = film_new
+                        break
+                film = film_new
+                # offer the film via the conservative source + solve Richards from the sub-step entry.
+                lat = np.zeros(self._n_dofs, dtype=np.float64)
+                lat[td] = (film - film_prev) / hsub
+                self._lat_src.x.array[:] = lat
+                self._lat_src.x.scatter_forward()
+                rp.psi.x.array[:] = psi_sub0; rp.psi.x.scatter_forward()
+                rp.psi_n.x.array[:] = psi_sub0; rp.psi_n.x.scatter_forward()
+                rp._ensure_problem()
+                rp._problem.solve()
+                snes = rp._problem.solver
+                reason = int(snes.getConvergedReason()); it_last = int(snes.getIterationNumber())
+                fnorm = float(snes.getFunctionNorm())
+                if not (reason > 0 and (reason != 4 or fnorm <= self.stall_accept_fnorm)):
+                    # whole-step rollback: restore psi AND the held store, book nothing -> caller cuts dt.
+                    rp.psi.x.array[:] = psi_entry; rp.psi.x.scatter_forward()
+                    rp.psi_n.x.array[:] = psi_entry; rp.psi_n.x.scatter_forward()
+                    self.d_held[:] = d_held_entry
+                    self.last_reason = reason
+                    self.last_K_used = k
+                    return False, it_last
             self.d_held[td] = d_routed[td] - film
             if self.d_held[td].size:
                 self.min_held_seen = min(self.min_held_seen, float(self.d_held[td].min()))
-            lat = np.zeros(self._n_dofs, dtype=np.float64)
-            lat[td] = (film - film_prev) / hsub
-            self._lat_src.x.array[:] = lat
-            self._lat_src.x.scatter_forward()
-            # 3) Richards draws the film over dt/K (psi_n = the prev sub-step's solved psi)
-            rp.psi_n.x.array[:] = rp.psi.x.array
-            rp.psi_n.x.scatter_forward()
-            rp._ensure_problem()
-            rp._problem.solve()
-            snes = rp._problem.solver
-            reason = int(snes.getConvergedReason()); it_last = int(snes.getIterationNumber())
-            fnorm = float(snes.getFunctionNorm())
-            if not (reason > 0 and (reason != 4 or fnorm <= self.stall_accept_fnorm)):
-                # whole-step rollback: restore psi AND the held store, book nothing -> caller cuts dt.
-                rp.psi.x.array[:] = psi_entry; rp.psi.x.scatter_forward()
-                rp.psi_n.x.array[:] = psi_entry; rp.psi_n.x.scatter_forward()
-                self.d_held[:] = d_held_entry
-                self.last_reason = reason
-                self.last_K_used = k
-                return False, it_last
+            self.inner_iters_hist.append(inner_used)
             # drain volume removed over this sub-step (backward-Euler rate * hsub; 0 if no drains)
             rate_k = sum(self.mesh.comm.allreduce(fem.assemble_scalar(f), op=MPI.SUM)
                          for f in self._drain_forms) \
