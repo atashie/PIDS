@@ -24,13 +24,14 @@ from scratch.seq_href_closure_study import make_box, _march
 from scratch.seq_iterative_prototype import _top_area_ds
 
 
-def smoke(K=4, dt_max=0.01, t_end=0.10):
+def smoke(K=4, dt_max=0.01, t_end=0.10, film_mode="route_first", case_name="b1_base"):
     """Task 2 Step 2: a short run to confirm CoCycledCappedSplit RUNS + conserves over a few steps."""
     c = COMMON
     soil = VanGenuchten(**LOAM)
-    case = CASES["b1_base"]
+    case = CASES[case_name]
     msh = make_box(*c["MESH"], c["Lx"], c["Ly"], c["Lz"])
-    prob = CoCycledCappedSplit(msh, soil, n_man=c["NMAN"], route_substeps=4, h_ref=2e-3, K=K)
+    prob = CoCycledCappedSplit(msh, soil, n_man=c["NMAN"], route_substeps=4, h_ref=2e-3, K=K,
+                               film_mode=film_mode)
     prob.set_initial_condition(lambda x: c["PSI_I"] + 0.0 * x[0])
     prob.set_topography(lambda x: case["S0"] * x[1])
     rain_c = prob.add_rain(0.0)
@@ -42,9 +43,10 @@ def smoke(K=4, dt_max=0.01, t_end=0.10):
                                t_end=t_end, dt0=dt_max / 4.0, dt_max=dt_max, max_steps=120)
     bal = abs(prob.balance()) / prob.cum_rain if prob.cum_rain > 0 else float("nan")
     print("#" * 80)
-    print(f"SMOKE CoCycledCappedSplit K={K}: ns={ns} t={tend:.3f}/{t_end} coll={coll} "
-          f"routed/R={prob.cum_outflow / R_in:.4f} bal/rain={bal:.2e} "
-          f"[{time.perf_counter()-t0:.0f}s]  => {'RUNS' if (not coll and ns > 0) else 'FAIL'}")
+    print(f"SMOKE CoCycled K={K} mode={film_mode} case={case_name}: ns={ns} t={tend:.3f}/{t_end} "
+          f"coll={coll} routed/R={prob.cum_outflow / R_in:.4f} bal/rain={bal:.2e} "
+          f"min_held={prob.min_held_seen*1000:.3f}mm [{time.perf_counter()-t0:.0f}s]  "
+          f"=> {'RUNS' if (not coll and ns > 0) else 'FAIL'}")
     print("#" * 80, flush=True)
 
 
@@ -84,17 +86,23 @@ def gate(K=6, h_ref=2e-3, dt_max=0.004):
     print("#" * 92, flush=True)
 
 
-def one(case_name, K=6, h_ref=2e-3, dt_max=0.004, leak=0.0):
-    """Run a SINGLE case (for concurrent single-process launches; aggregate the files afterward)."""
-    r = run(CoCycledCappedSplit, CASES[case_name], h_ref, dt_max=dt_max, K=K, leak=leak)
+def one(case_name, K=6, h_ref=2e-3, dt_max=0.004, leak=0.0, film_mode="route_first"):
+    """Run a SINGLE (case, film_mode) -- for concurrent launches; aggregate the files afterward.
+    A NUMERIC film_mode (e.g. "0.7") is the weighted film rule film_w (min((1-w)d_routed+w*d_full))."""
+    kw = {}
+    try:
+        kw["film_w"] = float(film_mode); film_mode = f"w={film_mode}"
+    except ValueError:
+        kw["film_mode"] = film_mode
+    r = run(CoCycledCappedSplit, CASES[case_name], h_ref, dt_max=dt_max, K=K, leak=leak, **kw)
     gp = r["routed"] - CASES[case_name]["target"]
-    tag = f"{case_name}{'+leak0.10' if leak else ''}"
+    tag = f"{case_name}/{film_mode}{'+leak0.10' if leak else ''}"
     print("#" * 92)
     print(f"ONE {tag}  K={K} h_ref={h_ref*1000:.0f}mm dt_max={dt_max}")
     print(f"  bal/rain = {r['bal']:.3e}   routed/R = {r['routed']:.4f} vs monolith "
           f"{CASES[case_name]['target']:.4f} (gap {gp*100:+.1f}pp)")
-    print(f"  ok={r['ok']} ns={r['ns']} wall={r['wall']:.0f}s newton/sub-step "
-          f"avg={r['pic_avg']:.1f}/max={r['pic_max']}")
+    print(f"  min_held(borrow) = {r['min_held']*1000:.3f} mm   ok={r['ok']} ns={r['ns']} "
+          f"wall={r['wall']:.0f}s newton/sub-step avg={r['pic_avg']:.1f}/max={r['pic_max']}")
     print("#" * 92, flush=True)
 
 
@@ -102,12 +110,16 @@ if __name__ == "__main__":
     np.set_printoptions(precision=4, suppress=True)
     mode = sys.argv[1] if len(sys.argv) > 1 else "gate"
     if mode == "smoke":
-        smoke()
+        fmode = sys.argv[2] if len(sys.argv) > 2 else "route_first"
+        cse = sys.argv[3] if len(sys.argv) > 3 else "b1_base"
+        smoke(film_mode=fmode, case_name=cse)
     elif mode == "one":
-        # python seq_cocycled_gate.py one <case_name> [K] [leak]
+        # python seq_cocycled_gate.py one <case_name> <film_mode> [K] [h_ref_mm] [leak]
         cname = sys.argv[2]
-        Kc = int(sys.argv[3]) if len(sys.argv) > 3 else 6
-        leakc = float(sys.argv[4]) if len(sys.argv) > 4 else 0.0
-        one(cname, K=Kc, leak=leakc)
+        fmode = sys.argv[3] if len(sys.argv) > 3 else "route_first"
+        Kc = int(sys.argv[4]) if len(sys.argv) > 4 else 6
+        href = (float(sys.argv[5]) / 1000.0) if len(sys.argv) > 5 else 2e-3
+        leakc = float(sys.argv[6]) if len(sys.argv) > 6 else 0.0
+        one(cname, K=Kc, h_ref=href, leak=leakc, film_mode=fmode)
     else:
         gate()

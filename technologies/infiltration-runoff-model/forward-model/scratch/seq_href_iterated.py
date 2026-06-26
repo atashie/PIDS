@@ -161,10 +161,22 @@ class CoCycledCappedSplit(HrefCappedPondInPsi):
     routing can thin the pond, which route-first failed to do on steep terrain). ``K`` is the accuracy knob.
     """
 
-    def __init__(self, mesh, soil, *, K=6, **kwargs):
+    def __init__(self, mesh, soil, *, K=6, film_mode="route_first", film_w=None, **kwargs):
         super().__init__(mesh, soil, **kwargs)
         self.K = int(K)
+        # film_mode/film_w = how much film the soil is offered each sub-step (a FREE knob for GLOBAL
+        # conservation; held = d_routed - film absorbs the rest, allowed to go transiently negative --
+        # route_excess tolerates di<=0 by skipping, so the ledger still telescopes). The general rule is
+        # the WEIGHTED blend  film = min((1-w)*d_routed + w*d_full, h_ref)  with w in [0,1]:
+        #   w=0   "route_first" -- post-route (over-routes on steep, +41pp)
+        #   w=0.5 "midpoint"    -- the iterated split's simultaneity (B'; +7-10pp, K/h_ref-inert)
+        #   w=1   "draw_first"  -- pre-route (over-infiltrates -> force-feed dt-COLLAPSE)
+        # On steep the ponds are thinner than h_ref (cap inert), so w (not h_ref) is the partition lever.
+        # film_w (if not None) overrides film_mode.
+        self.film_mode = str(film_mode)
+        self.film_w = None if film_w is None else float(film_w)
         self.last_K_used = 0
+        self.min_held_seen = 0.0          # most-negative held (borrow) over the run [m] -- diagnostic
         self._it_hist: list[int] = []     # Newton iters per accepted global step (last sub-step)
 
     def picard_iter_stats(self):
@@ -195,9 +207,20 @@ class CoCycledCappedSplit(HrefCappedPondInPsi):
             d_full[td] = film_prev + self.d_held[td] + rain * hsub
             d_routed, of = self._route(d_full, hsub)
             cum_of += of
-            # 2) re-split via the SOURCE (no writeback): psi film := min(routed, h_ref), rest -> held
-            film = np.minimum(d_routed[td], self.h_ref)
+            # 2) re-split via the SOURCE (no writeback): offer the soil `film` (mode-dependent), rest
+            #    -> held. Conservation is film-INDEPENDENT (held = d_routed - film, Sum telescopes).
+            if self.film_w is not None:
+                w = self.film_w
+                film = np.minimum((1.0 - w) * d_routed[td] + w * d_full[td], self.h_ref)
+            elif self.film_mode == "midpoint":
+                film = np.minimum(0.5 * (d_full[td] + d_routed[td]), self.h_ref)
+            elif self.film_mode == "draw_first":
+                film = np.minimum(d_full[td], self.h_ref)
+            else:  # "route_first"
+                film = np.minimum(d_routed[td], self.h_ref)
             self.d_held[td] = d_routed[td] - film
+            if self.d_held[td].size:
+                self.min_held_seen = min(self.min_held_seen, float(self.d_held[td].min()))
             lat = np.zeros(self._n_dofs, dtype=np.float64)
             lat[td] = (film - film_prev) / hsub
             self._lat_src.x.array[:] = lat
@@ -246,15 +269,16 @@ LOAM = dict(theta_r=0.078, theta_s=0.43, alpha=3.6, n=1.56, Ks=0.25)
 COMMON = dict(Lx=8.0, Ly=5.0, Lz=1.0, PSI_I=-0.4, RAIN=0.5, STORM=0.08, TEND=0.45, NMAN=0.05,
               MESH=(30, 20, 8))
 CASES = {
-    "b1_base":  dict(S0=0.03, target=0.5470),
-    "b1_steep": dict(S0=0.10, target=0.5508),
+    "b1_base":   dict(S0=0.03, target=0.5470),
+    "b1_steep":  dict(S0=0.10, target=0.5508),
+    "b1_coarse": dict(S0=0.03, target=0.6145, mesh=(20, 14, 5)),   # coarser mesh (Task-4 slope-robust)
 }
 
 
 def run(cls, case, h_ref, dt_max=0.004, leak=0.0, **kw):
     c = COMMON
     soil = VanGenuchten(**LOAM)
-    msh = make_box(*c["MESH"], c["Lx"], c["Ly"], c["Lz"])
+    msh = make_box(*case.get("mesh", c["MESH"]), c["Lx"], c["Ly"], c["Lz"])
     prob = cls(msh, soil, n_man=c["NMAN"], route_substeps=4, h_ref=h_ref, **kw)
     prob.outflow_leak_frac = leak
     prob.set_initial_condition(lambda x: c["PSI_I"] + 0.0 * x[0])
@@ -269,7 +293,8 @@ def run(cls, case, h_ref, dt_max=0.004, leak=0.0, **kw):
     ok = (not coll) and tend >= c["TEND"] - 1e-9
     st = prob.picard_iter_stats() if hasattr(prob, "picard_iter_stats") else dict(avg=1.0, mx=1)
     return dict(routed=prob.cum_outflow / R_in, bal=abs(prob.balance()) / prob.cum_rain,
-                ns=ns, ok=ok, wall=time.perf_counter() - t0, pic_avg=st["avg"], pic_max=st["mx"])
+                ns=ns, ok=ok, wall=time.perf_counter() - t0, pic_avg=st["avg"], pic_max=st["mx"],
+                min_held=getattr(prob, "min_held_seen", 0.0))
 
 
 def main():

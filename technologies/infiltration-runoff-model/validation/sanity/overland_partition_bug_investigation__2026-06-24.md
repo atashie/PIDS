@@ -385,3 +385,35 @@ to `CoCycledCappedSplit.step`'s film computation, globally conservative by the a
 the iterated split's +4–6 pp. Then re-run the Task-4 K-convergence + slope-robustness gate. Spikes:
 `seq_href_cons_probe.py` (Task 1), `CoCycledCappedSplit` in `seq_href_iterated.py` + driver
 `seq_cocycled_gate.py` (Tasks 2–3). Committed 2026-06-25.
+
+**Task 4 — B′ PARTITION STUDY (co-cycled, weighted film `film = min((1−w)·d_routed + w·d_full, h_ref)`,
+w∈[0,1]: w=0 route_first, 0.5 midpoint, 1 draw_first).** EVERY variant conserves `~1.3–1.9e-11` (the
+free-knob result confirmed — film choice is conservation-independent). Partition `routed/R` (monolith
+base 0.5470, steep 0.5508):
+
+| w | b1_base | b1_steep | stable? |
+|---|---|---|---|
+| 0.0 (route_first) | 0.855 (+30.8) | 0.962 (+41.1) | ✅ |
+| 0.5 (midpoint) | 0.619 (+7.2) | 0.653 (+10.2) | ✅ |
+| 0.7 | 0.544 (**−0.3**) | 0.572 (**+2.1**) | ❌ dt-collapse ns≈22–23 (mid-storm) |
+| 0.85 | — | 0.527 (−2.4) | ❌ dt-collapse ns=22 |
+| 1.0 (draw_first) | collapse ns=6 | collapse ns=4 | ❌ |
+
+Levers PROBED and ruled out: **K** (steep midpoint K=2/4/6/10 → 0.640/0.652/0.653/0.635, K-CONVERGENT,
+~±1 pp band — NOT the lever, and the K→∞ limit is a STABLE +9 pp, not draw-first); **h_ref** (steep
+midpoint 2/4/8 mm → all 0.6531 IDENTICAL — INERT, because routing keeps the ponds thinner than h_ref so
+the cap never binds). The borrow (most-negative held) stays bounded ≈ −h_ref (deeper at higher w: −1.0 mm
+@w=0.5 → −1.6/−1.9 mm @w=0.7).
+
+**★ VERDICT — an ACCURACY–STABILITY TRADEOFF (confirmed on BOTH slopes).** The co-cycled scheme delivers
+EXACT conservation (the headline ask, DONE) but the film weight that makes it accurate (w≈0.7: base −0.3,
+steep +2.1 pp — within ±3 pp!) FORCE-FEEDS infiltration toward saturation and dt-collapses mid-storm (the
+no-Ss saturation fragility, now triggered on LOAM by the thick film + the deeper borrow); the largest
+STABLE weight (w=0.5 midpoint) is slope-robust + exact but +7–10 pp. The accurate region is structurally
+unstable with the current (default-solver) Richards step. **So B′ is: exact + stable + slope-robust at
++9 pp, OR exact + accurate (±2 pp) but unstable — not all three yet.** Open options (Arik's call):
+(1) accept the stable midpoint (+9 pp, a 3–4× improvement over the −24 pp bug, slope-robust, exact);
+(2) HARDEN the Richards step to survive the w≈0.7 force-feed (saturation-aware linesearch/continuation,
+cf. [[pids-fem-saturated-wall-linesearch]]) → exact + accurate; (3) test whether the COLLAPSE is the
+negative-held BORROW (vs pure saturation) and limit it; (4) monolith hardening fallback (§10 path 2).
+Driver `seq_cocycled_gate.py` (film_w knob); outputs `scratch/_cocy_*.txt`.
