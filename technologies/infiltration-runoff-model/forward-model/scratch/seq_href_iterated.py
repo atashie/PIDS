@@ -161,7 +161,8 @@ class CoCycledCappedSplit(HrefCappedPondInPsi):
     routing can thin the pond, which route-first failed to do on steep terrain). ``K`` is the accuracy knob.
     """
 
-    def __init__(self, mesh, soil, *, K=6, film_mode="route_first", film_w=None, **kwargs):
+    def __init__(self, mesh, soil, *, K=6, film_mode="route_first", film_w=None,
+                 qpot_h_sat=2e-3, qpot_ell_c=None, **kwargs):
         super().__init__(mesh, soil, **kwargs)
         self.K = int(K)
         # film_mode/film_w = how much film the soil is offered each sub-step (a FREE knob for GLOBAL
@@ -171,12 +172,22 @@ class CoCycledCappedSplit(HrefCappedPondInPsi):
         #   w=0   "route_first" -- post-route (over-routes on steep, +41pp)
         #   w=0.5 "midpoint"    -- the iterated split's simultaneity (B'; +7-10pp, K/h_ref-inert)
         #   w=1   "draw_first"  -- pre-route (over-infiltrates -> force-feed dt-COLLAPSE)
-        # On steep the ponds are thinner than h_ref (cap inert), so w (not h_ref) is the partition lever.
-        # film_w (if not None) overrides film_mode.
+        # film_w (if not None) overrides film_mode. ★ "qpot" (option A, §14 fix): offer the soil-aware
+        # ACCEPTANCE depth  film = min(d_routed, q_pot*dt_sub),  q_pot = max(kirchhoff(min(psi_top,0),
+        # h_sat),0)/ell_c -- the monolith's acceptance rate (sorptivity-aware, decays as the soil wets),
+        # evaluated ADAPTIVELY at the SOLVED psi each sub-step (NOT the §9 frozen-q_pot). Soil-aware ⟹
+        # should generalize across Ks with NO w-knob + NO thin skin (the cap also kills the force-feed).
         self.film_mode = str(film_mode)
         self.film_w = None if film_w is None else float(film_w)
+        self.qpot_h_sat = float(qpot_h_sat)        # thin saturated-surface reference film for kirchhoff
+        if qpot_ell_c is None:                     # characteristic length = top-cell half-height
+            zc = self._rp.V.tabulate_dof_coordinates()[:, self._zaxis]
+            zu = np.unique(np.round(zc, 9))
+            qpot_ell_c = 0.5 * float(zu[-1] - zu[-2]) if zu.size >= 2 else 0.0625
+        self.qpot_ell_c = float(qpot_ell_c)
         self.last_K_used = 0
         self.min_held_seen = 0.0          # most-negative held (borrow) over the run [m] -- diagnostic
+        self.max_pond_seen = 0.0          # most-positive psi_top (ponding = cap rejection) [m] -- diag
         self._it_hist: list[int] = []     # Newton iters per accepted global step (last sub-step)
 
     def picard_iter_stats(self):
@@ -202,14 +213,24 @@ class CoCycledCappedSplit(HrefCappedPondInPsi):
         reason = 0
         for k in range(self.K):
             # 1) route the TOTAL surface water (film-in-psi + held + rain*hsub) over dt/K
-            film_prev = np.maximum(rp.psi.x.array[td], 0.0)
+            film_prev_psi = rp.psi.x.array[td].copy()       # raw top psi (soil head if <=0, pond if >0)
+            film_prev = np.maximum(film_prev_psi, 0.0)
+            if film_prev.size:
+                self.max_pond_seen = max(self.max_pond_seen, float(film_prev_psi.max()))
             d_full = np.zeros(self._n_dofs, dtype=np.float64)
             d_full[td] = film_prev + self.d_held[td] + rain * hsub
             d_routed, of = self._route(d_full, hsub)
             cum_of += of
             # 2) re-split via the SOURCE (no writeback): offer the soil `film` (mode-dependent), rest
             #    -> held. Conservation is film-INDEPENDENT (held = d_routed - film, Sum telescopes).
-            if self.film_w is not None:
+            if self.film_mode == "qpot":
+                # ★ option A: offer the soil-aware ACCEPTANCE depth (q_pot*hsub), capped by what is
+                # actually present (d_routed). q_pot adapts to the SOLVED soil head (decays as it wets).
+                psi_soil = np.minimum(film_prev_psi, 0.0)   # matric head (clamp any pond -> 0 = saturated)
+                qp = np.array([self.soil.kirchhoff(float(p), self.qpot_h_sat) for p in psi_soil])
+                qp = np.maximum(qp, 0.0) / self.qpot_ell_c
+                film = np.minimum(d_routed[td], qp * hsub)
+            elif self.film_w is not None:
                 w = self.film_w
                 film = np.minimum((1.0 - w) * d_routed[td] + w * d_full[td], self.h_ref)
             elif self.film_mode == "midpoint":

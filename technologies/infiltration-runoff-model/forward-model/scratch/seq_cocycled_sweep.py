@@ -50,6 +50,13 @@ def run_one(mode, soil_name, S0, rain, arg, p=2.5, nz=12, dt_max=0.004, dt_max_m
         prob = CoupledProblem(msh, soil, n_man=g["NMAN"], overland_scheme=arg)
         prob.set_initial_condition(lambda x: g["PSI_I"] + 0.0 * x[0], d_value=0.0)
         dtm, c_lo, c_hi = dt_max_mono, 3, 8
+    elif mode == "qpot":
+        # ★ option A: soil-aware q_pot acceptance cap, UNIFORM mesh (validated ell_c), NO w / NO skin.
+        msh = make_box(g["nx"], g["ny"], 8, g["Lx"], g["Ly"], g["Lz"])
+        prob = CoCycledCappedSplit(msh, soil, n_man=g["NMAN"], route_substeps=4, h_ref=2e-3, K=6,
+                                   film_mode="qpot", qpot_h_sat=float(arg))   # arg = h_sat [m]
+        prob.set_initial_condition(lambda x: g["PSI_I"] + 0.0 * x[0])
+        dtm, c_lo, c_hi = dt_max, 4, 12
     else:
         msh = make_graded_box(g["nx"], g["ny"], nz, g["Lx"], g["Ly"], g["Lz"], p=p)   # thin skin
         prob = CoCycledCappedSplit(msh, soil, n_man=g["NMAN"], route_substeps=4, h_ref=2e-3, K=6,
@@ -65,9 +72,11 @@ def run_one(mode, soil_name, S0, rain, arg, p=2.5, nz=12, dt_max=0.004, dt_max_m
                                dt0=dtm / 4.0, dt_max=dtm, ctrl_low=c_lo, ctrl_high=c_hi, max_steps=900)
     ok = (not coll) and tend >= g["TEND"] - 1e-9
     routed = prob.cum_outflow / R_in
-    bal = abs(prob.balance()) / prob.cum_rain if (mode == "cocy" and prob.cum_rain > 0) else float("nan")
+    bal = abs(prob.balance()) / prob.cum_rain if (mode in ("cocy", "qpot") and prob.cum_rain > 0) \
+        else float("nan")
     mh = getattr(prob, "min_held_seen", 0.0)
-    return dict(routed=routed, bal=bal, ok=ok, ns=ns, tend=tend, min_held=mh,
+    mp = getattr(prob, "max_pond_seen", 0.0)
+    return dict(routed=routed, bal=bal, ok=ok, ns=ns, tend=tend, min_held=mh, max_pond=mp,
                 wall=time.perf_counter() - t0)
 
 
@@ -85,6 +94,11 @@ if __name__ == "__main__":
     if mode == "mono":
         print(f"  MONOLITH({arg}): routed/R={r['routed']:.4f}  ok={r['ok']} ns={r['ns']} "
               f"t={r['tend']:.3f} wall={r['wall']:.0f}s", flush=True)
+    elif mode == "qpot":
+        print(f"  Q_POT-CAP (uniform, h_sat={arg}): routed/R={r['routed']:.4f}  bal/rain={r['bal']:.2e} "
+              f"max_pond={r['max_pond']*1000:.3f}mm (cap-reject if >0)  min_held={r['min_held']*1000:.2f}mm")
+        print(f"     ok={r['ok']} ns={r['ns']} t={r['tend']:.3f} wall={r['wall']:.0f}s  "
+              f"=> {'STABLE' if r['ok'] else 'COLLAPSED'}", flush=True)
     else:
         print(f"  CO-CYCLED+SKIN w={arg}: routed/R={r['routed']:.4f}  bal/rain={r['bal']:.2e} "
               f"min_held={r['min_held']*1000:.2f}mm  ok={r['ok']} ns={r['ns']} t={r['tend']:.3f} "
