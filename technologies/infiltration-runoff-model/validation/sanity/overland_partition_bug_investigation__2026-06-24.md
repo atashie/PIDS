@@ -598,3 +598,33 @@ The loam-scoped thin-skin scheme (§13) remains exact+accurate+stable+robust ON 
 **(B) ship loam-scoped** (if PIDS hosts are loam-ish) **or (C) harden the soil-accurate MONOLITH's stiff-case
 dt-collapse** (the only path to soil-general accuracy). Spikes: `film_mode={qpot,qpot_d}` + `picard_inner`
 in `seq_href_iterated.py`, driver modes `qpot`/`qpot_d`/`qpot_pic` in `seq_cocycled_sweep.py`.
+
+---
+
+## 17. ⚠ §16 RETRACTED — "monolith-only" was PREMATURE (critical review, 2026-06-26)
+
+Arik was NOT convinced by §16 ("other models run independent sequential modules + get infiltration/runoff
+correct — no need to reinvent the wheel"). A SKEPTICAL Codex review (full record
+`validation/sanity/overland_sequential_critical_review__2026-06-26.md`) **confirms §16 over-generalized:**
+
+- **The canonical sequential closure was NEVER TESTED.** All our closures are `pond-in-ψ` film-offers or
+  explicit `q_pot=kirchhoff/ell_c` caps — NOT the standard **Neumann↔Dirichlet SWITCHING BC** (dry nodes →
+  rain Neumann flux; ponded nodes → `ψ_top=d` Dirichlet; infiltration READ OFF the Richards solve as the
+  boundary reaction flux). That is what CATHY (and the active-set partitioned-coupling literature) actually
+  do. Production `sequential_coupling.py:18` even says "NO hard Dirichlet pin."
+- **The `q_pot` cap structurally MISSES the gravity/Dirichlet limit:** as `ψ_top→0`, `q_pot≈Ks·d/ell_c`
+  (tiny, a film-resistance), whereas a true ponded Dirichlet Richards solve carries the unit-gravity term
+  and → ~Ks at steady ponded infiltration. So the `qpot` over-routing is a KNOWN artifact of a non-standard
+  closure, NOT evidence that "sequential is exhausted."
+- **The monolith is also NOT a switching-BC closure** (it is a co-solved Robin/NCP with our `q_pot` law) —
+  so "monolith works ⟹ sequential needs co-solve" is an invalid inference.
+- Example nuance: CATHY = right kind (sequential switching BC); HydroGeoSphere/ParFlow = actually co-solved;
+  GSSHA/tRIBS = Green-Ampt/Smith-Parlange infiltration-CAPACITY models (a different untested closure family).
+
+**⟹ CORRECTED VERDICT: the fork is NOT yet B-vs-C.** The honest scope of §13–§16: the `pond-in-ψ` +
+`q_pot=kirchhoff/ell_c` closure FAMILY does not generalize. The CANONICAL switching-BC closure (the
+standard CATHY/HGS/GSSHA approach) is UNTESTED and is the clear next step. **NEXT = implement a true
+active-set Neumann↔Dirichlet switching BC** (separate surface store `d`; ponded→Dirichlet `ψ_top=d`; read
+infiltration as the boundary reaction flux; conservative `d` update; Picard the active set within the
+step). Conservation re-architecture (§12) stays DONE + universal. Sources: Schüller 2025 (arxiv 2408.12582),
+Sochala 2009 (0809.1558), Berninger 2014 (1301.2488).
