@@ -143,6 +143,104 @@ class IteratedCappedSplit(HrefCappedPondInPsi):
         return True, it_last
 
 
+class CoCycledCappedSplit(HrefCappedPondInPsi):
+    """Co-cycled sub-stepping (the conservation re-architecture, candidate A).
+
+    Per global step ``dt``, run ``K`` sub-steps of ``dt/K``; in each: (1) route the TOTAL surface water
+    (film-in-psi + d_held + rain*dt/K) over dt/K -> outflow; (2) re-split via the conservative SOURCE
+    (film := min(routed, h_ref), excess -> d_held, NO psi writeback); (3) solve Richards over dt/K with
+    ``psi_n`` carried from the previous sub-step (a genuine sub-time-march). Each operation is individually
+    exact (telescoping route; matched-quadrature pond draw; conservative held re-split), so:
+
+      Delta(total)_k = rain*(dt/K)*area - outflow_k - drain_k    EXACTLY, for ANY K and ANY Newton state,
+
+    because the infiltrated volume (= dtheta_k + drain_k) cancels between the soil gain and the pond loss
+    -- the pond IS psi's pond, updated by the SAME solve that updates theta. NO ``I`` RECONSTRUCTION (that
+    was IteratedCappedSplit's ~1.7e-3 leak). Conservation is therefore structural (~1e-11, like route-first
+    B); the partition converges to the monolith as K->inf (each sub-step draws a full <=h_ref film BEFORE
+    routing can thin the pond, which route-first failed to do on steep terrain). ``K`` is the accuracy knob.
+    """
+
+    def __init__(self, mesh, soil, *, K=6, **kwargs):
+        super().__init__(mesh, soil, **kwargs)
+        self.K = int(K)
+        self.last_K_used = 0
+        self._it_hist: list[int] = []     # Newton iters per accepted global step (last sub-step)
+
+    def picard_iter_stats(self):
+        """Harness-compat: report Newton-iters/sub-step stats (no Picard loop here; K is fixed)."""
+        h = np.asarray(self._it_hist, dtype=float)
+        if h.size == 0:
+            return dict(n=0, avg=float("nan"), mx=float("nan"))
+        return dict(n=int(h.size), avg=float(h.mean()), mx=int(h.max()))
+
+    def step(self, dt: float):
+        self._ensure_built()
+        rp = self._rp
+        td = self._top_dofs_arr
+        psi_entry = rp.psi.x.array.copy()
+        d_held_entry = self.d_held.copy()          # snapshot for whole-step rollback (retry-safe)
+        rain = float(self._rain_c.value)
+        hsub = dt / self.K
+        rp.dt.value = hsub
+        cum_of = 0.0
+        cum_drain_vol = 0.0
+        last_rate = 0.0
+        it_last = 0
+        reason = 0
+        for k in range(self.K):
+            # 1) route the TOTAL surface water (film-in-psi + held + rain*hsub) over dt/K
+            film_prev = np.maximum(rp.psi.x.array[td], 0.0)
+            d_full = np.zeros(self._n_dofs, dtype=np.float64)
+            d_full[td] = film_prev + self.d_held[td] + rain * hsub
+            d_routed, of = self._route(d_full, hsub)
+            cum_of += of
+            # 2) re-split via the SOURCE (no writeback): psi film := min(routed, h_ref), rest -> held
+            film = np.minimum(d_routed[td], self.h_ref)
+            self.d_held[td] = d_routed[td] - film
+            lat = np.zeros(self._n_dofs, dtype=np.float64)
+            lat[td] = (film - film_prev) / hsub
+            self._lat_src.x.array[:] = lat
+            self._lat_src.x.scatter_forward()
+            # 3) Richards draws the film over dt/K (psi_n = the prev sub-step's solved psi)
+            rp.psi_n.x.array[:] = rp.psi.x.array
+            rp.psi_n.x.scatter_forward()
+            rp._ensure_problem()
+            rp._problem.solve()
+            snes = rp._problem.solver
+            reason = int(snes.getConvergedReason()); it_last = int(snes.getIterationNumber())
+            fnorm = float(snes.getFunctionNorm())
+            if not (reason > 0 and (reason != 4 or fnorm <= self.stall_accept_fnorm)):
+                # whole-step rollback: restore psi AND the held store, book nothing -> caller cuts dt.
+                rp.psi.x.array[:] = psi_entry; rp.psi.x.scatter_forward()
+                rp.psi_n.x.array[:] = psi_entry; rp.psi_n.x.scatter_forward()
+                self.d_held[:] = d_held_entry
+                self.last_reason = reason
+                self.last_K_used = k
+                return False, it_last
+            # drain volume removed over this sub-step (backward-Euler rate * hsub; 0 if no drains)
+            rate_k = sum(self.mesh.comm.allreduce(fem.assemble_scalar(f), op=MPI.SUM)
+                         for f in self._drain_forms) \
+                + sum(self.mesh.comm.allreduce(fem.assemble_scalar(f), op=MPI.SUM)
+                      for f in self._interior_forms)
+            cum_drain_vol += hsub * float(rate_k)
+            last_rate = float(rate_k)
+
+        # accept: book outflow + drainage + rain + advance.
+        rp.psi_n.x.array[:] = rp.psi.x.array
+        rp.psi_n.x.scatter_forward()
+        self.last_outflow = cum_of
+        self.cum_outflow += cum_of * (1.0 + self.outflow_leak_frac)
+        self.last_drainage = last_rate
+        self.cum_drainage += cum_drain_vol
+        self.cum_rain += rain * self._top_area * dt
+        self._t += dt
+        self.last_reason = reason
+        self.last_K_used = self.K
+        self._it_hist.append(it_last)
+        return True, it_last
+
+
 # ---- fixtures ---------------------------------------------------------------------------------------
 LOAM = dict(theta_r=0.078, theta_s=0.43, alpha=3.6, n=1.56, Ks=0.25)
 COMMON = dict(Lx=8.0, Ly=5.0, Lz=1.0, PSI_I=-0.4, RAIN=0.5, STORM=0.08, TEND=0.45, NMAN=0.05,

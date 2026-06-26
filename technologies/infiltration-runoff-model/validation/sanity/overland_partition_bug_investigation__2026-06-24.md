@@ -316,3 +316,37 @@ conservation to close structurally, (ii) tighten convergence + sweep h_ref to sh
 (iii) clay-V + slope/mesh re-check. Fallback if it stalls: monolith hardening (§10 path 2).** Spike
 `seq_href_iterated.py` (the re-route fix is in; conservation still ~2e-3 — see above). Verified figures
 from `seq_href_iter_verify.py` (b1_steep 0.593 / bal 1.68e-3).
+
+---
+
+## 12. CONSERVATION RE-ARCHITECTURE — co-cycled sub-stepping (2026-06-25)
+
+Plan: `docs/plans/2026-06-25-iterated-capped-split-conservation-rearchitecture.md`. Goal = close the
+iterated split's `~1.7e-3` leak EXACTLY while keeping the confirmed simultaneity fix.
+
+**Task 1 — leak source CONFIRMED (`scratch/seq_href_cons_probe.py`, b1_steep, 116 steps, 456 s).** An
+instrumented copy of `IteratedCappedSplit.step()` faithfully reproduced the §11 figures (routed/R
+**0.5933**, `bal/rain` **1.68e-3**) and isolated the leak:
+- **Routing telescoping is machine-EXACT**: `Sum(route_resid) = −3.9e-17` (max `2.8e-17`) over the final
+  re-route every step ⟹ the leak is **not** the routing.
+- **The leak is the infiltration RECONSTRUCTION**: with routing exact, the ledger reduces analytically to
+  `balance = (ledger soil θ-gain) − I_recon` (`I_recon = Σ(film−film_rem)·A` = the routed-subtracted
+  infiltration; drainage = 0 here). i.e. the entire `1.68e-3` is the gap between the soil's *actual* θ
+  gain and the reconstructed `I_final` that `route(A − I_final)` subtracts. The probe's `recon_gap` measured
+  with degree-8 θ is `−4.08e-3` (same O(1e-3) magnitude; the deg-8-vs-ledger-quadrature offset ~6.8e-3
+  flips the naive ratio to −1.5, not +1 — a *measurement* nuance, not a second leak). Per-step gap
+  `max 2.1e-3·rain, mean 1.0e-4·rain`; **14/116 steps hit the Picard 8-iter cap** (un-converged
+  `film`/`film_rem` feed the reconstruction).
+- ⟹ The fix is to **eliminate the reconstruction**, not patch it.
+
+**The re-architecture — co-cycled sub-stepping (`CoCycledCappedSplit`, candidate A).** Per global step
+`dt`, run `K` sub-steps of `dt/K`: each = (1) route the TOTAL surface water (`max(ψ,0)+d_held+rain·dt/K`)
+→ outflow; (2) re-split via the conservative `_lat_src` (`film=min(routed,h_ref)`, excess→`d_held`, NO ψ
+writeback); (3) solve Richards over `dt/K` with `ψ_n` carried from the previous sub-step. **No `I`
+reconstruction** — the pond IS ψ's pond, updated by the same solve that updates θ. Analytic conservation:
+per sub-step `Δtotal = rain·(dt/K)·area − outflow_k − drain_k` EXACTLY for any `K` and any Newton state
+(the infiltrated volume `dtheta_k + drain_k` cancels between the soil gain and the pond loss). `K` is the
+accuracy knob; the partition is expected to approach the monolith as `K→∞` (each sub-step draws a full
+`≤h_ref` film before routing can thin the pond — what route-first failed to do on steep terrain).
+**Smoke (b1_base, K=4, short march): RUNS, `bal/rain = 1.25e-11`** — the leak is gone (vs `1.7e-3`). Full
+conservation gate (b1_base + b1_steep, K=6) + falsification + partition re-test in progress.
