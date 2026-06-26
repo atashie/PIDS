@@ -223,11 +223,19 @@ class CoCycledCappedSplit(HrefCappedPondInPsi):
             cum_of += of
             # 2) re-split via the SOURCE (no writeback): offer the soil `film` (mode-dependent), rest
             #    -> held. Conservation is film-INDEPENDENT (held = d_routed - film, Sum telescopes).
-            if self.film_mode == "qpot":
+            if self.film_mode in ("qpot", "qpot_d"):
                 # ★ option A: offer the soil-aware ACCEPTANCE depth (q_pot*hsub), capped by what is
                 # actually present (d_routed). q_pot adapts to the SOLVED soil head (decays as it wets).
+                #   "qpot"   -- kirchhoff(psi, h_sat) with FIXED h_sat (over-routes: chokes when psi->0).
+                #   "qpot_d" -- ★ MONOLITH-FAITHFUL: kirchhoff(psi, d_routed_local) using the ACTUAL local
+                #               pond depth (matches coupling.py:230 q_pot=kirchhoff_ufl(psi,d)/ell_c).
                 psi_soil = np.minimum(film_prev_psi, 0.0)   # matric head (clamp any pond -> 0 = saturated)
-                qp = np.array([self.soil.kirchhoff(float(p), self.qpot_h_sat) for p in psi_soil])
+                if self.film_mode == "qpot_d":
+                    upper = np.maximum(d_routed[td], 0.0)    # actual pond depth (not a fixed reference)
+                    qp = np.array([self.soil.kirchhoff(float(p), float(u))
+                                   for p, u in zip(psi_soil, upper)])
+                else:
+                    qp = np.array([self.soil.kirchhoff(float(p), self.qpot_h_sat) for p in psi_soil])
                 qp = np.maximum(qp, 0.0) / self.qpot_ell_c
                 film = np.minimum(d_routed[td], qp * hsub)
             elif self.film_w is not None:
