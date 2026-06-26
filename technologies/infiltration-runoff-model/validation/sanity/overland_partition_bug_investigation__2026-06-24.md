@@ -511,8 +511,29 @@ loam/sand/silt at S=0.03, each vs its OWN uniform-mesh galerkin monolith target;
    deferred; `alpha=14.5` sharp retention → the saturated skin→subsoil flux is stiff). The thin skin
    helped loam but is insufficient for sand.
 
-**⟹ Corrected verdict: the §13 "fix" is REAL but LOAM-SPECIFIC (exact + accurate + stable + slope/skin/
-clay-V-robust ON LOAM). Soil-generality is OPEN:** the `w`-closure (is there a physical `w(Ks/excess)`
-rule, or should `w` be replaced by a physical percolation/`q_pot`-style cap that adapts to Ks?) + sand
-high-K robustness. Probing whether a LOWER `w` recovers silt accuracy + sand stability (running:
-`_sw_cocy_{silt,sand}_w50.txt`). Slope/storm (loam) sweep not yet run (deprioritized vs the soil gap).
+**Lower-`w` probe — `w` does NOT generalize (decisive):**
+
+| soil | target | w=0.7 | w=0.5 | `w` lever |
+|---|---|---|---|---|
+| loam | 0.5470 | 0.5437 (−0.3) | ~0.65 (+10) | STRONG (Δw 0.2 → ~10 pp) ✅ |
+| silt | 0.7674 | 0.6565 (−11.1) | 0.6714 (−9.6) | **WEAK** (Δw 0.2 → 1.5 pp); stuck ~−10 pp |
+| sand | 0.6939 | COLLAPSE | 0.5422 (−15.2), STABLE | lower-w STABILIZES but −15 pp |
+
+**⟹ DECISIVE: the `w`-knob does NOT generalize.** Both non-loam soils OVER-INFILTRATE by 10–15 pp, and
+`w` cannot recover them — silt is `w`-INSENSITIVE (the soil over-draws the film regardless), sand's
+accurate-`w` COLLAPSES (lower-`w` is stable but −15 pp). `w=0.7` only worked because it was tuned to LOAM.
+**Root cause (confirmed, the §9–§14 through-line): the co-cycled scheme has NO soil-aware infiltration
+CAP** — it offers a film and lets Richards draw it at the soil's Darcy rate, which over-draws for any soil
+whose acceptance differs from loam's. The MONOLITH is soil-accurate precisely because it caps at
+`q_pot=∫K dψ/ell_c`. **Conservation stays EXACT + soil-universal throughout** (`1e-11`–`1e-13`, incl. the
+collapsed sand).
+
+**⟹ Corrected verdict: the §13 "fix" is REAL but LOAM-SPECIFIC. Soil-generality requires a SOIL-AWARE
+INFILTRATION CAP, not a tuned `w`.** Leading direction = port the monolith's `q_pot` acceptance into the
+co-cycled framework as an ADAPTIVE cap (evaluate `q_pot` at the SOLVED ψ each sub-step + deliver via the
+conservative SOURCE — NOT the §9 frozen-`q_pot`-hard-Neumann that failed), on the UNIFORM mesh (where the
+cap should ALSO prevent the §12 force-feed collapse → potentially retiring BOTH the `w`-knob and the thin
+skin). This is the genuine infiltration-closure research §9–§14 kept circling — now attackable from a
+much better base (exact conservation + a stable structure). Alternatives: scope to loam-like soils +
+document the envelope; or harden the monolith's stiff-case dt-collapse (it is already soil-accurate, §10
+path-2). Spikes `seq_cocycled_sweep.py`; outputs `scratch/_sw_*.txt`.
