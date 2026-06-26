@@ -483,4 +483,36 @@ skin (stability only). REMAINING scope before production: broader soil/storm/slo
 clay-V tested; `w` may need a wider check), `b1_coarse`/mesh-convergence, then promote
 `CoCycledCappedSplit` + `make_graded_box` into `pids_forward/physics/` with TDD (a sibling option to the
 galerkin/upwind/monolith/sequential schemes). Spike `seq_cocycled_skin.py` (`cocy`/`mono`/`clayv`);
-outputs `scratch/_skin_*.txt`.
+outputs `scratch/_skin_*.txt`. **⚠ §14 TEMPERS this verdict: it holds for LOAM (the calibration soil) but
+`w=0.7` is NOT soil-universal — see below.**
+
+---
+
+## 14. BROADER SOIL SWEEP — `w=0.7` is loam-CALIBRATED, not universal (2026-06-26)
+
+The §13 win was confirmed only on b1 LOAM. The broader soil sweep (`scratch/seq_cocycled_sweep.py`:
+loam/sand/silt at S=0.03, each vs its OWN uniform-mesh galerkin monolith target; co-cycled+skin at
+`w=0.7`, 2 mm skin, K=6) tests universality:
+
+| soil | Ks | rain | monolith target | co-cycled+skin w=0.7 | result |
+|---|---|---|---|---|---|
+| loam | 0.25 | 0.5 | 0.5470 | 0.5437 (−0.3 pp), `bal 1e-11` | ✅ accurate + stable |
+| sand | 1.5 | 2.5 | 0.6939 | **COLLAPSED** (ns=50, t=0.079) | ❌ high-K stiffness |
+| silt | 0.10 | 0.5 | 0.7674 | 0.6565 (**−11.1 pp**), `bal 1e-11` | ❌ over-infiltrates |
+
+**Findings:**
+1. **Conservation is soil-UNIVERSAL** — exact (`1e-11`–`6e-13`) on ALL soils, including the sand that
+   collapsed. The conservation re-architecture (the headline ask) fully generalizes.
+2. **`w=0.7` is loam-calibrated, NOT universal** — silt (lower Ks, target 0.767) over-infiltrates by
+   −11 pp at `w=0.7` ⟹ low-Ks soils need a DIFFERENT (lower) `w`. So `w` is soil-DEPENDENT (it is NOT a
+   pure numerical-simultaneity knob; it also compensates the scheme's soil-dependent infiltration-rate
+   error). The §10 "the closure does not generalize" pattern, now on `w` instead of `h_ref`.
+3. **Sand COLLAPSES** even with the 2 mm skin (the high-K near-saturation fragility §10 explicitly
+   deferred; `alpha=14.5` sharp retention → the saturated skin→subsoil flux is stiff). The thin skin
+   helped loam but is insufficient for sand.
+
+**⟹ Corrected verdict: the §13 "fix" is REAL but LOAM-SPECIFIC (exact + accurate + stable + slope/skin/
+clay-V-robust ON LOAM). Soil-generality is OPEN:** the `w`-closure (is there a physical `w(Ks/excess)`
+rule, or should `w` be replaced by a physical percolation/`q_pot`-style cap that adapts to Ks?) + sand
+high-K robustness. Probing whether a LOWER `w` recovers silt accuracy + sand stability (running:
+`_sw_cocy_{silt,sand}_w50.txt`). Slope/storm (loam) sweep not yet run (deprioritized vs the soil gap).
