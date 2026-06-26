@@ -628,3 +628,41 @@ active-set Neumann↔Dirichlet switching BC** (separate surface store `d`; ponde
 infiltration as the boundary reaction flux; conservative `d` update; Picard the active set within the
 step). Conservation re-architecture (§12) stays DONE + universal. Sources: Schüller 2025 (arxiv 2408.12582),
 Sochala 2009 (0809.1558), Berninger 2014 (1301.2488).
+
+---
+
+## 18. ★★ SWITCHING-BC SPIKE — works + faithful; the "0.547 target" is RESOLUTION-DEPENDENT (2026-06-26)
+
+Built the canonical Neumann↔Dirichlet active-set switching BC (`scratch/seq_switching_bc.py`,
+`SwitchingBCSplit` — the standard CATHY/HGS closure §17 said we'd never tested): separate surface store;
+DRY→Neumann rain; PONDED→Dirichlet ψ=0 (per-node penalty `c_pen·ψ`, no form rebuild); SUPPLY→Neumann
+avail/dt; 3-mode active set iterated; infiltration = the weak-form boundary flux (= Δθ exactly, gravity
+INCLUDED). It RUNS + CONSERVES (1e-12 fine mesh, 9e-10 coarse) + active set converges (~1.3 iters) + the
+penalty holds ψ≈0.
+
+**Coarse-mesh partition (vs the monolith targets):** loam 0.254 (−29 pp), sand 0.077 (−62 pp, COLLAPSED),
+silt 0.530 (−24 pp) — OVER-infiltrates all soils, scattered, sand collapses (ψ=0 over-saturates the 125 mm
+top cell, worst for high-K). NOT a clean match to the coarse targets.
+
+**★ THE REFRAME (decisive).** The mismatch is RESOLUTION, not a sequential limitation:
+
+| loam | coarse (125 mm cell) | 2 mm thin-skin |
+|---|---|---|
+| MONOLITH | **0.547** (the "target") | 0.254 |
+| SWITCHING BC | 0.254 | 0.210 |
+
+On the SAME 2 mm-skin mesh, switching-BC 0.210 ≈ monolith 0.254 (~4 pp) — they AGREE at equal resolution.
+**The 0.547 target is the COARSE-mesh value of the monolith's `q_pot=kirchhoff/ell_c` SUB-GRID FILM MODEL;
+it is NOT mesh-converged.** Refine the surface and the film model vanishes (`ell_c→0 ⟹ q_pot→∞ ⟹ cap
+inactive ⟹ raw Richards flux`), and BOTH schemes drop toward ~0.21–0.25 (the resolved sorptive front = MORE
+infiltration). The §13 "monolith thin-skin 0.254" was this same effect (the cap going inactive), NOT a
+"broken cap." **⟹ the §13–§16 "sequential can't match the monolith" framing was a TARGET CONFUSION:
+variable-effective-resolution sequential schemes compared against ONE coarse `q_pot` value. The canonical
+switching BC WORKS + is FAITHFUL to the co-solve at equal resolution (Arik was right).**
+
+**⟹ THE REAL OPEN QUESTION (Arik's domain): what is the PHYSICALLY CORRECT partition?** The coarse `q_pot`
+value (loam 0.547, ParFlow-validated AT ParFlow's resolution) or the mesh-converged value (~0.21, the
+resolved sorptive front)? `q_pot=kirchhoff/ell_c` is a sub-grid film closure with a resolution-dependent
+answer; the mm-scale physical infiltration interface argues for the fine value. NEXT = a MESH-CONVERGENCE
+study (switching BC + monolith at coarse/medium/fine surface — where do they converge?) + reconcile with the
+ParFlow benchmark resolution. Spike `seq_switching_bc.py`; commit `90116ab`.
