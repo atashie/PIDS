@@ -1,5 +1,25 @@
 # Iterated-Capped Split — Conservation Re-Architecture Plan
 
+> **★★ OUTCOME (2026-06-26) — DONE; the partition bug is FIXED (validated spike).** Full record:
+> `technologies/infiltration-runoff-model/validation/sanity/overland_partition_bug_investigation__2026-06-24.md`
+> §12–§13. Arc vs this plan:
+> - **Task 1–3 (conservation) — as planned, GREEN.** `CoCycledCappedSplit` (co-cycled sub-stepping, no
+>   `I`-reconstruction) closes the ledger EXACTLY (`~1e-11`, falsification fires) for ANY `K`. The probe
+>   confirmed the leak source (the `route(A−I_final)` reconstruction; routing telescoping was machine-exact).
+> - **Task 4 (partition) — this plan's PRIMARY HYPOTHESIS was REFUTED.** Co-cycled does NOT converge to the
+>   monolith as `K→∞`; it over-routes (`+31/+41 pp`) because each sub-step still routes-before-draws. The
+>   film offered is a FREE knob for conservation, so a weighted film `w` was swept: `w=0.5` (midpoint) is
+>   stable + slope-robust but `+9 pp`; `w≈0.7` is accurate (±2 pp) but FORCE-FEEDS infiltration →
+>   dt-COLLAPSE. An **accuracy–stability tradeoff**, not the clean K-convergence this plan expected.
+> - **Resolution — ARIK'S THIN-SKIN idea (not in this plan).** A z-graded mesh with a ~2 mm top skin
+>   (`scratch/seq_cocycled_skin.py::make_graded_box`) saturates the surface immediately → infiltration
+>   throttled by subsoil percolation, not the ponding head → the `w≈0.7` collapse is removed. Final:
+>   exact + monolith-accurate (b1 base −0.3 / steep +2.7 pp @ `w=0.7`) + stable + slope-robust + SKIN-robust
+>   (partition skin-invariant; `w` sets partition, skin only stabilizes) + clay-V robust.
+> - **NEXT (superseding this plan's Task 6):** broader soil/storm/slope sweep (only b1 loam + clay-V tested)
+>   + mesh-convergence, then a PRODUCTION design + TDD to promote `CoCycledCappedSplit` + `make_graded_box`
+>   into `pids_forward/physics/`. Knobs: `w≈0.7` (film weight, the one real parameter), `K=6`, a thin skin.
+
 > **For Claude:** REQUIRED SUB-SKILL: use `superpowers:executing-plans` (or `superpowers:subagent-driven-development`) to implement this task-by-task. This is a SPIKE-level plan (scratch, no `pids_forward/` edits, no production commit until validated) — the "tests" are the conservation / partition / robustness GATES, run in the WSL `pids-fem` env. TDD spirit: **conservation gate FIRST, before any partition claim.**
 
 **Goal:** Re-architect the iterated-capped overland split so its mass balance closes **EXACTLY** (`bal/rain → ~1e-11`, falsification-verified), while preserving the already-confirmed simultaneity fix (the steep partition is no longer structurally over-routed), then re-test partition accuracy + clay robustness.
