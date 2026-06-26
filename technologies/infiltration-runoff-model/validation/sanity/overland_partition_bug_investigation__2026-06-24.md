@@ -348,5 +348,40 @@ per sub-step `Δtotal = rain·(dt/K)·area − outflow_k − drain_k` EXACTLY fo
 (the infiltrated volume `dtheta_k + drain_k` cancels between the soil gain and the pond loss). `K` is the
 accuracy knob; the partition is expected to approach the monolith as `K→∞` (each sub-step draws a full
 `≤h_ref` film before routing can thin the pond — what route-first failed to do on steep terrain).
-**Smoke (b1_base, K=4, short march): RUNS, `bal/rain = 1.25e-11`** — the leak is gone (vs `1.7e-3`). Full
-conservation gate (b1_base + b1_steep, K=6) + falsification + partition re-test in progress.
+**Smoke (b1_base, K=4, short march): RUNS, `bal/rain = 1.25e-11`** — the leak is gone (vs `1.7e-3`).
+
+**Task 3 — CONSERVATION GATE: PASS (K=6, h_ref=2 mm, dt_max=0.004).** The re-architecture closes the
+ledger EXACTLY:
+
+| case | `bal/rain` | routed/R | monolith | partition gap |
+|---|---|---|---|---|
+| b1_base (S=0.03) | **1.505e-11** ✅ | 0.8550 | 0.5470 | **+30.8 pp** |
+| b1_steep (S=0.10) | **1.325e-11** ✅ | 0.9622 | 0.5508 | **+41.1 pp** |
+| b1_base + 10% leak | **8.55e-02** ✅ (detector FIRES) | — | — | — |
+
+⟹ **The conservation goal is MET** (`~1.3e-11` vs the iterated split's `1.7e-3`; the falsification detector
+still fires at ~10%). This holds for ANY `K` (structural, no reconstruction). **The user's headline ask —
+"re-architect the scheme's conservation to close exactly" — is DONE.**
+
+**BUT Task 4 (partition) is REFUTED for candidate A.** Co-cycled `routed/R` **over-routes on BOTH** mild
+(+30.8 pp) and steep (+41.1 pp) — *worse* than route-first (+0/+26 pp) and the WRONG direction (toward
+`routed/R→1`). The plan's hypothesis ("partition converges to the monolith as `K→∞`") is **REFUTED**.
+
+**Why (structural, not a bug):** each co-cycled sub-step still **routes-before-draws** — it routes the FULL
+sheet `(film+d_held+rain·dt/K)`, then offers the soil only `film = min(d_routed, h_ref)` from the
+*post-route* water. So sub-cycling just refines the effective routing timestep, which is exactly the §10
+"finer dt → `routed/R→1`" route-first pathology. **The deeper constraint:** in the co-cycled structure the
+soil can only draw from `d_routed` (post-route), because strict held-store conservation needs
+`held = d_routed − film ≥ 0`, so the most infiltration-favoring *conservative* film is `min(d_routed,
+h_ref)` = route-first. Genuine simultaneity (the iterated split's midpoint, which gave +4–6 pp) requires
+offering the soil MORE than `d_routed` (the pre-route pond), i.e. a **signed/borrowed held** that repays
+next sub-step. **Key realization: the film offered to the soil is a FREE knob for GLOBAL conservation** —
+`Σ(film+held)·A = Σd_routed·A` holds for any `film` (the ledger is global; a transient local negative held
+repays next sub-step). So the exact-conservation STRUCTURE and the simultaneity FILM-RULE are **separable**.
+
+**⟹ Candidate B′ (next): keep the co-cycled exact-conservation structure, restore simultaneity via the
+MIDPOINT film** `film = min(0.5·(d_full + d_routed), h_ref)` (or a capacity-based rule) — a one-line change
+to `CoCycledCappedSplit.step`'s film computation, globally conservative by the above, expected to recover
+the iterated split's +4–6 pp. Then re-run the Task-4 K-convergence + slope-robustness gate. Spikes:
+`seq_href_cons_probe.py` (Task 1), `CoCycledCappedSplit` in `seq_href_iterated.py` + driver
+`seq_cocycled_gate.py` (Tasks 2–3). Committed 2026-06-25.
