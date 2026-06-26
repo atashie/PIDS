@@ -271,3 +271,48 @@ conservative B state (film-in-ψ, `d_held`, routing/outflow); smaller global dt 
 another one-pass flux partition will NOT fix this class of error. **Fallback if the iterate still needs a
 tuned `h_ref` or loses clay robustness: monolith hardening (path 2), NOT another explicit ordering
 variant.** Retract "B is the fix", NOT the capped-film + conservation machinery (reusable).
+
+---
+
+## 11. ITERATED-CAPPED split — structural fix CONFIRMED (direction); refinement pending (2026-06-25)
+
+Spiked the iterated-capped split (`scratch/seq_href_iterated.py`, class `IteratedCappedSplit`): an outer
+Picard on the CAPPED route⇄infiltrate to a per-step SIMULTANEOUS fixed point. The soil sees the MIDPOINT
+pond (avg of the pre- and post-routing un-infiltrated water, capped at `h_ref`), iterating the
+infiltration depth `I` (under-relaxed). Per step: `route(A−I)→d_routed+outflow`; `film =
+min(0.5·((A−I)+d_routed), h_ref)`; Richards draws `I_new = film − film_rem`; relax `I`; repeat. At
+`h_ref`=2 mm, `dt_max`=0.004:
+
+| case | route-first | iterated-capped (midpoint) | monolith |
+|---|---|---|---|
+| b1_steep (S=0.10) | 0.81 (+26 pp) | **0.611 (+6.0 pp)** | 0.551 |
+| b1_base (S=0.03) | 0.546 (+0 pp) | 0.496 (−5.1 pp) | 0.547 |
+
+**The structural steep failure is FIXED: +26 pp → +6 pp, and the error is now BALANCED (both within
+±5–6 pp) instead of one catastrophic direction → SIMULTANEITY is the right idea, confirmed.** Picard avg
+2.3–3.0 iters/step (8-iter cap hit on some steps). Runtime ~8–12 min/case (several Richards solves/step).
+
+**Two issues pending — NOT a clean closure yet:**
+1. **Conservation NOT clean (the harder problem).** Raw run: `bal/rain` ~0.5 % (the in-loop routing used
+   the UNDER-RELAXED `I` but the soil drew `I_new`). The applied fix — a final re-route with `I_final =
+   film − film_rem` — was **TESTED on b1_steep** (`seq_href_iter_verify.py`): it **reduced** the imbalance
+   to **`bal/rain = 1.68e-3`** (and nudged the partition 0.611→**0.593**, +6→+4.2 pp) but did **NOT** close
+   it to 1e-11. **Why:** `I_final = film − film_rem` (vertex reconstruction) does NOT exactly equal the
+   actual ∫θ soil gain, and the Picard hit its 8-iter cap (the in-loop route↔draw never fully consistent).
+   **⟹ the iterated split needs a CLEANER conservation STRUCTURE — close the ledger structurally like B
+   (∫θ + ∫max(ψ,0) + Σd_held telescoping) rather than reconstructing `I` and subtracting it before
+   routing. This is real next-session work, not a one-line patch.** (Route-first B was 1e-11 precisely
+   because it never reconstructed `I`.)
+2. **Residual ±4–6 pp:** the Picard hit its 8-iter cap (not fully converged), the MIDPOINT is an
+   APPROXIMATION of true simultaneity, and `h_ref` is untuned. Next: tighten convergence (more iters /
+   better relaxation); try a sharper simultaneity scheme (sub-cycled co-routing within the iterate);
+   sweep `h_ref`; re-check across slope/mesh + clay-V robustness.
+
+**VERDICT: the iterated-capped split is a VIABLE DIRECTION — it removes the route-first STRUCTURAL defect
+(the headline win: steep +26 → +4–6 pp, error now balanced) and reuses B's machinery. But it is NOT yet a
+clean closure: the partition residual is ±4–6 pp AND conservation is only ~2e-3 (the re-route fix helped
+4.5e-3→1.68e-3 but the I-reconstruction is structurally lossy). Next session = (i) re-architect the
+conservation to close structurally, (ii) tighten convergence + sweep h_ref to shrink the residual, then
+(iii) clay-V + slope/mesh re-check. Fallback if it stalls: monolith hardening (§10 path 2).** Spike
+`seq_href_iterated.py` (the re-route fix is in; conservation still ~2e-3 — see above). Verified figures
+from `seq_href_iter_verify.py` (b1_steep 0.593 / bal 1.68e-3).
