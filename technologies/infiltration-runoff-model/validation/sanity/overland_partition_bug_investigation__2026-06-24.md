@@ -666,3 +666,36 @@ resolved sorptive front)? `q_pot=kirchhoff/ell_c` is a sub-grid film closure wit
 answer; the mm-scale physical infiltration interface argues for the fine value. NEXT = a MESH-CONVERGENCE
 study (switching BC + monolith at coarse/medium/fine surface — where do they converge?) + reconcile with the
 ParFlow benchmark resolution. Spike `seq_switching_bc.py`; commit `90116ab`.
+
+---
+
+## 19. SORPTIVITY benchmark — direction confirmed, q_pot claim TEMPERED (Codex-reviewed, 2026-06-26)
+
+1-D dry-column ponded-infiltration benchmark (`scratch/seq_sorptivity_benchmark.py`): cumulative `I(t)` vs
+a refined Richards reference + analytical Green-Ampt. **loam (ratio to refined nz=240):**
+
+| scheme | t=0.002 | 0.01 | 0.08 (storm) |
+|---|---|---|---|
+| switch 2 mm-skin (ψ=0) | 1.01 | 1.01 | **0.99** |
+| switch coarse-8 (ψ=0) | 2.10 | 1.13 | 0.95 |
+| q_pot coarse-8 (surrogate) | 0.25 | 0.48 | **0.57** |
+| Green-Ampt (analytic) | 1.08 | 1.10 | 1.13 |
+
+**Confirmed (Codex-upheld):** the switching-BC ψ=0 on a 2 mm skin **reproduces the resolved sorptive uptake
+essentially exactly** (0.99–1.01 across the curve) — surface refinement → correct sorptivity. The coarse
+ψ=0 early overshoot (2.10) is a top-cell artifact, cured by the skin.
+
+**⚠ TEMPERED (Codex's load-bearing hit):** the benchmark's `q_pot` is a COARSE SURROGATE — a hard Neumann
+flux from the MEAN top head with FIXED `h_ref=1mm` + coarse `ell_c=62.5mm` (→ `Ks·h_ref/ell_c≈1.6%·Ks` as
+ψ→0), NOT the real monolith's co-solved `kirchhoff(ψ, actual d)`. **So "q_pot captures only 57% of
+sorptivity" is RETRACTED as a monolith claim** — it holds only for this coarse fixed-`h_ref` surrogate.
+Also: nz=240 is ASSERTED not demonstrated-converged; the metric is lumped `∫θ`; the clay run is
+mis-specified (same `ψ_i=−0.4` ≠ dry clay — `dtheta=0.006`, storage-limited). Full review:
+`validation/sanity/overland_sorptivity_codex_review__2026-06-26.md`.
+
+**⟹ NEXT (Codex's decisive test): benchmark the REAL `CoupledProblem` (monolith) with an `ell_c` sweep**
+(coarse half-cell → ~1 mm) vs a converged ponded-Dirichlet curve, consistent `∫θ` postprocess + nz
+convergence; re-spec clay with a soil-matched dry `ψ_i`. That separates CLOSURE error from MESH error and
+says whether the q_pot gap is a coarse-film artifact or a true closure failure — the decision-grade test.
+The §18 DIRECTION (resolved ψ=0 = correct sorptivity; coarse film throttles) stands. Spike
+`seq_sorptivity_benchmark.py`; commit `c122651`.
