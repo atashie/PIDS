@@ -417,3 +417,50 @@ unstable with the current (default-solver) Richards step. **So B′ is: exact + 
 cf. [[pids-fem-saturated-wall-linesearch]]) → exact + accurate; (3) test whether the COLLAPSE is the
 negative-held BORROW (vs pure saturation) and limit it; (4) monolith hardening fallback (§10 path 2).
 Driver `seq_cocycled_gate.py` (film_w knob); outputs `scratch/_cocy_*.txt`.
+
+---
+
+## 13. ★ THIN-SKIN FIX — the tradeoff RESOLVED (Arik's idea, 2026-06-26)
+
+**Arik's diagnosis + fix (CORRECT).** The w≈0.7 collapse is a THICK-CELL artifact: the uniform mesh's
+~125 mm top cell, under a ponded film over DRY soil (ψ≈−0.4 m), sees a gradient ~(film−ψ_cell)/half-cell
+that drives a huge transient infiltration which fills the cell's large storage, then sharply saturates
+mid-storm → Newton stiffness → dt-collapse (the monolith dodges this via its `q_pot=∫K dψ/ell_c` cap; the
+co-cycled has none). **Fix: make the surface a THIN SKIN** so it saturates immediately and infiltration is
+throttled by PERCOLATION into the (dry, low-K) subsoil, not the ponding head — the CATHY/HYDRUS
+saturated-surface acceptance, realized through the MESH (physical, adaptive), not a frozen cap.
+
+**Implementation:** `scratch/seq_cocycled_skin.py::make_graded_box` — a uniform tetra box with z warped
+`z = Lz·(1−(1−s)^p)` to cluster nodes at the top (monotonic → no tet inversion). `p=2.5, nz=12` → a
+**2.0 mm top skin** (vs 125 mm uniform), 9.3 mm second cell, grading to a coarse subsoil.
+
+**Result — the FULL WIN (b1, `K=6`, `h_ref=2 mm`, `dt_max=0.004`).** On the 2 mm skin, EVERY run is STABLE
+(ns≈116, the collapse is GONE across the whole w-range) and conserves `~1.0–1.3e-11`. The partition is a
+smooth monotone function of w, and a SINGLE `w=0.7` lands BOTH slopes within ±3 pp:
+
+| w (2 mm skin) | b1_base (0.5470) | b1_steep (0.5508) | stable |
+|---|---|---|---|
+| 0.5 | — | 0.6524 (+10.2) | ✅ |
+| 0.6 | 0.5783 (+3.1) | 0.6121 (+6.1) | ✅ |
+| **0.7** | **0.5437 (−0.3)** | **0.5776 (+2.7)** | ✅ |
+| 0.8 | — | 0.5474 (−0.3) | ✅ |
+
+Contrast: on the UNIFORM mesh w=0.7 COLLAPSED (ns=22); on the skin it runs to completion (ns=116) AND is
+accurate. **⟹ EXACT conservation + monolith-accurate (±3 pp) + STABLE + SLOPE-ROBUST + a single film
+weight — all at once.** The accuracy–stability tradeoff (§12) is RESOLVED by the thin skin.
+
+**Caveat — the MONOLITH is NOT a valid same-mesh target on the skin:** galerkin monolith on the 2 mm skin
+gives routed/R **0.254** (vs uniform 0.551) because its `q_pot=∫K dψ/ell_c` cap divides by the ~1 mm cell
+half-height → the cap ~60× too large → stops biting → over-infiltrates. So the monolith's partition is
+ell_c-(mesh-)dependent; the **co-cycled is NOT** (w=0.5 was 0.6524 on the skin vs 0.6531 uniform — the
+skin changes STABILITY at high w, not the low-w partition). The true target stays the uniform 0.551.
+
+**Mechanism confirmed:** the skin's effect is on STABILITY in the force-feeding (high-w) regime — at w=0.5
+the thin offered film never stresses saturation so the skin is a no-op (partition unchanged); at w≥0.7 the
+thick film WOULD force-feed, but the 2 mm skin saturates in ~one step (tiny storage) and the infiltration
+becomes a smooth steady percolation into the subsoil instead of a sharp saturation front → Newton stays
+healthy. Exactly Arik's "infiltration limited to subsoil percolation once the skin saturates."
+
+**Open validation (running):** skin-ROBUSTNESS (does w=0.7's partition hold across skin thickness p=2.0
+[6.9 mm] / p=3.0 [0.58 mm], or is it mesh-coupled?); clay-V robustness on the skin (the stiff case).
+Spike `seq_cocycled_skin.py` (`cocy`/`mono`/`clayv` modes); outputs `scratch/_skin_*.txt`.
