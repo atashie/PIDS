@@ -537,3 +537,32 @@ skin). This is the genuine infiltration-closure research §9–§14 kept circlin
 much better base (exact conservation + a stable structure). Alternatives: scope to loam-like soils +
 document the envelope; or harden the monolith's stiff-case dt-collapse (it is already soil-accurate, §10
 path-2). Spikes `seq_cocycled_sweep.py`; outputs `scratch/_sw_*.txt`.
+
+---
+
+## 15. OPTION A — adaptive q_pot infiltration cap: prototyped + Codex-reviewed (2026-06-26)
+
+Prototype `film_mode="qpot"` on `CoCycledCappedSplit` (offer `film = min(d_routed, q_pot·hsub)`,
+`q_pot = max(kirchhoff(min(ψ,0), h_sat),0)/ell_c`, adaptive per sub-step, UNIFORM mesh, no `w`/skin).
+**Full record + the verbatim Codex review: `validation/sanity/overland_qpot_codex_review__2026-06-26.md`.**
+
+**Empirical (h_sat=2 mm):** loam 0.8744 (**+32.7 pp**), sand 0.6719 (**−2.2 pp** ✅ + STABLE, where `w`
+collapsed), silt 0.9192 (**+15.2 pp**); all exact (`1e-11`–`1e-13`). The cap OVER-ROUTES loam/silt, NAILS
+sand, and FIXES sand stability. `w` (over-infiltrate) and the cap (over-route) BRACKET the monolith on
+every soil; a single `h_sat` does NOT generalize (errors scatter +33/−2/+15).
+
+**Codex verdict:** conservation SOUND (no leak), force-feed STRUCTURALLY avoided (pond-in-ψ self-limiting,
+not §9/V2 hard-Neumann), genuinely sub-step-adaptive — **but a SURROGATE, not the monolith's law:** it
+uses a fixed `h_sat` instead of the actual co-solved sheet depth `d`, clamps ψ>0 to 0, caps offered-depth
+not flux, is sub-step-FROZEN (not co-solved), and reintroduces the `ell_c` mesh knob. Codex rec: if it
+misses soils, do NOT add another global knob — make the cap MONOLITH-FAITHFUL (actual `d` + a small inner
+q_pot update); also tighten the `ell_c` autodetect to match the monolith + fix the `max_pond` diagnostic
+(samples pre-solve only).
+
+**⟹ Verdict: option A is structurally sound + fixes sand stability, but the fixed-`h_sat`/`ell_c` surrogate
+does NOT replicate the monolith's co-solved acceptance → no single-knob soil-generality (the §9 circular
+closure: the right kirchhoff sheet depth is the THIN co-solved `d` the sequential scheme lacks). FORK
+(Arik): (A′) refine toward monolith-faithfulness (actual `d` + inner q_pot update — a step toward a surface
+co-solve); or (C) harden the already-soil-accurate monolith. The bracketing + the sand-stability win say a
+faithful cap is reachable, but it converges toward "a mini surface co-solve," narrowing the gap to option
+C.** Conservation remains DONE + universal throughout.
