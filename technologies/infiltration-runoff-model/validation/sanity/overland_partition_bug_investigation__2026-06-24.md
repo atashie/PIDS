@@ -703,3 +703,37 @@ convergence; re-spec clay with a soil-matched dry `ψ_i`. That separates CLOSURE
 says whether the q_pot gap is a coarse-film artifact or a true closure failure — the decision-grade test.
 The §18 DIRECTION (resolved ψ=0 = correct sorptivity; coarse film throttles) stands. Spike
 `seq_sorptivity_benchmark.py`; commit `c122651`.
+
+---
+
+## 20. ⚠ "DECISIVE coarse-film artifact" — MIS-FRAMED, RETRACTED as proven (3rd Codex review, 2026-06-26)
+
+The §19-NEXT test (`scratch/seq_sorptivity_real.py`, real `CoupledProblem` `ell_c` sweep, commit `a58dfec`)
+gave: loam q_pot infiltration 52%→**96%** of the resolved sorptive uptake as `ell_c` 62→1 mm, and I
+concluded "the q_pot gap is a COARSE-FILM ARTIFACT, scheme choice is settled, the real question is surface
+resolution." **A 3rd skeptical Codex review (`validation/sanity/overland_decisive_codex_review__2026-06-26.md`)
+found this MIS-FRAMED — RETRACTED as proven.** The valid hits:
+- **The `ell_c` sweep is a FREE-PARAMETER sweep on a FIXED nz=8 mesh, NOT a resolution test.** `ell_c`
+  is *meant* to be `dz_top/2` (`coupling.py:191-209`); sweeping it to 1 mm on a 125 mm cell just "reduces
+  the film resistance by hand." The "96%" compares a coarse-mesh monolith (nz=8) to a fine-mesh Dirichlet
+  (nz=240) — **two discretizations + two top-BC problems that can cross by error cancellation.**
+- Early ratios (17/30%) are **contaminated by finite ponding onset** (un-infiltrated water is STORAGE not
+  runoff; no `d(t)` reported). ψ=0 Dirichlet assumes instant ponding (an upper envelope, not the storm BC).
+- Dry IC inconsistent (docstring says S_e-matched; code uses fixed −3 m) AND rain scaled by Ks → cross-soil
+  claims confounded twice. **The switching BC is NOT RUN here** — "switch BC ≈ refined monolith" was
+  stitched from the separate §18 setup, not shown in this test.
+- **#7 (the deep one): even if it IS a resolution artifact, mm-scale surface cells are NOT field-scale
+  tractable → the engineering answer is a MESH-OBJECTIVE SUBGRID infiltration closure (corrected q_pot /
+  Green-Ampt capacity — the GSSHA/tRIBS family), not brute refinement.** And if ParFlow ran the same coarse
+  vertical resolution, 0.547 is "the truth of that under-resolved benchmark," not continuum truth.
+
+**⟹ What SURVIVES: the real monolith is strongly `ell_c`-sensitive → 0.547 very likely carries a large
+coarse-film/coarse-cell component (a HYPOTHESIS, not proven).** What is RETRACTED: "proven coarse-film
+artifact", "scheme choice settled", "switch BC = refined monolith at resolution".
+
+**⟹ THE CLEAN TEST (Codex-specified, building now):** real `CoupledProblem` on an **nz ladder {8,16,32,64}
+with `ell_c` LOCKED to `dz_top/2`** (mesh + film refine TOGETHER), compared ON EACH SAME MESH to a
+RAIN-DRIVEN `add_ponding_bc` column (same forcing), with consistent `∫θ`, `d(t)`, ponding time, and
+solver-health diagnostics. If the monolith collapses toward the ponding curve as dz→0 → genuine
+resolution artifact; if not → the `ell_c=1mm` result was parameter tuning. Spike `seq_sorptivity_real.py`
+(to be revised); review `overland_decisive_codex_review__2026-06-26.md`.
