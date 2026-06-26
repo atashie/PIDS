@@ -681,9 +681,13 @@ a refined Richards reference + analytical Green-Ampt. **loam (ratio to refined n
 | q_pot coarse-8 (surrogate) | 0.25 | 0.48 | **0.57** |
 | Green-Ampt (analytic) | 1.08 | 1.10 | 1.13 |
 
-**Confirmed (Codex-upheld):** the switching-BC ψ=0 on a 2 mm skin **reproduces the resolved sorptive uptake
-essentially exactly** (0.99–1.01 across the curve) — surface refinement → correct sorptivity. The coarse
-ψ=0 early overshoot (2.10) is a top-cell artifact, cured by the skin.
+**Confirmed (Codex-upheld), BOTH soils:** the switching-BC ψ=0 on a 2 mm skin **reproduces the resolved
+sorptive uptake essentially exactly** — loam 0.99–1.01, **clay 1.00–1.02** across the curve — surface
+refinement → correct sorptivity. The coarse ψ=0 early overshoot is a top-cell artifact, cured by the skin.
+The coarse q_pot surrogate under-captures on BOTH (loam 0.57, clay 0.65 at storm scale). *Clay absolute
+uptake is small (4.9 mm vs loam 32 mm) because at ψ=−0.4 this clay is barely dry (`dtheta=0.006`) — so the
+SCHEME COMPARISON is robust but clay is NOT a fair "dry clay" test (Codex caveat 3 stands; needs a
+soil-matched dry `ψ_i`).*
 
 **⚠ TEMPERED (Codex's load-bearing hit):** the benchmark's `q_pot` is a COARSE SURROGATE — a hard Neumann
 flux from the MEAN top head with FIXED `h_ref=1mm` + coarse `ell_c=62.5mm` (→ `Ks·h_ref/ell_c≈1.6%·Ks` as
