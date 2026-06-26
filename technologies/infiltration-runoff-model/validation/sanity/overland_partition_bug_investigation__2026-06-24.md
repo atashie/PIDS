@@ -461,6 +461,26 @@ thick film WOULD force-feed, but the 2 mm skin saturates in ~one step (tiny stor
 becomes a smooth steady percolation into the subsoil instead of a sharp saturation front → Newton stays
 healthy. Exactly Arik's "infiltration limited to subsoil percolation once the skin saturates."
 
-**Open validation (running):** skin-ROBUSTNESS (does w=0.7's partition hold across skin thickness p=2.0
-[6.9 mm] / p=3.0 [0.58 mm], or is it mesh-coupled?); clay-V robustness on the skin (the stiff case).
-Spike `seq_cocycled_skin.py` (`cocy`/`mono`/`clayv` modes); outputs `scratch/_skin_*.txt`.
+**Validation COMPLETE — all gates PASS:**
+- **Skin-thickness ROBUST (decisive):** steep w=0.7 across a 12× skin range — p=2.0/2.5/3.0 → top cell
+  6.94/2.00/0.58 mm → routed/R **0.5774/0.5776/0.5776** (a 0.02 pp span), all stable, all `~1e-12`.
+  **⟹ (w, skin) are NOT coupled: `w` sets the PARTITION; the skin only provides STABILITY.** Unlike the
+  monolith (partition swung 0.55→0.25 with the skin via `ell_c`), the co-cycled is `ell_c`-free, so any
+  sufficiently-thin skin works and the partition is mesh-independent. This was the key generalization risk
+  (the §10 non-generalization) — and it is RESOLVED: the scheme has ONE partition knob (`w`), not two.
+- **Clay-V ROBUST:** the stiff convergent clay-V (which the monolith dt-collapses on) COMPLETES at w=0.7
+  on the 2 mm skin (`ns=23, t=0.400`), conserves **8.16e-13**; routed/R 0.923 (physically correct — clay
+  `Ks=0.048` runs most off; no monolith target since it collapses, the gate is completes+conserves). The
+  scheme RETAINS the sequential split's robustness raison d'être WHILE being accurate + exactly conservative.
+
+**★★ FINAL VERDICT — the partition bug is FIXED.** `CoCycledCappedSplit` (co-cycled sub-stepping, no `I`
+reconstruction, weighted film `w`) on a z-graded THIN-SKIN mesh delivers, all at once: **(1) EXACT
+conservation** (`~1e-11`–`1e-13`, falsification-verified), **(2) monolith-accurate partition** (b1 base
+−0.3 pp, steep +2.7 pp at `w=0.7`), **(3) STABLE** (no collapse), **(4) SLOPE-robust** (single `w`),
+**(5) SKIN/mesh-robust** (partition skin-invariant), **(6) clay-V robust** (survives where the monolith
+fails). Knobs: `w≈0.7` (the partition/film weight, the one real parameter), `K=6` (sub-steps), a thin top
+skin (stability only). REMAINING scope before production: broader soil/storm/slope sweep (only b1 loam +
+clay-V tested; `w` may need a wider check), `b1_coarse`/mesh-convergence, then promote
+`CoCycledCappedSplit` + `make_graded_box` into `pids_forward/physics/` with TDD (a sibling option to the
+galerkin/upwind/monolith/sequential schemes). Spike `seq_cocycled_skin.py` (`cocy`/`mono`/`clayv`);
+outputs `scratch/_skin_*.txt`.
