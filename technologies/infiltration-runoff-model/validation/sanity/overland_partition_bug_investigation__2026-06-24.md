@@ -955,3 +955,42 @@ the robust fix is a closure that makes the coarse cell mesh-objective REGARDLESS
 the geometric driver (slope vs lateral-res vs aspect — more swaps) OR accept + build. Spikes: `PARTITION_STORM`
 / `PARTITION_WT` in `seq_partition_topref.py`, `B5_NOGHB` in `seq_b5_inhouse_refine.py`; outputs
 `_topref_base_{longstorm,wt}_p{10,25}.txt`, `_b5noghb_nz{8,32}.txt`.
+
+---
+
+## 26. ★★ TASK 3a — THIN-SKIN split experiment: GRADED skin is the (near-free) fix; a SINGLE skin is partial (2026-06-27)
+
+Per Arik (option a + a split design): on b1 (8×5×1, 30×20 lateral, S=0.03), ONE fixed storm (rain=0.5,
+0.08 d), 3 soils × 4 vertical meshes (lateral FIXED). **routed/R:**
+
+| soil | coarse (uniform 125 mm, nz8) | GRADED (nz8, p2.5, top 2 mm, coarsens down) | SKIN (uniform 125 mm + ONE 2 mm top split, nz9) | ref (graded p3.0, converged) |
+|---|---|---|---|---|
+| **loam** | 0.547 | **0.266** | **0.312** | 0.264 |
+| **sand** | 0.000 | 0.000 | 0.000 | 0.000 |
+| **clay** | 0.909 | 0.873 | 0.872 | 0.872 |
+
+**★ FINDINGS:**
+1. **The GRADED thin skin recovers the converged partition for ALL soils** (loam 0.266 ≈ ref 0.264; sand 0;
+   clay 0.873 ≈ 0.872), at the SAME cell count as coarse (nz=8, just warped toward the surface) — a
+   ~FREE, mesh-objective fix. **⟹ grading the vertical mesh toward the surface IS the production fix; no
+   Green-Ampt closure needed.**
+2. **A SINGLE thin skin is PARTIAL on loam:** 0.547 → 0.312 removes ~83% of the coarse→converged error, but
+   leaves a ~5 pp residual (vs graded's ~0). It FULLY fixes clay (0.872) and sand (0). **Why loam differs:**
+   the single skin resolves only the top 2 mm then JUMPS to a 123 mm cell; loam's sorptive front advances
+   BELOW the 2 mm skin into that coarse cell and is under-resolved there. The GRADED transition (2→5→19→44 mm…)
+   resolves the front AS IT ADVANCES. ⟹ it's not the top-cell thickness (the skin's 2 mm is even THINNER
+   than graded's 5.5 mm) — it's resolving the front DEPTH, which needs several coarsening cells, not one cliff.
+3. **Soil-dependence of the sensitivity itself:** at this storm only loam is strongly mesh-sensitive
+   (sand all-infiltrates rain<Ks → 0 runoff; clay near-saturated/storage-limited → 0.91 runoff, only −3.7 pp
+   mesh effect). So the skin matters most where infiltration is SORPTIVE-limited (loam-like) — and is
+   harmless where it isn't.
+
+**⟹ PRODUCTION RECOMMENDATION (option a CONFIRMED): use a z-GRADED mesh (thin ~2 mm surface skin + a few
+coarsening transition cells), NOT a single skin and NOT brute uniform refinement.** It is mesh-objective
+(recovers the converged runoff/infiltration split across soils), essentially FREE (same vertical cell count
+as the coarse mesh, just redistributed), and simple (a meshing choice, no new closure). The Green-Ampt
+subgrid closure (Task 3 original) is the fallback for FULLY-coarse meshes where grading the surface is not
+an option. Caveats: tested on the b1 geometry (the sensitive case) across 3 soils + one fixed storm; the
+deep soil is coarsened by grading (fine for the surface partition; watch if deep water-table dynamics also
+needed) and very thin cells can stiffen the solver (clean here). Spike `scratch/seq_skin_split.py`
+(`make_uniform_plus_skin` V2); outputs `_skinsplit_{soil}_{coarse,graded,skin,ref}.txt`.
