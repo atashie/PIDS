@@ -850,3 +850,25 @@ partition.** Remaining: (a) UNIFORM-nz cross-check (running — the grading disc
 for the converged value; (c) reconcile ParFlow B5 at fine dz; (d) the subgrid closure. Spike
 `seq_partition_topref.py` (+ `_topref_{base,steep}_p{15,20,25}.txt`); commit `9f5603d`; review
 `overland_3d_codex_review__2026-06-27.md`.
+
+---
+
+## 23. TASK 1 — the partition is CONVERGED at routed/R* ≈ 0.265 (2026-06-27)
+
+Plan `docs/plans/2026-06-27-overland-partition-resolution-closure.md` Task 1: two finer graded rungs
+(p=2.75 top ~3.3 mm, p=3.0 top ~2.0 mm, ell_c→0.98 mm) on b1_base + b1_steep. Full graded ladder
+(routed/R):
+
+| top cell (p) | b1_base | b1_steep |
+|---|---|---|
+| 5.5 mm (2.5) | 0.266 | 0.269 |
+| 3.3 mm (2.75) | 0.2628 | 0.2656 |
+| 2.0 mm (3.0) | 0.2644 | 0.2673 |
+
+**GATE PASS:** `routed/R(p3.0) − routed/R(p2.75)` = **+0.16 pp (base), +0.17 pp (steep)** — both ≪ 1.5 pp.
+**⟹ CONVERGED: routed/R\* ≈ 0.265** (base 0.264, steep 0.267 — slope-insensitive holds at sub-mm cells),
+clean solves (ns 47-63, clip ≤ 1e-16). It PLATEAUS at ~0.265 — it does NOT keep dropping to the 1-D
+no-film ~0.21 (the 3-D routing keeps the partition a bit higher than the 1-D column). **The validated
+mesh-converged partition for the b1 loam storm is ~0.265 runoff (~73% infiltration), vs the coarse-mesh
+0.547 — runoff is roughly HALVED at convergence.** This replaces 0.547 as the reference target. The §22
+"at least halved, still decreasing" is now SETTLED at ~0.265.
