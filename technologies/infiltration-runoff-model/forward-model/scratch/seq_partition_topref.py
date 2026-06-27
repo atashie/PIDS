@@ -32,6 +32,8 @@ import ufl
 from dolfinx import fem
 from mpi4py import MPI
 
+from dolfinx import mesh as dmesh
+
 from pids_forward.physics.constitutive import VanGenuchten
 from pids_forward.physics.coupling import CoupledProblem
 from scratch.seq_cocycled_skin import make_graded_box
@@ -49,11 +51,16 @@ def top_cell_mm(Lz, nz, p):
     return Lz * (1.0 / nz) ** p * 1000.0
 
 
-def run(case_name, p, nz=8, dt_max=0.02):
+def run(case_name, p, nz=8, dt_max=0.02, uniform=False):
     c = B1
     case = CASES[case_name]
     soil = VanGenuchten(**LOAM)
-    msh = make_graded_box(c["nx"], c["ny"], nz, c["Lx"], c["Ly"], c["Lz"], p=p)
+    if uniform:   # UNIFORM nz (refine the WHOLE column) -- Codex's grading-confound cross-check
+        msh = dmesh.create_box(COMM, [np.array([0.0, 0.0, 0.0]),
+                               np.array([c["Lx"], c["Ly"], c["Lz"]])],
+                               [c["nx"], c["ny"], nz], cell_type=dmesh.CellType.tetrahedron)
+    else:
+        msh = make_graded_box(c["nx"], c["ny"], nz, c["Lx"], c["Ly"], c["Lz"], p=p)
     mono = CoupledProblem(msh, soil, n_man=c["NMAN"], overland_scheme="galerkin")  # ell_c AUTO = top dz/2
     mono.set_initial_condition(lambda x: c["PSI_I"] + 0.0 * x[0], d_value=0.0)
     mono.set_topography(lambda x: case["S0"] * x[1])
@@ -80,11 +87,27 @@ def run(case_name, p, nz=8, dt_max=0.02):
 
 if __name__ == "__main__":
     np.set_printoptions(precision=4, suppress=True)
+    # graded:  python seq_partition_topref.py <case> <p>
+    # uniform: python seq_partition_topref.py <case> uniform <nz>
     case_name = sys.argv[1] if len(sys.argv) > 1 else "b1_base"
+    case = CASES[case_name]
+    if len(sys.argv) > 2 and sys.argv[2] == "uniform":
+        nz = int(sys.argv[3]) if len(sys.argv) > 3 else 32
+        r = run(case_name, 1.0, nz=nz, uniform=True)
+        tc = B1["Lz"] / nz * 1000.0
+        print("#" * 96)
+        print(f"3-D TOP-REFINEMENT [UNIFORM nz={nz}] -- {case_name} (S={case['S0']}) -> cell {tc:.2f}mm "
+              f"(grading-confound cross-check); lateral 30x20 FIXED")
+        print(f"  routed/R = {r['routed']:.4f}  (uniform-nz8 target {case['target']:.4f}; "
+              f"gap {(r['routed']-case['target'])*100:+.1f}pp)")
+        print(f"  infil/R  = {r['infil']:.4f}   peak_MEAN_sheet = {r['peak_sheet']*1000:.3f}mm   ell_c = "
+              f"{r['ell_c']*1000:.2f}mm")
+        print(f"  ok={r['ok']} ns={r['ns']} clip={r['clip']:.1e} wall={r['wall']:.0f}s eff={r['eff']}")
+        print("#" * 96, flush=True)
+        sys.exit(0)
     p = float(sys.argv[2]) if len(sys.argv) > 2 else 1.0
     tc = top_cell_mm(B1["Lz"], 8, p)
     r = run(case_name, p)
-    case = CASES[case_name]
     print("#" * 96)
     print(f"3-D TOP-REFINEMENT -- {case_name} (S={case['S0']}), z-grade p={p} -> top cell {tc:.2f}mm "
           f"(uniform=125mm); lateral 30x20 FIXED")

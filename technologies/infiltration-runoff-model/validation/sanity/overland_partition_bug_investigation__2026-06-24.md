@@ -804,29 +804,39 @@ top-cell half-height). Harness validated: uniform p=1.0 reproduces routed/R = **
 | 16 mm (7.8) | 0.287 | 0.290 |
 | 5.5 mm (2.8) | **0.266** | **0.269** |
 
-**★★★ VERDICT — the 1-D sorptivity story CARRIES to the 3-D routed partition. The "0.547" is a
-COARSE-RESOLUTION ARTIFACT, confirmed on the actual quantity (routed/R, with routing).** Three findings:
-1. **routed/R drops MONOTONICALLY 0.547 → 0.266** (−28 pp, runoff more than HALVED) as the top cell refines
-   125 → 5.5 mm — on the REAL routed case, all clean (clip ~1e-17). The 1-D→3-D leap §21 couldn't make is
-   now DIRECTLY shown: the partition IS driven by the vertical surface-exchange resolution.
-2. **The resolved partition is SLOPE-INSENSITIVE** — base & steep converge to the SAME ~0.27 (they were
-   0.547/0.551 at coarse). This is exactly Hortonian physics (partition ≈ (rain−Ks)/rain, slope-independent)
-   and what the coarse mesh got WRONG — a strong INDEPENDENT confirmation the collapse is physical, not
-   numerical. (It also retro-explains §10's "route-first over-routes on steep / monolith slope-insensitive":
-   the monolith's slope-insensitivity was right; its ABSOLUTE 0.55 was just under-resolved.)
-3. **Converges to ~0.27** (still inching 0.287→0.266 at 5.5 mm; near but not fully converged) → the true
-   loam runoff coefficient for this storm ≈ **27%, not 55%**. The coarse mesh DOUBLES runoff by
-   under-capturing sorptive infiltration. (Caveat: Codex's "deep-pond optimism" was about the 1-D column;
-   here the real routed sheet is THIN [peak ≤0.37 mm] and routed/R STILL collapses — so the effect is NOT a
-   deep-pond artifact; if anything the thin routed sheet shows it more honestly.)
+**★★ VERDICT (TEMPERED per the 5th Codex review `overland_3d_codex_review__2026-06-27.md` — the collapse is
+REAL + NOT unsound, but 3 claims softened):**
+1. **routed/R drops MONOTONICALLY 0.547 → 0.266** (−28 pp, runoff at least HALVED) as the top cell refines
+   125 → 5.5 mm — on the REAL routed case, clean solves (41-51 steps, limiter negligible). For p=2.5 the top
+   4 cells span ~17.7 cm so the ~17 cm wetting front is still mostly INSIDE the refined band → NOT a pure
+   deep-cell artifact; matches the independent 1-D uniform mesh-conv (§21). **⟹ ENOUGH TO REJECT 0.547 as a
+   mesh-objective validation target + reopen the sequential-vs-monolith framing — the 1-D→3-D leap §21
+   couldn't make is now directly shown: the partition IS sensitive to vertical surface-exchange resolution.**
+2. **The resolved partition is SLOPE-INSENSITIVE** (base & steep track: 0.364/0.367, 0.287/0.290,
+   0.266/0.269) — SUPPORTING evidence (consistent with sorptivity-controlled vertical partition, not slope),
+   though not independent proof. NB 0.27 ≠ (rain−Ks)/rain=0.5: 0.27 means MORE infiltration than steady
+   Hortonian (~29 mm infiltrated vs Ks·storm=20 mm; the extra ~9 mm IS the short-storm sorptivity).
+3. **NOT yet converged: "at least halved vs 0.547, still decreasing"** — p=2.0→2.5 still moved 0.287→0.266
+   (−2.1 pp); the evidence supports "NOT 0.55" far more strongly than "definitely 0.27". (The 1-D no-film
+   limit was ~0.21 §18, so it may keep dropping.) peak MEAN sheet ≤0.37 mm (surface_water/top_area, not a
+   max local depth); the ~0.4% `1−(infil+routed)` is plausibly final surface storage + lumped-vs-deg8
+   postprocess, NOT a proven-tight closure (clip≤1e-16 is only the limiter adjustment, not global balance).
 
-**⟹ THE WHOLE INVESTIGATION RE-FRAMED.** The original "bug" (§1: sequential over-infiltrates vs the
-monolith's 0.55) had the COMPARISON BACKWARDS: the sequential schemes were CLOSER to the mesh-converged
-truth (~0.27) and the monolith's 0.547 was the OUTLIER (coarse-`ell_c` under-resolution). The ParFlow
-"validation" of ~0.55 (B5) was a CODE-TO-CODE match AT A SHARED COARSE VERTICAL RESOLUTION, not continuum
-truth. **NEITHER production scheme is mesh-objective; both need a subgrid infiltration-capacity closure
-(Green-Ampt / Smith-Parlange / adaptive `ell_eff`) so the COARSE (field-scale-tractable) cell delivers the
-resolved ~0.27 sorptive partition.** Remaining: (a) confirm ~0.27 is converged (one finer rung); (b)
-re-examine whether ParFlow at fine vertical resolution also gives ~0.27 (reconcile the B5 benchmark); (c)
-build the subgrid capacity closure. Spike `seq_partition_topref.py` (+ `_topref_{base,steep}_p{15,20,25}.txt`);
-commit pending. Pending external (Codex) review of this verdict.
+**⚠ TWO OPEN CONFOUNDS (Codex, being resolved):** (i) the grading warps ALL z-levels (top-biased
+redistribution, deep cells coarsen) → it does NOT cleanly separate top-interface from bulk-Richards
+resolution. **The decisive cross-check = a UNIFORM-nz ladder (nz=64 matches graded p=2.0's ell_c=7.8 mm);
+if it gives ~0.29 the grading confound dies — RUNNING NOW.** (ii) the ParFlow inference is NOT yet earned.
+
+**⟹ THE RE-FRAME (now appropriately hedged).** The original "bug" (§1: sequential over-infiltrates vs the
+monolith 0.55) is NO LONGER SECURE: the monolith benchmark itself moves massively under near-surface
+refinement, so 0.547 is not a mesh-objective truth. **NOT yet established:** that the sequential ~0.40 was
+right (could be luck/different error on the same coarse mesh), nor — as FACT — that ParFlow is
+under-resolved. Defensible on ParFlow: **B5 no longer validates 0.55 as continuum truth; it validates
+code-to-code agreement at a SHARED COARSE vertical resolution** (re-running ParFlow at fine dz is required
+before any "ParFlow under-resolved" claim). **Likely direction (hypothesis): both production schemes are
+mesh-dependent at the surface; a mesh-objective subgrid infiltration-capacity closure (Green-Ampt /
+Smith-Parlange / adaptive `ell_eff`) would let the COARSE field-scale cell deliver the resolved sorptive
+partition.** Remaining: (a) UNIFORM-nz cross-check (running — the grading discriminator); (b) one finer rung
+for the converged value; (c) reconcile ParFlow B5 at fine dz; (d) the subgrid closure. Spike
+`seq_partition_topref.py` (+ `_topref_{base,steep}_p{15,20,25}.txt`); commit `9f5603d`; review
+`overland_3d_codex_review__2026-06-27.md`.
