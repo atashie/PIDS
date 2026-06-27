@@ -1029,3 +1029,19 @@ loam sweep (b1, fixed storm, uniform ~124 mm subsurface, skin package on top):
 "simplest that optimally resolves" is a tradeoff on the diminishing-returns curve. (Untested: a 3-skin
 graded package spanning ~100 mm should reach ~0.27 — the modular approximation of graded — if 2 skins'
 +2.9 pp is insufficient.) Spike `seq_skin_split.py` (`skins:a,b` CLI); outputs `_skinsweep_loam_*.txt`.
+
+**Thin-skin ASYMPTOTE confirmed (0.5/1 mm):** 0.5 mm → 0.3106, 1 mm → 0.3120, 2 mm → 0.312 — IDENTICAL.
+Thinning a single skin below 2 mm does NOT break the ~0.31 plateau ⟹ **the single skin fully captures the
+early sorptive burst; the +4.6 pp residual is the unresolved wetting-front ADVANCE, which no surface-only
+thinning can fix.** Single-skin route definitively CLOSED at routed/R ≈ 0.31.
+
+**⟹ REASSESSMENT — the options, ranked by added layers (Arik's "fewest layers / no multi-skin × PIDS
+interaction" priority):**
+- **0 layers — Green-Ampt subgrid closure** (Task 3 original): a surface-flux modification, NOT a mesh
+  change → zero added layers, mesh-agnostic by construction, best for the PIDS-feature-interaction concern;
+  potentially EXACT. Cost: a code build + validation (the 1-D gate was deep-pond-confounded, needs the
+  thin-sheet 3-D gate). **This best matches the stated goal but is the most work.**
+- **1 layer — single ~1 mm skin:** routed/R ≈ 0.31 (+4.6 pp / ~17 % rel.); simplest mesh change but CAPPED
+  (can't reach converged).
+- **2 layers — (10,40) skin:** 0.293 (+2.9 pp); modular, the best simple skin package.
+- **re-mesh — graded:** 0.266 (converged) but warps the whole subsurface (not modular).
