@@ -16,6 +16,7 @@ Run (WSL pids-fem) -- one NZ per process:
 """
 from __future__ import annotations
 
+import os
 import sys
 import time
 
@@ -42,7 +43,9 @@ def run(NZ, scheme="galerkin", dt_max=2e-3):
     prob.set_topography(lambda x: S0 * (L - x[0]))
     rain = prob.add_rain(0.0)
     prob.add_outflow_bc(lambda x: np.isclose(x[0], L), slope=S0)
-    prob.add_drainage_bc(lambda x: np.isclose(x[0], L), conductance=0.5, external_head=H_EXT)
+    no_ghb = os.environ.get("B5_NOGHB", "").strip() == "1"   # causal test: remove the lateral-GW buffer
+    if not no_ghb:
+        prob.add_drainage_bc(lambda x: np.isclose(x[0], L), conductance=0.5, external_head=H_EXT)
     top_area = L * W
     R_in = RATE * top_area * STORM
     sw0 = prob.soil_water()

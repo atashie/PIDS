@@ -920,3 +920,38 @@ the §22 "ParFlow under-resolved" inference is RETRACTED. The subgrid-closure ne
 the SHORT-STORM/sorptive-transient regime, not all cases. Spikes `seq_b5_inhouse_refine.py`,
 `coupled_hillslope_3d.py` (PF_NZ); outputs `_pf_nz{8,16,32}.txt`, `_b5ih_nz{8,16,32}.txt`; ParFlow
 feasibility map by the Explore agent.
+
+---
+
+## 25. ⚠ CAUSAL SWAPS — the §24 storm hypothesis REFUTED; the driver is GEOMETRY/setup, not isolated (2026-06-27)
+
+Per Arik ("confirm cause then build"), three single-variable swaps tested the §24 "short-storm / sorptive"
+hypothesis. **ALL THREE candidate causes REFUTED:**
+
+| run | IC | storm | GHB | geometry | coarse→fine routed/R | collapse? |
+|---|---|---|---|---|---|---|
+| b1 uniform (base) | ψ=−0.4 | 0.08 d | no | 8×5, 30×20, S=.03 | 0.547→0.265 | **YES −28** |
+| b1 uniform LONG | ψ=−0.4 | **0.30 d** | no | 8×5, 30×20 | 0.628→0.430 | **YES −20** |
+| b1 + WATER TABLE | **WT 0.35** | 0.08 d | no | 8×5, 30×20 | 0.508→0.223 | **YES −28** |
+| B5 (in-house) | WT 0.35 | 0.30 d | yes | 5×1, 16×6, S=.05 | 0.636→0.613 (ov) | NO −2 |
+| B5 **no-GHB** | WT 0.35 | 0.30 d | **no** | 5×1, 16×6 | 0.650→0.647 (ov) | NO −0.3 |
+
+- **Storm-duration REFUTED:** b1 long storm STILL collapses (0.628→0.430).
+- **Water-table-IC REFUTED:** b1+WT STILL collapses (0.508→0.223) — same as uniform, even though the WT
+  surface (ψ=−0.65) is DRIER than uniform (−0.4).
+- **Lateral-GW (GHB) REFUTED:** B5 WITHOUT the GHB is STILL flat (0.650→0.647).
+
+**⟹ b1 collapses in EVERY variant; B5 is flat in EVERY variant. With storm, IC, and GHB all controlled, the
+ONLY remaining difference is GEOMETRY/DISCRETIZATION** (b1 8×5×1, 30×20 lateral, S=0.03, routes in y vs B5
+5×1×1, 16×6 lateral, S=0.05, routes in x) — a COMPOUND of slope + domain aspect + lateral mesh resolution,
+NOT yet isolated. The §24 "short-storm/sorptive" mechanism is **WITHDRAWN**; the §24 ParFlow reconciliation
+(B5 mesh-robust + codes agree) STANDS.
+
+**⟹ THE ACTIONABLE CONCLUSION (robust despite the un-isolated cause):** the routed partition's
+resolution-sensitivity is **REAL, LARGE (~2×), and CASE-DEPENDENT in a way that is NOT predictable from
+storm/IC/drainage** — so one cannot say "coarse is safe for regime X." **That UN-predictability STRENGTHENS
+the case for a mesh-objective subgrid closure (Task 3): a per-case "is coarse OK?" rule is not available, so
+the robust fix is a closure that makes the coarse cell mesh-objective REGARDLESS of setup.** Open: isolate
+the geometric driver (slope vs lateral-res vs aspect — more swaps) OR accept + build. Spikes: `PARTITION_STORM`
+/ `PARTITION_WT` in `seq_partition_topref.py`, `B5_NOGHB` in `seq_b5_inhouse_refine.py`; outputs
+`_topref_base_{longstorm,wt}_p{10,25}.txt`, `_b5noghb_nz{8,32}.txt`.

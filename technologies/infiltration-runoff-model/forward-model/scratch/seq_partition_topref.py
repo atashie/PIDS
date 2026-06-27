@@ -25,6 +25,7 @@ Run (WSL pids-fem) -- LIVE to a file (NO tail):
 from __future__ import annotations
 
 import sys
+import os
 import time
 
 import numpy as np
@@ -62,19 +63,29 @@ def run(case_name, p, nz=8, dt_max=0.02, uniform=False):
     else:
         msh = make_graded_box(c["nx"], c["ny"], nz, c["Lx"], c["Ly"], c["Lz"], p=p)
     mono = CoupledProblem(msh, soil, n_man=c["NMAN"], overland_scheme="galerkin")  # ell_c AUTO = top dz/2
-    mono.set_initial_condition(lambda x: c["PSI_I"] + 0.0 * x[0], d_value=0.0)
+    # PARTITION_WT env: water-table IC (psi = WT - z) instead of uniform PSI_I -- causal test of whether a
+    # shallow water table (B5-like wet connected profile) removes the b1 deep-unsaturated collapse.
+    _wt = os.environ.get("PARTITION_WT", "").strip()
+    if _wt:
+        wt = float(_wt)
+        mono.set_initial_condition(lambda x: wt - x[2], d_value=0.0)
+    else:
+        mono.set_initial_condition(lambda x: c["PSI_I"] + 0.0 * x[0], d_value=0.0)
     mono.set_topography(lambda x: case["S0"] * x[1])
     rain_c = mono.add_rain(0.0)
     mono.add_outflow_bc(lambda x: np.isclose(x[1], 0.0), slope=case["S0"])
     th0 = _soil_water_deg8(mono, soil)
     top_area = _top_area_ds(msh, c["Lz"])
-    R_in = c["RAIN"] * top_area * c["STORM"]
+    # PARTITION_STORM env override (Task 2 causal swap: does a LONG storm remove the b1 collapse?)
+    storm_dur = float(os.environ.get("PARTITION_STORM", c["STORM"]))
+    t_end = c["TEND"] if storm_dur == c["STORM"] else storm_dur + 0.37
+    R_in = c["RAIN"] * top_area * storm_dur
     t0 = time.perf_counter()
-    ns, coll, tend, peak_sheet = _march(mono, rain_c, storm_dur=c["STORM"], storm_rain=c["RAIN"],
-                                        t_end=c["TEND"], dt0=dt_max / 4.0, dt_max=dt_max,
+    ns, coll, tend, peak_sheet = _march(mono, rain_c, storm_dur=storm_dur, storm_rain=c["RAIN"],
+                                        t_end=t_end, dt0=dt_max / 4.0, dt_max=dt_max,
                                         ctrl_low=3, ctrl_high=8, track_sheet=True, top_area=top_area,
-                                        max_steps=900)
-    ok = (not coll) and tend >= c["TEND"] - 1e-9
+                                        max_steps=1500)
+    ok = (not coll) and tend >= t_end - 1e-9
     soil_gain = _soil_water_deg8(mono, soil) - th0
     routed = mono.cum_outflow / R_in
     infil = (soil_gain + mono.cum_drainage) / R_in
