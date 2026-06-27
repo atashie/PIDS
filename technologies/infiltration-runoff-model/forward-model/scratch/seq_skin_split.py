@@ -61,8 +61,36 @@ def make_uniform_plus_skin(nx, ny, nz, Lx, Ly, Lz, skin):
     return msh, float(targets[-1] - targets[-2]) * 1000.0      # mesh, top-cell thickness [mm]
 
 
+def make_skin_package(nx, ny, Lx, Ly, Lz, skins, n_uniform):
+    """A general SURFACE SKIN PACKAGE on a UNIFORM subsurface (Arik 2026-06-27): `skins` = thin top-cell
+    thicknesses listed TOP-DOWN (e.g. [10e-3] = one 10 mm skin; [2e-3, 8e-3] = a 2 mm cell over an 8 mm
+    cell), then `n_uniform` evenly-spaced cells fill the rest of the column below. Modular -- the same skin
+    package can sit on ANY subsurface mesh (here uniform; the design intent is mesh-agnostic). Monotonic
+    z-remap of a uniform box -> no tet inversion."""
+    skins = list(skins)
+    z_sb = Lz - sum(skins)                                   # skin-package bottom
+    uni = np.linspace(0.0, z_sb, n_uniform + 1)              # n_uniform uniform cells below
+    sk = z_sb + np.cumsum(list(reversed(skins)))             # skin levels above z_sb (bottom skin first)
+    targets = np.concatenate([uni, sk])                      # ascending, unique
+    ncz = targets.size - 1
+    msh = dmesh.create_box(COMM, [np.array([0.0, 0.0, 0.0]), np.array([Lx, Ly, Lz])],
+                           [nx, ny, ncz], cell_type=dmesh.CellType.tetrahedron)
+    x = msh.geometry.x
+    idx = np.clip(np.rint(x[:, 2] / Lz * ncz).astype(int), 0, ncz)
+    x[:, 2] = targets[idx]
+    return msh, float(targets[-1] - targets[-2]) * 1000.0    # top-cell thickness [mm]
+
+
 def build_mesh(variant):
     g = B1
+    if variant.startswith("skins:"):   # ARBITRARY skin package, e.g. "skins:10" or "skins:2,8" (mm, top-down)
+        mm = [float(s) for s in variant.split(":", 1)[1].split(",")]
+        return make_skin_package(g["nx"], g["ny"], g["Lx"], g["Ly"], g["Lz"],
+                                 [v * 1e-3 for v in mm], g["nz"])
+    if variant == "skin10":      # Exp A: one 10 mm skin + uniform below
+        return make_skin_package(g["nx"], g["ny"], g["Lx"], g["Ly"], g["Lz"], [10e-3], g["nz"])
+    if variant == "skin2x":      # Exp B: two skins (2 mm, 8 mm) + uniform below
+        return make_skin_package(g["nx"], g["ny"], g["Lx"], g["Ly"], g["Lz"], [2e-3, 8e-3], g["nz"])
     if variant == "coarse":
         msh = dmesh.create_box(COMM, [np.array([0.0, 0.0, 0.0]), np.array([g["Lx"], g["Ly"], g["Lz"]])],
                                [g["nx"], g["ny"], g["nz"]], cell_type=dmesh.CellType.tetrahedron)

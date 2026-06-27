@@ -994,3 +994,38 @@ an option. Caveats: tested on the b1 geometry (the sensitive case) across 3 soil
 deep soil is coarsened by grading (fine for the surface partition; watch if deep water-table dynamics also
 needed) and very thin cells can stiffen the solver (clean here). Spike `scratch/seq_skin_split.py`
 (`make_uniform_plus_skin` V2); outputs `_skinsplit_{soil}_{coarse,graded,skin,ref}.txt`.
+
+---
+
+## 27. ★★ TASK 3b — COMPREHENSIVE skin sweep: a modular skin-on-uniform CAPS at ~0.29-0.31; full convergence needs the front-depth resolved (2026-06-27)
+
+Arik's goal: the SIMPLEST modular surface treatment (ideally ONE skin on the user's existing subsurface
+mesh — so PIDS features don't interact with many skins) that recovers the converged runoff. Comprehensive
+loam sweep (b1, fixed storm, uniform ~124 mm subsurface, skin package on top):
+
+**Single skin (mm → routed/R):** 2→0.312, 5→0.315, 10→0.322, 20→0.333, 40→0.360, 80→0.460, 120→0.539.
+**Two skins (mm → routed/R):** (2,8)→0.306, **(10,40)→0.293**, (20,80)→0.312, (40,80)→0.353, (10,110)→0.311.
+**Targets:** coarse 0.547 · graded-nz8 0.266 · converged 0.264.
+
+**★ FINDINGS:**
+1. **Single skin: THINNER is better, and it plateaus at ~0.31** (2 mm = 0.312 ≈ 5 mm; thicker → WORSE,
+   120 mm → 0.539 ≈ coarse, because a thick single cell averages the front just like the coarse cell). So
+   **no single skin reaches the converged 0.265 — one skin caps at ~0.31** (residual +4.8 pp).
+2. **Two skins help modestly; (10,40) is the sweet spot → 0.293** (residual +2.9 pp). Deeper combos do
+   NOT help ((20,80)=0.312, (10,110)=0.311) — a coarse second cell under-resolves; you need THIN cells, and
+   a thinner surface cell (10 vs 20 mm) matters. (10,40) resolves the top ~50 mm with two thinnish cells.
+3. **The mechanism, cleanly:** a surface skin captures the EARLY-TIME sorptive infiltration burst
+   (0.547 → ~0.31, ~83 % of the error) but NOT the sustained WETTING-FRONT ADVANCE through the coarse
+   subsurface (~0.31 → 0.265). Loam's front reaches ~100 mm; fully resolving it needs thin cells THROUGH
+   that depth — i.e. the GRADED distribution (3+ coarsening cells), which is what `graded` does (0.266).
+4. **Diminishing returns / the modularity–accuracy tradeoff:** 1 skin cuts the coarse error ~6× (to ~0.31);
+   2 skins ~8× (to ~0.29); the full graded mesh ~100× (to 0.265) but it RE-MESHES the whole column (not the
+   modular "skin on the user's subsurface" Arik wants). **A modular 1-2-skin package canNOT reach full
+   convergence on a coarse subsurface — it is bounded by how deep the skins resolve the front.**
+
+**⟹ THE DECISION (Arik's accuracy bar):** (a) ONE 2 mm skin = simplest, runoff 0.31 vs converged 0.265
+(+4.8 pp; cuts the coarse 2× over-prediction to ~17 % relative); (b) TWO skins (10,40) = 0.293 (+2.9 pp,
+~11 % relative); (c) full GRADED mesh = converged but re-meshes the subsurface (not modular). The
+"simplest that optimally resolves" is a tradeoff on the diminishing-returns curve. (Untested: a 3-skin
+graded package spanning ~100 mm should reach ~0.27 — the modular approximation of graded — if 2 skins'
++2.9 pp is insufficient.) Spike `seq_skin_split.py` (`skins:a,b` CLI); outputs `_skinsweep_loam_*.txt`.
