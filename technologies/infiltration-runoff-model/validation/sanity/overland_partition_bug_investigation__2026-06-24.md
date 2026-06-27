@@ -756,27 +756,33 @@ at storm scale t=0.08:**
 | 24 (21 mm) | 0.87 | 0.88 | 0.96 |
 | 40 (12 mm) | **0.92** | **0.93** | **0.98** |
 
-**★ VERDICT (now properly framed — survives the 3rd Codex review's objections): the monolith q_pot's
-infiltration under-capture is SUBSTANTIALLY A SURFACE-RESOLUTION ARTIFACT.** On the SAME mesh with `ell_c`
-locked to the cell, the monolith infiltration converges MONOTONICALLY toward the no-film ponding reference
-as the surface refines (loam 0.71→0.92, clay 0.72→0.93, sand 0.85→0.98 at nz=8→40), with the reference
-itself mesh-converged (loam ponding 43.5→52.3 flattening; sand 282 flat) and clean solver health
-(nbad=0 loam/clay; sand a few recovered retries). ⟹ the coarse-mesh q_pot (`ell_c=dz/2`) systematically
-UNDER-infiltrates the resolved sorptive uptake — by ~30% (loam/clay) to ~15% (sand) at the production
-nz=8 — and the gap CLOSES with refinement. **The "0.547 runoff" is confirmed a coarse-`ell_c` value that
-over-states runoff by under-capturing sorptivity.**
+**★ VERDICT (properly framed; TEMPERED per the 4th Codex review — `overland_verdict_codex_review__2026-06-26.md`):
+in a 1-D rain-driven SAME-MESH column, the monolith's coarse `q_pot` under-captures sorptive uptake by a
+lot, and that gap shrinks MONOTONICALLY as `dz_top` (and auto `ell_c=dz/2`) refine** — loam 0.71→0.92,
+clay 0.72→0.93, sand 0.85→0.98 at nz=8→40, reference mesh-converged (loam ponding 43.5→52.3; sand 282 flat),
+solver clean. ⟹ the coarse-mesh `q_pot` (`ell_c=dz/2`) UNDER-infiltrates the resolved sorptive uptake by
+~30% (loam/clay) to ~15% (sand) at production nz=8 → **coarse nz=8 monolith partition values are SUSPECT as
+continuum truth.** The under-capture is **largely resolution-driven, with a possible small residual closure
+difference unresolved at finite nz** (the ratio is 0.92–0.98 at nz=40, NOT proven →1.0 — do not extrapolate).
 
-**Caveats (honest):** (a) at nz=40 the ratio is 0.92–0.98, NOT 1.0 — still converging; a small residual
-closure difference at finite resolution is possible but the TREND is unambiguous and monotone. (b) rain=10·Ks
-forces a DEEP pond (loam ~150 mm, sand ~920 mm), so this is infiltration-capacity under ponding, not
-thin-sheet — but identical forcing for both schemes makes the convergence comparison valid (Codex caveat 3/4
-addressed: same forcing, conserved-volume pond depth, ponding-time reported). (c) dry IC ψ=−3 m → soil-
-specific S_e (sand 0.002, loam 0.26, clay 0.90) — clay near-saturated/storage-limited (ponds in ~1 ms →
-prompt runoff, matching Arik), sand bone-dry.
+**⚠ WHAT THIS DOES *NOT* YET SHOW (Codex's load-bearing hit — §21 over-claimed it):** this is a 1-D
+NO-ROUTING column; the "0.547" is a ROUTED 3-D partition. The test makes coarse `q_pot` a strong SUSPECT
+but does NOT quantify how much of the 3-D gap is vertical under-capture vs the routing↔infiltration feedback
+that keeps real 3-D sheets thin. **"The 0.547 is confirmed under-resolved" is RETRACTED — unproven until the
+3-D test below.** Also: rain=10·Ks forces a DEEP pond (loam ~150, sand ~920 mm); large `d` directly boosts
+`kirchhoff(ψ,d)/ell_c`, so the deep pond makes the monolith look CLOSER to the no-film reference than a
+thin-sheet routed case would → **the ratio is likely OPTIMISTIC for the real storm partition** (the 3-D
+move may be smaller). Dry IC ψ=−3 m → soil-specific S_e (sand 0.002, loam 0.26, clay 0.90 — clay
+storage-limited, ponds in ~1 ms → prompt runoff, matching Arik).
 
-**⟹ THE ENGINEERING IMPLICATION (Codex #7, the real takeaway): mm-scale surface cells are NOT field-scale
-tractable, so the production answer needs a MESH-OBJECTIVE SUBGRID infiltration closure** — a corrected
-q_pot or a Green-Ampt/Smith-Parlange infiltration-capacity sub-model (GSSHA/tRIBS family) that delivers the
-resolved sorptive uptake on a COARSE cell — NOT brute refinement, and NOT the current `ell_c=dz/2` q_pot
-(which is resolution-dependent). This is soil-AGNOSTIC (same convergence on loam/clay/sand). Spikes
-`seq_sorptivity_meshconv.py` (+ `_meshconv_{loam,clay,sand_mono}.txt`); commit pending.
+**⟹ ENGINEERING DIRECTION (Codex-refined): the production answer needs a MESH-OBJECTIVE SUBGRID infiltration
+closure — NOT brute mm refinement, and NOT a tuned constant `ell_c` (still a mesh knob in disguise).**
+Concrete: keep the NCP/surface ledger but replace `q_pot` with a mesh-objective infiltration-CAPACITY law
+(Green-Ampt / Smith-Parlange / Philip), or equivalently an adaptive `ell_eff(state,time,soil)` derived from
+that capacity. Soil-agnostic (same 1-D convergence on loam/clay/sand).
+
+**⟹ THE DECISIVE NEXT TEST (Codex, highest-value): the 3-D TOP-LAYER REFINEMENT LADDER on the real 0.547
+case** — fix the lateral mesh + forcing, refine ONLY the top vertical resolution (`ell_c` auto-locked),
+track `routed/R` + infiltration + peak pond. **If 0.547 collapses materially → §21's implication carries to
+the PARTITION. If it stays ~0.547 → the 1-D result does NOT carry over** (vertical sorptivity isn't the
+partition driver). Spikes `seq_sorptivity_meshconv.py` (+ `_meshconv_{loam,clay,sand_mono}.txt`); commit `4315b60`.
