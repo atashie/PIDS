@@ -79,8 +79,9 @@ except ImportError:
 
 # --- matched domain + grid (= run_coupling_3d_sanity.py) ---------------------
 L, W, H = 5.0, 1.0, 1.0
-NX, NY, NZ = 16, 6, 8
-DX, DY, DZ = L / NX, W / NY, H / NZ          # 0.3125, 0.16667, 0.125
+NX, NY = 16, 6
+NZ = int(os.environ.get("PF_NZ", "8"))       # env-configurable for the vertical mesh-convergence study
+DX, DY, DZ = L / NX, W / NY, H / NZ          # 0.3125, 0.16667, 0.125 (DZ=H/NZ shrinks as NZ grows)
 S0 = 0.05                                     # bed slope toward the x=L downslope outlet
 Z_WT = 0.35                                   # antecedent hydrostatic water table elevation (m)
 H_EXT = 0.20                                  # downslope external head the lateral GHB drains toward (m)
@@ -282,7 +283,8 @@ def run_scenario(key, cfg, out_root):
     rec_dur = t_end - storm_dur
 
     nogw = os.environ.get("PF_NOGW", "").strip() == "1"
-    tag = f"{key}_nogw" if nogw else key   # control run (no lateral GW) -> separate outputs
+    nzsuf = "" if NZ == 8 else f"_nz{NZ}"    # NZ=8 keeps the ORIGINAL output names (backwards-compatible)
+    tag = f"{key}{'_nogw' if nogw else ''}{nzsuf}"   # control / nz suffixes -> separate outputs
     out_dir = os.path.join(out_root, tag)
     mkdir(out_dir)
 
