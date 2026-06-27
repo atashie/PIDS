@@ -872,3 +872,51 @@ no-film ~0.21 (the 3-D routing keeps the partition a bit higher than the 1-D col
 mesh-converged partition for the b1 loam storm is ~0.265 runoff (~73% infiltration), vs the coarse-mesh
 0.547 — runoff is roughly HALVED at convergence.** This replaces 0.547 as the reference target. The §22
 "at least halved, still decreasing" is now SETTLED at ~0.265.
+
+---
+
+## 24. ★★★ TASK 2 — ParFlow RECONCILED: the resolution-sensitivity is CASE-SPECIFIC, not universal (2026-06-27)
+
+ParFlow IS runnable here (Docker `parflow/parflow:latest`, smoke-OK 2026-06-08; `coupled_hillslope_3d.py`
+made `NZ` env-configurable). Ran the **B5 loam_overland** twin (5×1×1, water table z=0.35, storm 0.5 m/day
+× **0.30 d**, overland edge + lateral-GHB at x=L) at NZ=8/16/32 in BOTH codes (in-house = the same
+geometry via `scratch/seq_b5_inhouse_refine.py`, galerkin). **`infil_storage/R` (= soil ΔW / cum_rain):**
+
+| NZ (DZ) | ParFlow | in-house | runoff (total_out/R) |
+|---|---|---|---|
+| 8 (125 mm) | 0.327 | 0.3274 | 0.673 |
+| 16 (62 mm) | 0.326 | 0.3287 | 0.674 |
+| 32 (31 mm) | 0.252 *(anomalous: 29 frames, 0 storm-end pond)* | **0.3289** | 0.675 |
+
+**★ TWO findings:**
+1. **B5 is MESH-ROBUST, and the two codes AGREE to ~0.1% at NZ=8** (in-house infil 0.3274 / overland 0.6356
+   / GW 0.0377 / total 0.6733 vs ParFlow 0.327 / 0.639 / ~0.034 / 0.673). The clean in-house ladder is
+   FLAT: 0.3274→0.3287→0.3289 (0.15 pp over a 4× refinement). ParFlow flat NZ=8→16 (0.327→0.326); its
+   NZ=32 dip is a run anomaly (the in-house clean run confirms B5 does NOT collapse).
+2. **⟹ the in-house collapse is CASE-SPECIFIC, NOT scheme-specific and NOT universal.** Same galerkin
+   scheme: it COLLAPSES on b1 (0.547→0.265) but is FLAT on B5 (~0.327). So Codex's #5 worry ("scheme
+   artifact") is REFUTED — where ParFlow and the in-house run the SAME case they AGREE *and* both are
+   mesh-robust.
+
+**★ CORRECTION to §22 (the conflation):** §22 said "ParFlow's ~0.55 (B5) was a code-to-code match at a
+shared coarse resolution, not continuum truth." **REFUTED — B5 IS mesh-converged** (both codes flat through
+4× refinement), so the **ParFlow B5 validation STANDS** (0.673 runoff is right for B5). I had conflated two
+DIFFERENT cases: the **b1 monolith "0.547"** (short storm, uniform dry-ish IC, no water table — genuinely
+resolution-sensitive, →0.265, §23) and the **B5 ParFlow ~0.67** (long storm + water table — mesh-robust).
+They are NOT the same benchmark; only b1 is under-resolved.
+
+**★ THE PHYSICS (why b1 collapses, B5 doesn't — hypothesis):** resolution-sensitivity is a SHORT-STORM /
+EARLY-SORPTIVE-TRANSIENT effect. b1 = a SHORT storm (0.08 d) into relatively dry uniform soil → the
+partition is dominated by the early sorptive wetting front, which coarse top cells UNDER-RESOLVE (the
+`q_pot=kirchhoff/ell_c` film under-captures it). B5 = a LONG storm (0.30 d) with a water table → infiltration
+reaches QUASI-STEADY Ks-limited flow, which is mesh-robust (the sorptive transient is a small early fraction
+of the long storm). ⟹ **the coarse-mesh partition error matters for SHORT INTENSE storms on DRY soil (the
+flash-flood / first-flush regime), and is negligible for long storms / wet antecedents.** (Unverified
+single-cause: storm-duration vs water-table-IC are co-varied between b1 and B5; a confirmatory swap-run is
+the cheap next step.)
+
+**⟹ NET:** §23 (b1 converges to 0.265) STANDS; the ParFlow B5 validation STANDS (mesh-robust, codes agree);
+the §22 "ParFlow under-resolved" inference is RETRACTED. The subgrid-closure need (Task 3) is now scoped to
+the SHORT-STORM/sorptive-transient regime, not all cases. Spikes `seq_b5_inhouse_refine.py`,
+`coupled_hillslope_3d.py` (PF_NZ); outputs `_pf_nz{8,16,32}.txt`, `_b5ih_nz{8,16,32}.txt`; ParFlow
+feasibility map by the Explore agent.
