@@ -786,3 +786,47 @@ case** — fix the lateral mesh + forcing, refine ONLY the top vertical resoluti
 track `routed/R` + infiltration + peak pond. **If 0.547 collapses materially → §21's implication carries to
 the PARTITION. If it stays ~0.547 → the 1-D result does NOT carry over** (vertical sorptivity isn't the
 partition driver). Spikes `seq_sorptivity_meshconv.py` (+ `_meshconv_{loam,clay,sand_mono}.txt`); commit `4315b60`.
+
+---
+
+## 22. ★★★ THE DECISIVE 3-D TEST — the 0.547 partition COLLAPSES with top refinement (2026-06-27)
+
+Ran Codex's highest-value test (`scratch/seq_partition_topref.py`): the REAL b1 tilted-plane partition
+case (loam, PSI_I=−0.4 — the ACTUAL setup that gives 0.547, WITH lateral routing), lateral mesh 30×20 +
+forcing FIXED, refining ONLY the top vertical resolution via a z-grading ladder (`ell_c` auto-locked to the
+top-cell half-height). Harness validated: uniform p=1.0 reproduces routed/R = **0.547 exactly**. The ladder
+(routed/R, all clean solves clip≤1e-16):
+
+| top cell (ell_c) | b1_base (S=0.03) | b1_steep (S=0.10) |
+|---|---|---|
+| 125 mm (62.5) | **0.547** | **0.551** |
+| 44 mm (22.1) | 0.364 | 0.367 |
+| 16 mm (7.8) | 0.287 | 0.290 |
+| 5.5 mm (2.8) | **0.266** | **0.269** |
+
+**★★★ VERDICT — the 1-D sorptivity story CARRIES to the 3-D routed partition. The "0.547" is a
+COARSE-RESOLUTION ARTIFACT, confirmed on the actual quantity (routed/R, with routing).** Three findings:
+1. **routed/R drops MONOTONICALLY 0.547 → 0.266** (−28 pp, runoff more than HALVED) as the top cell refines
+   125 → 5.5 mm — on the REAL routed case, all clean (clip ~1e-17). The 1-D→3-D leap §21 couldn't make is
+   now DIRECTLY shown: the partition IS driven by the vertical surface-exchange resolution.
+2. **The resolved partition is SLOPE-INSENSITIVE** — base & steep converge to the SAME ~0.27 (they were
+   0.547/0.551 at coarse). This is exactly Hortonian physics (partition ≈ (rain−Ks)/rain, slope-independent)
+   and what the coarse mesh got WRONG — a strong INDEPENDENT confirmation the collapse is physical, not
+   numerical. (It also retro-explains §10's "route-first over-routes on steep / monolith slope-insensitive":
+   the monolith's slope-insensitivity was right; its ABSOLUTE 0.55 was just under-resolved.)
+3. **Converges to ~0.27** (still inching 0.287→0.266 at 5.5 mm; near but not fully converged) → the true
+   loam runoff coefficient for this storm ≈ **27%, not 55%**. The coarse mesh DOUBLES runoff by
+   under-capturing sorptive infiltration. (Caveat: Codex's "deep-pond optimism" was about the 1-D column;
+   here the real routed sheet is THIN [peak ≤0.37 mm] and routed/R STILL collapses — so the effect is NOT a
+   deep-pond artifact; if anything the thin routed sheet shows it more honestly.)
+
+**⟹ THE WHOLE INVESTIGATION RE-FRAMED.** The original "bug" (§1: sequential over-infiltrates vs the
+monolith's 0.55) had the COMPARISON BACKWARDS: the sequential schemes were CLOSER to the mesh-converged
+truth (~0.27) and the monolith's 0.547 was the OUTLIER (coarse-`ell_c` under-resolution). The ParFlow
+"validation" of ~0.55 (B5) was a CODE-TO-CODE match AT A SHARED COARSE VERTICAL RESOLUTION, not continuum
+truth. **NEITHER production scheme is mesh-objective; both need a subgrid infiltration-capacity closure
+(Green-Ampt / Smith-Parlange / adaptive `ell_eff`) so the COARSE (field-scale-tractable) cell delivers the
+resolved ~0.27 sorptive partition.** Remaining: (a) confirm ~0.27 is converged (one finer rung); (b)
+re-examine whether ParFlow at fine vertical resolution also gives ~0.27 (reconcile the B5 benchmark); (c)
+build the subgrid capacity closure. Spike `seq_partition_topref.py` (+ `_topref_{base,steep}_p{15,20,25}.txt`);
+commit pending. Pending external (Codex) review of this verdict.
