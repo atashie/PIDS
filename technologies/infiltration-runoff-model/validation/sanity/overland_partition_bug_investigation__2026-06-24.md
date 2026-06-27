@@ -822,10 +822,20 @@ REAL + NOT unsound, but 3 claims softened):**
    max local depth); the ~0.4% `1−(infil+routed)` is plausibly final surface storage + lumped-vs-deg8
    postprocess, NOT a proven-tight closure (clip≤1e-16 is only the limiter adjustment, not global balance).
 
-**⚠ TWO OPEN CONFOUNDS (Codex, being resolved):** (i) the grading warps ALL z-levels (top-biased
-redistribution, deep cells coarsen) → it does NOT cleanly separate top-interface from bulk-Richards
-resolution. **The decisive cross-check = a UNIFORM-nz ladder (nz=64 matches graded p=2.0's ell_c=7.8 mm);
-if it gives ~0.29 the grading confound dies — RUNNING NOW.** (ii) the ParFlow inference is NOT yet earned.
+**⚠ CONFOUND (i) — GRADING — now RESOLVED (uniform-nz cross-check DONE 2026-06-27):** a UNIFORM vertical
+refinement (no grading, deep cells refine too) gives the SAME collapse, matched by `ell_c`:
+
+| ell_c | UNIFORM-nz | GRADED-p |
+|---|---|---|
+| 62.5 mm | 0.547 (nz8) | 0.547 (p1.0) |
+| 31 mm | 0.419 (nz16) | — |
+| 15.6 mm | 0.319 (nz32) | — |
+| 7.8 mm | **0.275 (nz64)** | **0.287 (p2.0)** |
+
+At the matched `ell_c=7.8 mm`, uniform 0.275 ≈ graded 0.287 (~1 pp). **⟹ the grading confound is DEAD —
+both refinement strategies (and both slopes) collapse routed/R the SAME way; it is a genuine
+surface-resolution effect, not a grading artifact.** Uniform ladder monotone 0.547→0.419→0.319→0.275, all
+clean (clip≤1.5e-16). **Confound (ii) — the ParFlow inference — remains NOT earned (needs a fine-dz rerun).**
 
 **⟹ THE RE-FRAME (now appropriately hedged).** The original "bug" (§1: sequential over-infiltrates vs the
 monolith 0.55) is NO LONGER SECURE: the monolith benchmark itself moves massively under near-surface
