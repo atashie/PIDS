@@ -1071,3 +1071,32 @@ resolution).** ⟹ the single skin's residual is the unresolved **front ADVANCE*
 sorptive-transient regime and varies with soil×storm (up to ~6 pp), confirming a fixed single skin is not
 uniformly adequate. **Pure-Richards mesh fix (Arik's strong preference; GA dropped): a GRADED NEAR-SURFACE
 package resolving the front DEPTH (not just the skin) — the next experiment.** Outputs `_skinerr_*.txt`.
+
+---
+
+## 29. GRADED NEAR-SURFACE PACKAGE experiment — design (Codex-reviewed) + run (2026-06-27)
+
+GOAL (Arik: strictly Richards, mesh-based, modular, minimal layers): find the MINIMAL geometric
+near-surface mesh package (top cell h0=2 mm, each cell r× thicker until reaching the deep uniform 125 mm,
+then uniform below — built via `make_skin_package` with a geometric `skins` list) that recovers the
+converged runoff (±~1 pp) across the worst SS28 residual cases, leaving the deep subsurface uniform
+(modular). Pure mesh structure within Richards (NO Green-Ampt — DROPPED per Arik).
+
+**Codex design review (`scratch/_codex_gradedpkg_design_prompt.txt`) — "sound as a pilot screen IF 3 fixes
+first," all incorporated:**
+1. **Confound depth-vs-grading:** report package DEPTH + growth separately (not `r` alone).
+2. **Verify the reference converged for MORE than loam-moderate:** added p2.75-vs-p3.0 checks for
+   sand-intense + loam-long.
+3. **Add a DEEPER-FRONT stress case:** loam LONG-storm (§25: still collapses 0.628→0.430) — the matrix
+   was missing it.
+4. **Two-part gate:** accuracy (±1 pp) AND solver/cost health (cells, wall, no-collapse) — a package that
+   matches but is much stiffer isn't the practical minimum.
+5. **Physical anchor:** front depth measured as **L90** (centre-column depth holding 90 % of the added
+   storage `Δθ(z)`), added to the harness — the package should span L90; relate to `F/Δθ`.
+6. Correction (Codex): the p3.0 ref top cell is **1.95 mm** (ell_c ≈ 0.98 mm), not 0.6 mm.
+
+Packages: r=4 → 2,8,32 mm (3 cells, span 42 mm); r=3 → 2,6,18,54 (4 cells, 80 mm); r=2 → 2,4,8,16,32,64
+(6 cells, 126 mm); each + uniform 125 mm below. Cases: loam-moderate (ref 0.264), sand-intense (0.198),
+loam-long (deeper front), + controls loam-intense/clay-intense. Harness `seq_skin_split.py` (`skins:` /
+`refp:X` variants, `SKIN_RAIN`/`SKIN_STORM` env, L90 diagnostic). Stage 1 (loam-mod r2/3/4 + convergence
+checks) RUNNING.

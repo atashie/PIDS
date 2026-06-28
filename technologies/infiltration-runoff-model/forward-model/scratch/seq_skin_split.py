@@ -102,6 +102,10 @@ def build_mesh(variant):
     if variant == "ref":
         msh = make_graded_box(g["nx"], g["ny"], g["nz"], g["Lx"], g["Ly"], g["Lz"], p=3.0)
         return msh, g["Lz"] * (1.0 / g["nz"]) ** 3.0 * 1000.0
+    if variant.startswith("refp:"):   # graded p=X (convergence checks, e.g. refp:2.75)
+        pp = float(variant.split(":", 1)[1])
+        msh = make_graded_box(g["nx"], g["ny"], g["nz"], g["Lx"], g["Ly"], g["Lz"], p=pp)
+        return msh, g["Lz"] * (1.0 / g["nz"]) ** pp * 1000.0
     if variant == "skin":
         return make_uniform_plus_skin(g["nx"], g["ny"], g["nz"], g["Lx"], g["Ly"], g["Lz"], SKIN)
     raise ValueError(variant)
@@ -118,19 +122,35 @@ def run(soil_name, variant, dt_max=0.02):
     mono.add_outflow_bc(lambda x: np.isclose(x[1], 0.0), slope=g["S0"])
     th0 = _soil_water_deg8(mono, soil)
     top_area = _top_area_ds(msh, g["Lz"])
-    rain = float(os.environ.get("SKIN_RAIN", g["RAIN"]))   # storm-intensity override
-    R_in = rain * top_area * g["STORM"]
+    rain = float(os.environ.get("SKIN_RAIN", g["RAIN"]))      # storm-intensity override
+    storm_dur = float(os.environ.get("SKIN_STORM", g["STORM"]))  # storm-duration override (deeper-front case)
+    t_end = g["TEND"] if storm_dur == g["STORM"] else storm_dur + 0.30
+    R_in = rain * top_area * storm_dur
     t0 = time.perf_counter()
-    ns, coll, tend, peak = _march(mono, rain_c, storm_dur=g["STORM"], storm_rain=rain,
-                                  t_end=g["TEND"], dt0=dt_max / 4.0, dt_max=dt_max, ctrl_low=3,
-                                  ctrl_high=8, track_sheet=True, top_area=top_area, max_steps=1200)
-    ok = (not coll) and tend >= g["TEND"] - 1e-9
+    ns, coll, tend, peak = _march(mono, rain_c, storm_dur=storm_dur, storm_rain=rain,
+                                  t_end=t_end, dt0=dt_max / 4.0, dt_max=dt_max, ctrl_low=3,
+                                  ctrl_high=8, track_sheet=True, top_area=top_area, max_steps=1500)
+    ok = (not coll) and tend >= t_end - 1e-9
     routed = mono.cum_outflow / R_in
     infil = (_soil_water_deg8(mono, soil) - th0 + mono.cum_drainage) / R_in
+    # FRONT DEPTH (Codex physical anchor): centre-column dtheta(z); L90 = depth holding 90% of added storage.
+    vc = mono.Vpsi.tabulate_dof_coordinates()
+    col = np.where((np.abs(vc[:, 0] - g["Lx"] / 2) < 1e-6) & (np.abs(vc[:, 1] - g["Ly"] / 2) < 1e-6))[0]
+    L90 = float("nan"); ncz = 0
+    if col.size:
+        order = col[np.argsort(-vc[col, 2])]                       # top-down
+        zc = vc[order, 2]; ncz = zc.size
+        dth = soil.theta(mono.psi.x.array[order]) - float(soil.theta(np.array([g["PSI_I"]]))[0])
+        dth = np.maximum(dth, 0.0); tot = dth.sum()
+        if tot > 1e-12:
+            cum = np.cumsum(dth) / tot
+            k = int(np.searchsorted(cum, 0.90))
+            L90 = (g["Lz"] - zc[min(k, ncz - 1)]) * 1000.0       # depth from surface holding 90% [mm]
     print("#" * 96)
     print(f"SKIN-SPLIT -- {soil_name} (Ks={SOILS[soil_name]['Ks']}) / {variant.upper()} "
-          f"(top cell {topmm:.2f}mm, ell_c={mono.ell_c*1000:.2f}mm)")
-    print(f"  routed/R = {routed:.4f}   infil/R = {infil:.4f}   peak_mean_sheet = {peak*1000:.3f}mm")
+          f"(top cell {topmm:.2f}mm, ell_c={mono.ell_c*1000:.2f}mm, {ncz-1} z-cells)")
+    print(f"  routed/R = {routed:.4f}   infil/R = {infil:.4f}   peak_mean_sheet = {peak*1000:.3f}mm   "
+          f"front L90 = {L90:.1f}mm")
     print(f"  ok={ok} ns={ns} clip={abs(getattr(mono,'clip_mass_adjust',0.0)):.1e} "
           f"wall={time.perf_counter()-t0:.0f}s")
     print("#" * 96, flush=True)
