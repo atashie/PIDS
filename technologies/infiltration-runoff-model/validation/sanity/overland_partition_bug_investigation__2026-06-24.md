@@ -1121,3 +1121,34 @@ package suffices ⟹ **the partition is set by the EARLY/UPPER front, not the fu
 (end-of-storm) OVERSTATES the package depth needed.** The actionable anchor is empirical (~80 mm here); a
 cleaner physical anchor (early-time front / sorptive depth) is future work. Stage 2 (winning packages on
 sand-intense + loam-long deeper-front cases + controls) RUNNING.
+
+**★★ STAGE 2 RESULT — r=3 is the WINNER; the package generalizes (2026-06-28).** routed/R, error vs the
+converged ref, two-part gate (accuracy + cost):
+
+| case (conv. ref) | r=4 (42 mm) | **r=3 (80 mm, 4 cells)** | r=2 (126 mm, 6 cells) | wall r3 / r2 |
+|---|---|---|---|---|
+| loam-moderate (0.264) | 0.284 (+2.0) | **0.270 (+0.6)** ✓ | 0.259 (−0.5) ✓ | 303 / 375 s |
+| sand-intense (0.198) | — | **0.196 (−0.2)** ✓ | 0.185 (−1.3) | 1874 / **6403 s** |
+| loam-long (0.432) | — | 0.416 (−1.6) | 0.413 (−1.9) | 396 / 490 s |
+| loam-intense CTRL (0.799) | — | **0.800 (+0.1)** ✓ | — | 268 s |
+| clay-intense CTRL (0.967) | — | **0.968 (+0.1)** ✓ | — | 540 s |
+
+**FINDINGS:**
+1. **r=3 (2,6,18,54 mm = 4 cells, ~80 mm package + uniform-coarse below) is the winner:** within ±1 pp on
+   loam-moderate (+0.6), sand-intense (−0.2), AND both controls (+0.1 — does NO harm to already-fine cases).
+2. **DEEPER/FINER (r=2) is NOT better — it's WORSE.** r=2 is no more accurate (sand −1.3, loam-long −1.9)
+   and DRAMATICALLY stiffer (sand-intense r2 = 6403 s / ns=859 vs r3 1874 s / ns=334 — the extra thin cells
+   over-stiffen the high-Ks Newton). ⟹ the two-part gate (Codex fix #4) matters: r=3 wins on accuracy AND
+   cost. There is an optimum package depth (~80 mm), not "finer is better."
+3. **Generalizes across soils (loam, sand) and storm intensities (moderate, intense)** with ONE fixed r=3
+   package, and is harmless on the controls.
+4. **One residual: loam-LONG (deep-front long storm) ~−1.6 pp** (just outside ±1 pp), and deepening (r=2)
+   does NOT fix it (−1.9 pp) — so it is not simply "span more depth"; the uniform-coarse-below or the
+   diffuse deep front contributes. A minor, characterized open item for long-duration storms.
+
+**★ PRODUCTION RECOMMENDATION (Arik's goal MET): a fixed geometric NEAR-SURFACE PACKAGE — top cell ~2 mm,
+×3 growth per cell for 4 cells (2,6,18,54 mm, ~80 mm), then the user's uniform subsurface below.** Pure
+Richards (mesh structure only — NO empirical closure), MODULAR (deep mesh untouched, bolts onto any
+subsurface), MINIMAL (4 added near-surface layers), and mesh-objective to ±~1 pp across soils/storms
+(loam-long ~1.6 pp). Open: the loam-long long-storm residual; a front-depth-adaptive package depth (vs
+fixed 80 mm) for very deep fronts; a second geometry. Spikes `seq_skin_split.py`; outputs `_gradedpkg_*.txt`.
