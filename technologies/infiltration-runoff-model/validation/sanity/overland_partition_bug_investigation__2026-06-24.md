@@ -1146,9 +1146,27 @@ converged ref, two-part gate (accuracy + cost):
    does NOT fix it (−1.9 pp) — so it is not simply "span more depth"; the uniform-coarse-below or the
    diffuse deep front contributes. A minor, characterized open item for long-duration storms.
 
-**★ PRODUCTION RECOMMENDATION (Arik's goal MET): a fixed geometric NEAR-SURFACE PACKAGE — top cell ~2 mm,
-×3 growth per cell for 4 cells (2,6,18,54 mm, ~80 mm), then the user's uniform subsurface below.** Pure
-Richards (mesh structure only — NO empirical closure), MODULAR (deep mesh untouched, bolts onto any
-subsurface), MINIMAL (4 added near-surface layers), and mesh-objective to ±~1 pp across soils/storms
-(loam-long ~1.6 pp). Open: the loam-long long-storm residual; a front-depth-adaptive package depth (vs
-fixed 80 mm) for very deep fronts; a second geometry. Spikes `seq_skin_split.py`; outputs `_gradedpkg_*.txt`.
+**★ RECOMMENDATION (TEMPERED per the 7th Codex review `overland_gradedpkg_codex_review__2026-06-28.md` —
+"r=3 = the solution" was OVER-CLAIMED):** the r=3 geometric near-surface package (top ~2 mm, ×3 growth, 4
+cells = 2,6,18,54 mm ~80 mm, then the user's uniform subsurface) is the **best-tested DEFAULT modular
+Richards-only package FOR the b1 geometry and the tested soil/storm matrix** — good cost/accuracy, no
+solver pathology, ±~1 pp on loam-moderate/sand-intense/controls. **It is NOT yet a universal solution:**
+- **loam-long FAILS the ±1 pp gate (−1.6 pp) — and it's the deliberate deeper-front stress case;** deepening
+  (r=2, −1.9 pp) does NOT fix it ⟹ the residual is not "just add depth" (handoff into the coarse cells
+  below, or a long-duration distributed resistance a fixed shallow package can't represent).
+- **"deeper is worse" is a COST claim, not physics** — on loam-MODERATE r=2 (0.259) is actually CLOSER to
+  ref than r=3 (0.270); r=2 is worse only on sand/loam-long + much stiffer. Correct: r=3 is the better
+  cost/accuracy COMPROMISE, not a physical optimum.
+- **GENERALITY un-earned:** §25's sensitivity driver is geometry/discretization (UN-isolated); validating
+  only on b1 does NOT support a FIXED 80 mm package across geometries (the needed depth may scale with the
+  un-isolated geometry factor).
+- **MODULARITY tested only "uniform-below":** heterogeneous/layered/already-fine subsurfaces (the stated
+  use cases) are UNVALIDATED.
+
+**⟹ DEFENSIBLE STATUS: r=3 is a promising best-tested b1 default + the right DIRECTION (near-surface graded
+refinement within pure Richards), NOT a shippable universal solution. SHIP only as an EXPERIMENTAL default
+behind a caveat.** ★ HIGHEST-VALUE NEXT TEST (Codex): one materially DIFFERENT geometry × the loam-long
+dry stress case × {coarse, converged ref, fixed r=3} — attacks BOTH the §25 geometry-dependence AND the
+loam-long gate failure at once; plus a non-uniform-subsurface modularity check. The CORE findings STAND
+(0.547 = coarse-vertical-resolution artifact; converged ~0.265; ParFlow reconciled). Spikes
+`seq_skin_split.py`; outputs `_gradedpkg_*.txt`; review `overland_gradedpkg_codex_review__2026-06-28.md`.
