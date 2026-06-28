@@ -1,5 +1,32 @@
 # Overland Partition — Resolution Closure Plan (steps 1–3)
 
+> **★ OUTCOME (2026-06-28) — steps 1–3 EXECUTED; direction validated, NOT yet a universal solution.** Full
+> record: `validation/sanity/overland_partition_bug_investigation__2026-06-24.md` §23–§29 + 7 Codex reviews
+> (`validation/sanity/overland_{decisive,verdict,3d,sorptivity,sequential,qpot,gradedpkg}*review*.md`).
+> Commits `ae57fe9`→`5454275` (pushed).
+> - **Task 1 DONE (§23):** the b1 loam partition is mesh-CONVERGED at **routed/R\* ≈ 0.265** (graded
+>   p2.75/p3.0 flat). Replaces the coarse 0.547 as the reference truth.
+> - **Task 2 DONE + REFRAMED (§24–§25):** ParFlow IS runnable (Docker); the **B5 twin is mesh-robust and
+>   in-house ≡ ParFlow to ~0.1%** → the ParFlow validation STANDS; the §22 "ParFlow under-resolved" claim
+>   RETRACTED. The resolution-sensitivity is **case/geometry-specific, NOT a scheme bug** (storm/IC/GHB swaps
+>   all refuted; the geometry driver is un-isolated). I had conflated the b1 monolith "0.547" (sensitive)
+>   with the B5 ParFlow ~0.67 (robust) — different cases.
+> - **Task 3 PIVOTED (Arik): NO Green-Ampt closure** (strictly Richards, mesh-based + modular + minimal).
+>   Mechanism (§19–§22): `q_pot=∫Kdψ/ell_c` uses the cell as its length scale → coarse cell smears the
+>   sorptive front → under-infiltrates. A single thin skin CAPS at ~0.31; the **graded near-surface package**
+>   (§26–§29) is the fix-direction.
+> - **Task 3 RESULT (§29) — TEMPERED by the 7th Codex review (`overland_gradedpkg_codex_review__2026-06-28`):**
+>   the **r=3 geometric near-surface package** (top ~2 mm, ×3 growth, 4 cells = 2,6,18,54 mm ≈ 80 mm, then
+>   the user's uniform subsurface) is the **best-tested b1 DEFAULT** (±~1 pp on loam-mod/sand-int/controls,
+>   pure Richards, modular, 4 layers) — but **NOT a universal solution:** loam-LONG fails the gate (−1.6 pp;
+>   r=2 doesn't fix it), "deeper is worse" is a cost-not-physics claim, generality un-earned (only b1),
+>   modularity tested only uniform-below.
+> - **★ HIGHEST-VALUE NEXT TEST (before any productionization):** one materially DIFFERENT geometry × the
+>   loam-long dry stress case × {coarse, converged ref, fixed r=3} — attacks the §25 geometry-dependence AND
+>   the loam-long gate failure at once; plus a non-uniform-subsurface modularity check. THEN, if it holds,
+>   promote the graded-package mesh helper into `pids_forward/` with a TDD regression (coarse+package ==
+>   converged). Harness: `scratch/seq_skin_split.py` (`skins:`/`refp:X`, `SKIN_RAIN`/`SKIN_STORM`, L90).
+
 > **For Claude:** REQUIRED SUB-SKILL: use `superpowers:executing-plans` to run this task-by-task. This is a
 > SPIKE/research plan (scratch + benchmarks, no `pids_forward/` production edits until a closure is
 > validated) — the "tests" are pre-registered GATES run in the WSL `pids-fem` env. Confirm each gate before
