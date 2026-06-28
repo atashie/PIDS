@@ -20,6 +20,7 @@ Run (WSL pids-fem) -- one (soil, variant) per process:
 """
 from __future__ import annotations
 
+import os
 import sys
 import time
 
@@ -117,9 +118,10 @@ def run(soil_name, variant, dt_max=0.02):
     mono.add_outflow_bc(lambda x: np.isclose(x[1], 0.0), slope=g["S0"])
     th0 = _soil_water_deg8(mono, soil)
     top_area = _top_area_ds(msh, g["Lz"])
-    R_in = g["RAIN"] * top_area * g["STORM"]
+    rain = float(os.environ.get("SKIN_RAIN", g["RAIN"]))   # storm-intensity override
+    R_in = rain * top_area * g["STORM"]
     t0 = time.perf_counter()
-    ns, coll, tend, peak = _march(mono, rain_c, storm_dur=g["STORM"], storm_rain=g["RAIN"],
+    ns, coll, tend, peak = _march(mono, rain_c, storm_dur=g["STORM"], storm_rain=rain,
                                   t_end=g["TEND"], dt0=dt_max / 4.0, dt_max=dt_max, ctrl_low=3,
                                   ctrl_high=8, track_sheet=True, top_area=top_area, max_steps=1200)
     ok = (not coll) and tend >= g["TEND"] - 1e-9

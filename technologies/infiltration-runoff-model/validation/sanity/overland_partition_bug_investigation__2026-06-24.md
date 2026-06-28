@@ -1045,3 +1045,29 @@ interaction" priority):**
   (can't reach converged).
 - **2 layers — (10,40) skin:** 0.293 (+2.9 pp); modular, the best simple skin package.
 - **re-mesh — graded:** 0.266 (converged) but warps the whole subsurface (not modular).
+
+---
+
+## 28. 1 mm-skin ERROR across soils × storm intensities (2026-06-27)
+
+Error of a single 1 mm skin (on uniform-coarse subsurface) vs the converged ref, b1 geometry:
+
+| soil | storm | 1 mm-skin routed/R | converged ref | error |
+|---|---|---|---|---|
+| loam | moderate (0.5) | 0.312 | 0.264 | **+4.8 pp** |
+| loam | intense (2.0) | 0.803 | 0.799 | +0.4 pp |
+| sand | moderate (0.5) | 0.000 | 0.000 | 0.0 pp |
+| sand | intense (2.0) | 0.262 | 0.198 | **+6.4 pp** |
+| clay | moderate (0.5) | 0.872 | 0.872 | −0.0 pp |
+| clay | intense (2.0) | 0.968 | 0.967 | +0.1 pp |
+
+**Range 0 to +6.4 pp; always POSITIVE (over-predicts runoff, = under-resolved infiltration).** The error is
+NOT loam-specific — it is largest where infiltration is SORPTIVE-FRONT-limited AND the front penetrates
+beyond the skin during the event: **sand-intense (+6.4) and loam-moderate (+4.8)**. It is negligible where
+the partition is NOT sorptive-front-set: clay (both storms — storage-limited/near-saturated), sand-moderate
+(rain<Ks, all infiltrates, no runoff), AND **loam-intense (+0.4 — the intense storm drives infiltration-
+EXCESS/Hortonian runoff, which saturates the surface fast and is insensitive to the sorptive-front
+resolution).** ⟹ the single skin's residual is the unresolved **front ADVANCE**, which surfaces in the
+sorptive-transient regime and varies with soil×storm (up to ~6 pp), confirming a fixed single skin is not
+uniformly adequate. **Pure-Richards mesh fix (Arik's strong preference; GA dropped): a GRADED NEAR-SURFACE
+package resolving the front DEPTH (not just the skin) — the next experiment.** Outputs `_skinerr_*.txt`.
