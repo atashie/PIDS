@@ -1100,3 +1100,24 @@ Packages: r=4 → 2,8,32 mm (3 cells, span 42 mm); r=3 → 2,6,18,54 (4 cells, 8
 loam-long (deeper front), + controls loam-intense/clay-intense. Harness `seq_skin_split.py` (`skins:` /
 `refp:X` variants, `SKIN_RAIN`/`SKIN_STORM` env, L90 diagnostic). Stage 1 (loam-mod r2/3/4 + convergence
 checks) RUNNING.
+
+**★ STAGE 1 RESULT — the geometric package WORKS + converges with depth.** loam-moderate (ref 0.264):
+
+| package | depth | skin-cells | routed/R | error | wall |
+|---|---|---|---|---|---|
+| r=4 | 42 mm | 3 | 0.284 | +2.0 pp | 488 s |
+| **r=3** | **80 mm** | **4** | **0.270** | **+0.6 pp** ✓ | 303 s |
+| r=2 | 126 mm | 6 | 0.259 | −0.5 pp ✓ | 375 s |
+
+**r=3 (4 cells, ~80 mm package) hits ±1 pp; r=2 is essentially exact** — vs the single-skin cap (0.31) and
+the (10,40) two-skin (0.293). A modular geometric near-surface package spanning ~80–126 mm, on an
+otherwise-uniform coarse subsurface, RECOVERS the converged partition (pure Richards, deep mesh untouched).
+
+**Convergence checks (Codex fix #2) — BOTH stress refs CONVERGED:** loam-long p2.75=0.4312 vs p3.0=0.4320
+(Δ0.08 pp); sand-intense p2.75=0.1971 vs p3.0=0.198 (Δ0.09 pp). ⟹ the ±1 pp gate is trustworthy.
+
+**⚠ L90 anchor caveat:** the end-of-storm L90 reads ~700–1000 mm (the diffuse front tail), yet an 80 mm
+package suffices ⟹ **the partition is set by the EARLY/UPPER front, not the full final front depth; L90
+(end-of-storm) OVERSTATES the package depth needed.** The actionable anchor is empirical (~80 mm here); a
+cleaner physical anchor (early-time front / sorptive depth) is future work. Stage 2 (winning packages on
+sand-intense + loam-long deeper-front cases + controls) RUNNING.
